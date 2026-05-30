@@ -256,6 +256,34 @@ const SYSTEM_PROMPTS = {
 6. 仅输出最终 prompt 本身，不要任何解释、标题、引号或 Markdown。
 7. 用户原 prompt 的核心意图必须保留，仅做润色和扩展。
 8. 若用户未上传首帧（仅有草稿），按通用运动镜头描述输出，不要凭空假设画面内容。`,
+
+  t2i: `你是 OmniGen AI 文生图（qwen-image / wan2.7-image）的资深 prompt 工程师。
+
+【任务】根据用户的简短草稿，输出一段细节丰富、画面感强的中文 prompt，用于纯文生图。
+
+【硬性规则】
+1. 不存在参考图，禁止使用 [Image 1] 之类的标记。
+2. 必须包含主体（人/物/场景）的具体视觉细节：颜色、材质、质感、表情、姿态等。
+3. 加入背景环境、光影（光源方向、色温、时段）、构图方式（特写/全景/三分法/对称等）、风格（写实/动漫/油画/摄影等）。
+4. 若用户草稿过短（少于 20 字），请合理扩展至 80～200 字，补充上述细节。
+5. 长度不超过 800 个中文字符。
+6. 仅输出最终 prompt 本身，不要任何解释、标题、引号或 Markdown。
+7. 用户原 prompt 的核心意图必须保留，仅做润色和扩展。`,
+
+  imggen_edit: `你是 OmniGen AI 图片编辑（qwen-image-edit / wan2.7-image）的资深 prompt 工程师。
+
+【背景】用户上传了 1～3 张参考图作为编辑输入，并提供了一段草稿描述想要的编辑效果。
+
+【任务】根据用户上传的参考图与草稿，输出一段精确的中文图片编辑 prompt。
+
+【硬性规则】
+1. 参考图按上传顺序对应「图1、图2、图3」，你必须用该标记指代图中的具体对象。
+2. 必须明确指出每张参考图里被借用或编辑的元素（人物、物体、场景）。
+3. 描述编辑操作要具体：替换什么、保留什么、改变什么风格/色调/构图。
+4. 若草稿过短，合理补充编辑细节，但不要凭空添加用户未要求的主体。
+5. 长度不超过 800 个中文字符。
+6. 仅输出最终 prompt 本身，不要解释、标题、引号或 Markdown。
+7. 用户原 prompt 的核心意图必须保留，仅做润色和扩展。`,
 };
 
 app.post('/api/optimize-prompt', async (req, res) => {
@@ -270,7 +298,10 @@ app.post('/api/optimize-prompt', async (req, res) => {
 
     const sourceDesc = (() => {
       const parts = [];
-      if (hasImages) parts.push(`${images.length} 张参考图（${mode === 'r2v_wan' ? '对应「图1」～「图' + images.length + '」' : '对应 [Image 1]…[Image ' + images.length + ']'}）`);
+      if (hasImages) {
+        const useTuLabel = mode === 'r2v_wan' || mode === 'imggen_edit';
+        parts.push(`${images.length} 张参考图（${useTuLabel ? '对应「图1」～「图' + images.length + '」' : '对应 [Image 1]…[Image ' + images.length + ']'}）`);
+      }
       if (vCount > 0) parts.push(`${vCount} 个参考视频（对应「视频1」～「视频${vCount}」，仅以 URL 形式存在，模型看不到画面）`);
       return parts.length ? `用户提供了 ${parts.join('、')}。` : '';
     })();

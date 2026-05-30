@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>AIGC 图片生成，视频生成</title>
+<title>OmniGen AIStudio</title>
 <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
@@ -11,7 +11,7 @@
   <!-- ── Left Sidebar ── -->
   <aside class="sidebar">
     <div class="sidebar-header">
-      <h1>AIGC</h1>
+      <h1>OmniGen AIStudio</h1>
       <div class="sub">图片生成，视频生成</div>
     </div>
     <nav class="sidebar-nav">
@@ -404,8 +404,17 @@
           <div class="images" id="images-imggen"></div>
         </div>
 
-        <label>Prompt <span style="color: var(--muted)" id="promptHint-imggen">（描述你想生成的图片）</span></label>
+        <div class="prompt-head">
+          <label>Prompt <span style="color: var(--muted)" id="promptHint-imggen">（描述你想生成的图片）</span></label>
+          <div class="prompt-tools">
+            <button class="ghost-sm" id="optimizeBtn-imggen" title="用大模型润色 prompt" data-model-title="text">
+              <span class="spark">✨</span><span data-label>自动优化</span>
+            </button>
+            <button class="ghost-sm" id="undoBtn-imggen" style="display:none">↶ 撤销</button>
+          </div>
+        </div>
         <textarea id="prompt-imggen" placeholder="示例：一只坐着的橘黄色的猫，表情愉悦，活泼可爱，逼真准确"></textarea>
+        <div class="optimize-hint" id="optimizeHint-imggen"></div>
 
         <label>反向提示词 <span style="color: var(--muted)">（可选，描述不希望出现的内容）</span></label>
         <textarea id="negative-imggen" rows="2" placeholder="例：低分辨率、模糊、多余的手指、错误比例…" style="min-height:60px"></textarea>
@@ -438,13 +447,6 @@
               <input type="checkbox" id="watermark-imggen" />
               <label for="watermark-imggen" style="margin:0;color:var(--text)">添加水印</label>
             </div>
-          </div>
-        </div>
-
-        <div style="margin-top:8px">
-          <div class="checkbox">
-            <input type="checkbox" id="prompt-extend-imggen" checked />
-            <label for="prompt-extend-imggen" style="margin:0;color:var(--text)">prompt 智能改写（短 prompt 建议开启）</label>
           </div>
         </div>
 

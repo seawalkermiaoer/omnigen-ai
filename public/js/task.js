@@ -221,6 +221,13 @@ function bindOptimize(ctx) {
         if (ctx.state.lastFrame) images.push(ctx.state.lastFrame.base64Url);
         if (ctx.state.firstClip) videoCount = 1;
       }
+    } else if (ctx.kind === 'imggen') {
+      if (ctx.state.mode === 'edit' && ctx.state.images.length) {
+        images = ctx.state.images.map(i => i.base64Url);
+        mode = 'imggen_edit';
+      } else {
+        mode = 't2i';
+      }
     }
 
     btn.disabled = true; btn.classList.add('loading');

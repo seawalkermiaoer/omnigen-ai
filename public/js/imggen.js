@@ -97,6 +97,16 @@ function updateImggenUI() {
   // Show/hide wan2.7-specific controls
   const wanControls = document.querySelectorAll('[data-imggen-wan]');
   wanControls.forEach(el => el.style.display = isWan ? '' : 'none');
+
+  // Update optimize button tooltip based on mode
+  const optBtn = $('optimizeBtn-imggen');
+  if (isEdit) {
+    optBtn.setAttribute('data-model-title', 'vision');
+    optBtn.title = `用 ${MODEL_NAMES.VISION_OPTIMIZE_LABEL} 看图后润色 prompt`;
+  } else {
+    optBtn.setAttribute('data-model-title', 'text');
+    optBtn.title = `用 ${MODEL_NAMES.TEXT_OPTIMIZE} 润色 prompt`;
+  }
 }
 
 function updateSizeOptions() {
@@ -237,7 +247,6 @@ async function submitImggen() {
     size: $('size-imggen').value,
     n: parseInt($('count-imggen').value, 10) || 1,
     watermark: $('watermark-imggen').checked,
-    prompt_extend: $('prompt-extend-imggen').checked,
   };
   const negPrompt = $('negative-imggen').value.trim();
   if (negPrompt) params.negative_prompt = negPrompt;
@@ -367,9 +376,10 @@ $('resetBtn-imggen').addEventListener('click', () => {
   $('images-imggen').innerHTML = '';
   $('prompt-imggen').value = '';
   $('negative-imggen').value = '';
+  $('optimizeHint-imggen').textContent = '';
+  $('undoBtn-imggen').style.display = 'none';
   $('seed-imggen').value = '';
   $('watermark-imggen').checked = false;
-  $('prompt-extend-imggen').checked = true;
   $('thinking-imggen').checked = true;
   $('sequential-imggen').checked = false;
   $('imageOut-imggen').style.display = 'none';
@@ -380,3 +390,4 @@ $('resetBtn-imggen').addEventListener('click', () => {
 
 // ─── Initialize UI on load ─────────────────────────────────────
 updateImggenUI();
+bindOptimize(imggen);
