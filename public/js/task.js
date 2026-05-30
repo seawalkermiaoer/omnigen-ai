@@ -222,11 +222,11 @@ function bindOptimize(ctx) {
         if (ctx.state.firstClip) videoCount = 1;
       }
     } else if (ctx.kind === 'imggen') {
-      if (ctx.state.mode === 'edit' && ctx.state.images.length) {
+      mode = 't2i';
+    } else if (ctx.kind === 'imgedit') {
+      if (ctx.state.images.length) {
         images = ctx.state.images.map(i => i.base64Url);
         mode = 'imggen_edit';
-      } else {
-        mode = 't2i';
       }
     }
 

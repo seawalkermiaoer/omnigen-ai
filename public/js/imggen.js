@@ -1,29 +1,18 @@
-/* ── OmniGen AI: Image generation (Text-to-Image & Image Edit) ── */
+/* ── OmniGen AI: Text-to-Image generation ── */
 
 const imggen = {
   kind: 'imggen',
-  state: {
-    mode: 't2i',   // 't2i' or 'edit'
-    images: [],     // uploaded input images (edit mode only)
-  },
+  state: {},
   currentHistoryId: null,
 };
 
-// ─── Model definitions ─────────────────────────────────────────
-const IMGGEN_MODELS = {
-  t2i: [
-    { value: 'qwen-image-plus', label: 'Qwen-Image-Plus（高质量，DashScope 协议）' },
-    { value: 'qwen-image', label: 'Qwen-Image（快速，DashScope 协议）' },
-    { value: 'wan2.7-image-pro', label: 'Wan 2.7 Image Pro（高质量，DashScope 协议）' },
-    { value: 'wan2.7-image', label: 'Wan 2.7 Image（基础版，DashScope 协议）' },
-  ],
-  edit: [
-    { value: 'qwen-image-edit-plus', label: 'Qwen-Image-Edit-Plus（多图融合，DashScope 协议）' },
-    { value: 'qwen-image-edit', label: 'Qwen-Image-Edit（DashScope 协议）' },
-    { value: 'wan2.7-image-pro', label: 'Wan 2.7 Image Pro（DashScope 协议）' },
-    { value: 'wan2.7-image', label: 'Wan 2.7 Image（DashScope 协议）' },
-  ],
-};
+// ─── Model definitions (text-to-image only) ─────────────────────
+const IMGGEN_MODELS = [
+  { value: 'qwen-image-plus', label: 'Qwen-Image-Plus（高质量，DashScope 协议）' },
+  { value: 'qwen-image', label: 'Qwen-Image（快速，DashScope 协议）' },
+  { value: 'wan2.7-image-pro', label: 'Wan 2.7 Image Pro（高质量，DashScope 协议）' },
+  { value: 'wan2.7-image', label: 'Wan 2.7 Image（基础版，DashScope 协议）' },
+];
 
 // Qwen models use these sizes; wan2.7 uses 1K/2K/4K
 const QWEN_SIZES = [
@@ -43,70 +32,27 @@ function isWanModel(model) {
   return model && model.startsWith('wan2.7');
 }
 
-// ─── Mode toggle ───────────────────────────────────────────────
-const imggenModeTabs = $('imggenModeTabs');
-imggenModeTabs.querySelectorAll('.seg-tab').forEach(btn => {
-  btn.addEventListener('click', () => {
-    imggenModeTabs.querySelectorAll('.seg-tab').forEach(b => b.classList.toggle('active', b === btn));
-    imggen.state.mode = btn.dataset.mode;
-    imggen.state.images = [];
-    updateImggenUI();
-  });
-});
-
+// ─── UI update ──────────────────────────────────────────────────
 function updateImggenUI() {
-  const mode = imggen.state.mode;
   const model = $('model-imggen').value;
   const isWan = isWanModel(model);
-  const isEdit = mode === 'edit';
 
   // Update model dropdown
   const modelSelect = $('model-imggen');
   const prevValue = modelSelect.value;
-  const models = IMGGEN_MODELS[mode];
-  modelSelect.innerHTML = models.map(m => `<option value="${m.value}">${m.label}</option>`).join('');
-  // Try to preserve previous selection if it exists in new list
-  if (models.some(m => m.value === prevValue)) {
+  modelSelect.innerHTML = IMGGEN_MODELS.map(m => `<option value="${m.value}">${m.label}</option>`).join('');
+  if (IMGGEN_MODELS.some(m => m.value === prevValue)) {
     modelSelect.value = prevValue;
-  }
-
-  // Show/hide image upload area
-  const editSlot = document.querySelector('[data-slot="edit_images"]');
-  editSlot.style.display = isEdit ? '' : 'none';
-
-  // Clear uploaded images when switching modes
-  if (!isEdit) {
-    imggen.state.images = [];
-    $('images-imggen').innerHTML = '';
-  }
-
-  // Update prompt placeholder
-  const hint = $('promptHint-imggen');
-  if (isEdit) {
-    hint.textContent = '（用「图1」「图2」「图3」指代上方图片）';
-  } else {
-    hint.textContent = '（描述你想生成的图片）';
   }
 
   // Update size options
   updateSizeOptions();
-
   // Update count options
   updateCountOptions();
 
   // Show/hide wan2.7-specific controls
   const wanControls = document.querySelectorAll('[data-imggen-wan]');
   wanControls.forEach(el => el.style.display = isWan ? '' : 'none');
-
-  // Update optimize button tooltip based on mode
-  const optBtn = $('optimizeBtn-imggen');
-  if (isEdit) {
-    optBtn.setAttribute('data-model-title', 'vision');
-    optBtn.title = `用 ${MODEL_NAMES.VISION_OPTIMIZE_LABEL} 看图后润色 prompt`;
-  } else {
-    optBtn.setAttribute('data-model-title', 'text');
-    optBtn.title = `用 ${MODEL_NAMES.TEXT_OPTIMIZE} 润色 prompt`;
-  }
 }
 
 function updateSizeOptions() {
@@ -115,7 +61,6 @@ function updateSizeOptions() {
   const sizes = isWan ? WAN_SIZES : QWEN_SIZES;
   const sizeSelect = $('size-imggen');
   sizeSelect.innerHTML = sizes.map(s => `<option value="${s.value}">${s.label}</option>`).join('');
-  // Select middle option by default for Qwen (1:1), first for wan
   if (!isWan) {
     sizeSelect.value = '1328*1328';
   }
@@ -123,21 +68,12 @@ function updateSizeOptions() {
 
 function updateCountOptions() {
   const model = $('model-imggen').value;
-  const mode = imggen.state.mode;
   const countSelect = $('count-imggen');
   let options = [];
 
   if (model === 'qwen-image-plus' || model === 'qwen-image') {
-    // Qwen T2I: n fixed at 1
-    options = [1];
-  } else if (model === 'qwen-image-edit-plus') {
-    // Qwen Edit: 1-6
-    options = [1, 2, 3, 4, 5, 6];
-  } else if (model === 'qwen-image-edit') {
-    // Qwen Edit: n fixed at 1
     options = [1];
   } else if (isWanModel(model)) {
-    // wan2.7: 1-4 for single mode, 1-12 for sequential
     const isSequential = $('sequential-imggen').checked;
     const max = isSequential ? 12 : 4;
     for (let i = 1; i <= max; i++) options.push(i);
@@ -158,67 +94,6 @@ $('model-imggen').addEventListener('change', updateImggenUI);
 // Sequential checkbox changes count options
 $('sequential-imggen').addEventListener('change', updateCountOptions);
 
-// ─── Image upload (multi-image) ────────────────────────────────
-const uploaderImggen = $('uploader-imggen');
-const fileInputImggen = $('fileInput-imggen');
-
-uploaderImggen.addEventListener('click', () => fileInputImggen.click());
-uploaderImggen.addEventListener('dragover', e => { e.preventDefault(); uploaderImggen.classList.add('drag'); });
-uploaderImggen.addEventListener('dragleave', () => uploaderImggen.classList.remove('drag'));
-uploaderImggen.addEventListener('drop', e => {
-  e.preventDefault();
-  uploaderImggen.classList.remove('drag');
-  handleImggenFiles(e.dataTransfer.files);
-});
-fileInputImggen.addEventListener('change', () => {
-  handleImggenFiles(fileInputImggen.files);
-  fileInputImggen.value = '';
-});
-
-async function handleImggenFiles(fileList) {
-  const model = $('model-imggen').value;
-  const maxImages = isWanModel(model) ? 9 : 3;
-  const files = Array.from(fileList).filter(f => f.type.startsWith('image/'));
-
-  for (const file of files) {
-    if (imggen.state.images.length >= maxImages) {
-      alert(`当前模型最多支持 ${maxImages} 张输入图片`);
-      break;
-    }
-    if (file.size > 20 * 1024 * 1024) {
-      alert(`${file.name} 超过 20MB 限制`);
-      continue;
-    }
-    const base64Url = await readAsDataURL(file);
-    const thumb = await makeThumb(file, 96, 0.7);
-    imggen.state.images.push({ file, base64Url, thumb, name: file.name });
-  }
-  renderImggenImages();
-}
-
-function renderImggenImages() {
-  const container = $('images-imggen');
-  if (!imggen.state.images.length) {
-    container.innerHTML = '';
-    return;
-  }
-  container.innerHTML = imggen.state.images.map((img, i) => `
-    <div class="img-card" data-idx="${i}">
-      <img src="${img.thumb || img.base64Url}" alt="图${i + 1}" />
-      <div class="tag">图${i + 1}</div>
-      <button class="remove" data-remove="${i}">×</button>
-    </div>
-  `).join('');
-  container.querySelectorAll('[data-remove]').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const idx = parseInt(btn.dataset.remove, 10);
-      imggen.state.images.splice(idx, 1);
-      renderImggenImages();
-    });
-  });
-}
-
 // ─── Submit (synchronous, no polling) ──────────────────────────
 $('submitBtn-imggen').addEventListener('click', submitImggen);
 
@@ -228,14 +103,10 @@ async function submitImggen() {
 
   const model = $('model-imggen').value;
   const prompt = $('prompt-imggen').value.trim();
-  const mode = imggen.state.mode;
 
   // Validate
-  if (!prompt && mode === 't2i') {
+  if (!prompt) {
     return alert('请输入 Prompt');
-  }
-  if (mode === 'edit' && imggen.state.images.length === 0) {
-    return alert('请上传至少一张输入图片');
   }
   // wan2.7 region check
   if (isWanModel(model) && !['cn-beijing', 'ap-southeast-1'].includes(auth.region)) {
@@ -257,11 +128,6 @@ async function submitImggen() {
     params.enable_sequential = $('sequential-imggen').checked;
   }
 
-  // Build images array
-  const images = mode === 'edit'
-    ? imggen.state.images.map(img => img.base64Url)
-    : [];
-
   const log = makeLog('log-imggen');
   $('log-imggen').innerHTML = '';
   $('imageOut-imggen').style.display = 'none';
@@ -272,14 +138,11 @@ async function submitImggen() {
   // Create history record
   const historyId = genHistoryId();
   imggen.currentHistoryId = historyId;
-  const thumbnails = mode === 'edit'
-    ? imggen.state.images.map(img => img.thumb).filter(Boolean)
-    : [];
 
   addHistoryRecord({
     id: historyId,
     mode: 'imggen',
-    subMode: mode,
+    subMode: 't2i',
     model,
     status: 'PENDING',
     submitTime: Date.now(),
@@ -287,8 +150,8 @@ async function submitImggen() {
     workspaceId: auth.workspaceId || '',
     prompt,
     params,
-    imageCount: images.length,
-    thumbnails,
+    imageCount: 0,
+    thumbnails: [],
   });
 
   try {
@@ -296,7 +159,7 @@ async function submitImggen() {
     const res = await fetch('/api/generate-image', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...auth, model, prompt, images, params }),
+      body: JSON.stringify({ ...auth, model, prompt, images: [], params }),
     });
     const data = await res.json();
     const elapsed = Math.round((Date.now() - startTime) / 1000);
@@ -311,7 +174,7 @@ async function submitImggen() {
     log(`✓ 生成完成，共 ${imageUrls.length} 张图片（耗时 ${elapsed}s）`, 'ok');
     setStatusHTML('status-imggen', `<span class="pill SUCCEEDED">完成</span> ${imageUrls.length} 张图片 · 耗时 ${elapsed}s`);
 
-    renderImageResults(imageUrls, data.usage);
+    renderImggenImageResults(imageUrls, data.usage);
 
     patchHistoryRecord(historyId, {
       status: 'SUCCEEDED',
@@ -329,7 +192,7 @@ async function submitImggen() {
 }
 
 // ─── Render image results ───────────────────────────────────────
-function renderImageResults(imageUrls, usage) {
+function renderImggenImageResults(imageUrls, usage) {
   const out = $('imageOut-imggen');
   const grid = $('imageGrid-imggen');
   const meta = $('imageMeta-imggen');
@@ -372,8 +235,6 @@ function renderImageResults(imageUrls, usage) {
 
 // ─── Reset ──────────────────────────────────────────────────────
 $('resetBtn-imggen').addEventListener('click', () => {
-  imggen.state.images = [];
-  $('images-imggen').innerHTML = '';
   $('prompt-imggen').value = '';
   $('negative-imggen').value = '';
   $('optimizeHint-imggen').textContent = '';
@@ -384,7 +245,7 @@ $('resetBtn-imggen').addEventListener('click', () => {
   $('sequential-imggen').checked = false;
   $('imageOut-imggen').style.display = 'none';
   $('log-imggen').innerHTML = '';
-  setStatusHTML('status-imggen', '<span style="color: var(--muted)">填写参数后点击「生成图片」</span>');
+  setStatusHTML('status-imggen', '<span style="color: var(--muted)">填写 prompt 后点击「生成图片」</span>');
   updateImggenUI();
 });
 

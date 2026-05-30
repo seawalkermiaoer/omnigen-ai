@@ -19,6 +19,7 @@
       <button class="sidebar-item" data-tab="i2v">🖼️ 图生视频</button>
       <button class="sidebar-item" data-tab="t2v">✍️ 文生视频</button>
       <button class="sidebar-item" data-tab="imggen">🎨 图片生成</button>
+      <button class="sidebar-item" data-tab="imgedit">✂️ 图片编辑</button>
       <button class="sidebar-item" data-tab="history">🕑 历史记录 <span class="tab-badge" id="historyBadge" style="display:none">0</span></button>
       <button class="sidebar-item" data-tab="settings">⚙️ 设置</button>
     </nav>
@@ -377,35 +378,19 @@
     </div>
   </div>
 
-  <!-- ====== Tab 4: 图片生成 ====== -->
+  <!-- ====== Tab 4: 图片生成 (Text-to-Image) ====== -->
   <div class="tab-content" data-tab="imggen">
     <div class="grid">
       <div class="panel">
-        <h2><span class="dot"></span>素材与提示词</h2>
+        <h2><span class="dot"></span>提示词</h2>
 
-        <label class="first">模式</label>
-        <div class="seg-tabs" id="imggenModeTabs">
-          <button class="seg-tab active" data-mode="t2i">文生图</button>
-          <button class="seg-tab" data-mode="edit">图片编辑</button>
-        </div>
-
-        <label>模型</label>
+        <label class="first">模型</label>
         <select id="model-imggen">
           <!-- Options populated dynamically by imggen.js -->
         </select>
 
-        <div data-slot="edit_images" style="display:none">
-          <label id="imageLabel-imggen">输入图像 <span style="color: var(--muted)">（1~3 张，JPG/PNG/WEBP，≤20MB）</span></label>
-          <div class="uploader" id="uploader-imggen">
-            <strong>点击或拖拽图片到这里上传</strong>
-            <div class="hint">用「图1」「图2」「图3」在 prompt 中指代上方图片</div>
-            <input type="file" id="fileInput-imggen" accept="image/jpeg,image/png,image/webp,image/bmp" multiple style="display:none" />
-          </div>
-          <div class="images" id="images-imggen"></div>
-        </div>
-
         <div class="prompt-head">
-          <label>Prompt <span style="color: var(--muted)" id="promptHint-imggen">（描述你想生成的图片）</span></label>
+          <label>Prompt <span style="color: var(--muted)">（描述你想生成的图片）</span></label>
           <div class="prompt-tools">
             <button class="ghost-sm" id="optimizeBtn-imggen" title="用大模型润色 prompt" data-model-title="text">
               <span class="spark">✨</span><span data-label>自动优化</span>
@@ -467,7 +452,7 @@
         </div>
 
         <div class="status" id="status-imggen">
-          <span style="color: var(--muted)">填写参数后点击「生成图片」</span>
+          <span style="color: var(--muted)">填写 prompt 后点击「生成图片」</span>
         </div>
         <div class="image-out" id="imageOut-imggen" style="display:none">
           <div class="meta" id="imageMeta-imggen"></div>
@@ -478,7 +463,100 @@
     </div>
   </div>
 
-  <!-- ====== Tab 5: 历史记录 ====== -->
+  <!-- ====== Tab 5: 图片编辑 (Image Edit) ====== -->
+  <div class="tab-content" data-tab="imgedit">
+    <div class="grid">
+      <div class="panel">
+        <h2><span class="dot"></span>输入图像与提示词</h2>
+
+        <label class="first">模型</label>
+        <select id="model-imgedit">
+          <!-- Options populated dynamically by imgedit.js -->
+        </select>
+
+        <label>输入图像 <span style="color: var(--muted)">（1~3 张，JPG/PNG/WEBP，≤20MB）</span></label>
+        <div class="uploader" id="uploader-imgedit">
+          <strong>点击或拖拽图片到这里上传</strong>
+          <div class="hint">用「图1」「图2」「图3」在 prompt 中指代上方图片</div>
+          <input type="file" id="fileInput-imgedit" accept="image/jpeg,image/png,image/webp,image/bmp" multiple style="display:none" />
+        </div>
+        <div class="images" id="images-imgedit"></div>
+
+        <div class="prompt-head">
+          <label>Prompt <span style="color: var(--muted)">（用「图1」「图2」「图3」指代上方图片）</span></label>
+          <div class="prompt-tools">
+            <button class="ghost-sm" id="optimizeBtn-imgedit" title="用 qwen-vl-max 看图后润色 prompt" data-model-title="vision">
+              <span class="spark">✨</span><span data-label>自动优化</span>
+            </button>
+            <button class="ghost-sm" id="undoBtn-imgedit" style="display:none">↶ 撤销</button>
+          </div>
+        </div>
+        <textarea id="prompt-imgedit" placeholder="示例：将图1中的背景替换为海滩日落场景，保持人物不变"></textarea>
+        <div class="optimize-hint" id="optimizeHint-imgedit"></div>
+
+        <label>反向提示词 <span style="color: var(--muted)">（可选，描述不希望出现的内容）</span></label>
+        <textarea id="negative-imgedit" rows="2" placeholder="例：低分辨率、模糊、多余的手指、错误比例…" style="min-height:60px"></textarea>
+      </div>
+
+      <div class="panel">
+        <h2><span class="dot"></span>生成参数</h2>
+        <div class="row-2">
+          <div>
+            <label class="first">尺寸</label>
+            <select id="size-imgedit">
+              <!-- Options populated dynamically by imgedit.js -->
+            </select>
+          </div>
+          <div>
+            <label class="first">生成数量</label>
+            <select id="count-imgedit">
+              <option value="1" selected>1</option>
+            </select>
+          </div>
+        </div>
+        <div class="row-2">
+          <div>
+            <label>Seed（可选，0-2147483647）</label>
+            <input type="number" id="seed-imgedit" placeholder="留空随机" min="0" max="2147483647" />
+          </div>
+          <div>
+            <label>水印</label>
+            <div class="checkbox">
+              <input type="checkbox" id="watermark-imgedit" />
+              <label for="watermark-imgedit" style="margin:0;color:var(--text)">添加水印</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="wan-only" data-imgedit-wan style="display:none;margin-top:8px">
+          <div class="checkbox">
+            <input type="checkbox" id="thinking-imgedit" checked />
+            <label for="thinking-imgedit" style="margin:0;color:var(--text)">思考模式（thinking_mode）</label>
+          </div>
+          <div class="checkbox" style="margin-top:6px">
+            <input type="checkbox" id="sequential-imgedit" />
+            <label for="sequential-imgedit" style="margin:0;color:var(--text)">组图模式（enable_sequential，一次生成多张关联图）</label>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="primary" id="submitBtn-imgedit">编辑图片</button>
+          <button class="ghost" id="resetBtn-imgedit">重置</button>
+        </div>
+
+        <div class="status" id="status-imgedit">
+          <span style="color: var(--muted)">上传图片并填写 prompt 后点击「编辑图片」</span>
+        </div>
+        <div class="image-out" id="imageOut-imgedit" style="display:none">
+          <div class="meta" id="imageMeta-imgedit"></div>
+          <div class="image-grid" id="imageGrid-imgedit"></div>
+        </div>
+        <div class="log" id="log-imgedit"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====== Tab 6: 历史记录 ====== -->
   <div class="tab-content" data-tab="history">
     <div class="history-toolbar">
       <div class="meta" id="historyMeta">尚无记录</div>
@@ -544,5 +622,6 @@
 <script src="js/r2v.js"></script>
 <script src="js/i2v.js"></script>
 <script src="js/imggen.js"></script>
+<script src="js/imgedit.js"></script>
 </body>
 </html>
