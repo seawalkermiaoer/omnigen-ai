@@ -1,0 +1,12 @@
+{
+  "name": "omnigen-ai",
+  "version": "1.0.0",
+  "description": "OmniGen AI 图片生成，视频生成 Web UI",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

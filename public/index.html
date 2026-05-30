@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AIGC 图片生成，视频生成</title>
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<div class="app-layout">
+  <!-- ── Left Sidebar ── -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h1>AIGC</h1>
+      <div class="sub">图片生成，视频生成</div>
+    </div>
+    <nav class="sidebar-nav">
+      <button class="sidebar-item active" data-tab="r2v">📹 参考生视频</button>
+      <button class="sidebar-item" data-tab="i2v">🖼️ 图生视频</button>
+      <button class="sidebar-item" data-tab="t2v">✍️ 文生视频</button>
+      <button class="sidebar-item" data-tab="imggen">🎨 图片生成</button>
+      <button class="sidebar-item" data-tab="history">🕑 历史记录 <span class="tab-badge" id="historyBadge" style="display:none">0</span></button>
+      <button class="sidebar-item" data-tab="settings">⚙️ 设置</button>
+    </nav>
+    <div class="sidebar-footer">
+      <span class="config-chip" id="configChip" title="点击打开设置" style="width:100%;justify-content:center">
+        <span class="led"></span>
+        <span id="configChipText">未配置</span>
+      </span>
+    </div>
+  </aside>
+
+  <!-- ── Right Main Content ── -->
+  <main class="main-content">
+  <div class="container">
+
+  <div class="setup-hint" id="setupHint" style="display:none">
+    <span>👋 尚未配置 API Key —— 配置后才能调用模型生成视频。</span>
+    <button id="setupHintBtn">前往设置</button>
+  </div>
+
+  <!-- ====== Tab 1: 参考生视频 ====== -->
+  <div class="tab-content active" data-tab="r2v">
+    <div class="grid">
+      <div class="panel">
+        <h2><span class="dot"></span>素材与提示词</h2>
+
+        <label class="first">模型</label>
+        <select id="model-r2v">
+          <option value="happyhorse-1.0-r2v">HappyHorse 1.0 R2V（多图参考，1-9 张）</option>
+          <option value="wan2.7-r2v">Wan 2.7 R2V（图+视频+音色，仅北京/新加坡）</option>
+        </select>
+
+        <label id="imageLabel-r2v">参考图像 <span style="color: var(--muted)">（1~9 张，JPG/PNG/WEBP，≤20MB，短边 ≥400px）</span></label>
+        <div class="uploader" id="uploader-r2v">
+          <strong>点击或拖拽图片到这里上传</strong>
+          <div class="hint">数组顺序对应 prompt 中的 [Image 1]、[Image 2] …</div>
+          <input type="file" id="fileInput-r2v" accept="image/jpeg,image/png,image/webp" multiple style="display:none" />
+        </div>
+        <div class="images" id="images-r2v"></div>
+
+        <div class="prompt-head">
+          <label>Prompt <span style="color: var(--muted)">（用 [Image 1]、[Image 2] 指代上方图片）</span></label>
+          <div class="prompt-tools">
+            <button class="ghost-sm" id="optimizeBtn-r2v" title="用 qwen-vl-max 看图后润色 prompt" data-model-title="vision">
+              <span class="spark">✨</span><span data-label>自动优化</span>
+            </button>
+            <button class="ghost-sm" id="undoBtn-r2v" style="display:none">↶ 撤销</button>
+          </div>
+        </div>
+        <textarea id="prompt-r2v" placeholder="示例：[Image 1]中身着红色旗袍的女性，镜头先以侧面中景勾勒旗袍修身剪裁与S型曲线，随即切换至低角度仰拍，捕捉她轻抬玉手展开[Image 2]中的折扇..."></textarea>
+        <div class="optimize-hint" id="optimizeHint-r2v"></div>
+
+        <div class="wan-only" data-r2v-wan style="display:none">
+          <label>参考视频 <span style="color: var(--muted)">（URL，MP4/MOV，1-30s，≤100MB；图+视频合计 ≤5 个）</span></label>
+          <div id="videos-r2v"></div>
+          <button class="ghost-sm" id="addVideoBtn" style="margin-top:6px">+ 添加参考视频 URL</button>
+
+          <label>反向提示词 <span style="color: var(--muted)">（可选，≤500 字符，描述不希望出现的内容）</span></label>
+          <textarea id="negative-r2v" rows="2" placeholder="例：低分辨率、模糊、多余的手指、错误比例…" style="min-height:60px"></textarea>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2><span class="dot"></span>生成参数</h2>
+        <div class="row-3">
+          <div>
+            <label class="first">分辨率</label>
+            <select id="resolution-r2v">
+              <option value="720P" selected>720P（默认）</option>
+              <option value="1080P">1080P</option>
+            </select>
+          </div>
+          <div>
+            <label class="first">宽高比</label>
+            <select id="ratio-r2v">
+              <option value="16:9">16:9（默认）</option>
+              <option value="9:16">9:16</option>
+              <option value="3:4">3:4</option>
+              <option value="4:3">4:3</option>
+              <option value="4:5">4:5</option>
+              <option value="5:4">5:4</option>
+              <option value="1:1">1:1</option>
+            </select>
+          </div>
+          <div>
+            <label class="first">时长（秒，3-15）</label>
+            <input type="number" id="duration-r2v" value="5" min="3" max="15" />
+          </div>
+        </div>
+        <div class="row-2">
+          <div>
+            <label>Seed（可选，0-2147483647）</label>
+            <input type="number" id="seed-r2v" placeholder="留空随机" min="0" max="2147483647" />
+          </div>
+          <div>
+            <label>水印</label>
+            <div class="checkbox">
+              <input type="checkbox" id="watermark-r2v" />
+              <label for="watermark-r2v" style="margin:0;color:var(--text)">添加水印</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="wan-only" data-r2v-wan style="display:none;margin-top:6px">
+          <div class="checkbox">
+            <input type="checkbox" id="prompt-extend-r2v" checked />
+            <label for="prompt-extend-r2v" style="margin:0;color:var(--text)">prompt 智能改写（prompt_extend，开启提升短 prompt 效果但耗时增加）</label>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="primary" id="submitBtn-r2v">生成视频</button>
+          <button class="ghost" id="resetBtn-r2v">重置</button>
+        </div>
+
+        <div class="status" id="status-r2v">
+          <span style="color: var(--muted)">填写参数与素材后点击「生成视频」</span>
+        </div>
+        <div class="video-out" id="videoOut-r2v" style="display:none">
+          <video id="videoEl-r2v" controls preload="metadata"></video>
+          <div class="meta" id="videoMeta-r2v"></div>
+          <div class="actions">
+            <button class="primary" id="downloadBtn-r2v">下载视频</button>
+            <button class="ghost" id="copyBtn-r2v">复制视频链接</button>
+          </div>
+        </div>
+        <div class="log" id="log-r2v"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====== Tab 2: 图生视频（首帧） ====== -->
+  <div class="tab-content" data-tab="i2v">
+    <div class="grid">
+      <div class="panel">
+        <h2><span class="dot"></span>素材与提示词</h2>
+
+        <label class="first">模型</label>
+        <select id="model-i2v">
+          <option value="happyhorse-1.0-i2v">HappyHorse 1.0 I2V（仅首帧生视频）</option>
+          <option value="wan2.7-i2v-2026-04-25">Wan 2.7 I2V（首帧/首尾帧/视频续写，仅北京/新加坡）</option>
+        </select>
+
+        <div class="wan-only" data-i2v-wan style="display:none">
+          <label>任务类型</label>
+          <div class="seg-tabs" id="i2vTaskTabs">
+            <button class="seg-tab active" data-task="first_frame">首帧生视频</button>
+            <button class="seg-tab" data-task="first_last">首尾帧生视频</button>
+            <button class="seg-tab" data-task="continue">视频续写</button>
+          </div>
+        </div>
+
+        <div data-slot="first_frame">
+          <label id="firstFrameLabel-i2v">首帧图像 <span style="color: var(--muted)">（必填，1 张，JPG/PNG/WEBP，宽高 ≥300px，宽高比 1:2.5~2.5:1，≤20MB）</span></label>
+          <div class="uploader" id="uploader-i2v">
+            <strong>点击或拖拽 1 张首帧图到这里</strong>
+            <div class="hint">视频将以这张图为第一帧开始动起来</div>
+            <input type="file" id="fileInput-i2v" accept="image/jpeg,image/png,image/webp" style="display:none" />
+          </div>
+          <div class="single-img" id="singleImg-i2v">
+            <img id="singleImgEl-i2v" alt="first frame" />
+            <div class="info" id="singleImgInfo-i2v"></div>
+            <button class="remove" id="singleImgRemove-i2v">×</button>
+          </div>
+        </div>
+
+        <div data-slot="last_frame" style="display:none">
+          <label>尾帧图像 <span style="color: var(--muted)">（JPG/PNG/BMP/WEBP，宽高 240~8000px，宽高比 1:8~8:1，≤20MB）</span></label>
+          <div class="uploader" id="uploader-last-i2v">
+            <strong>点击或拖拽 1 张尾帧图到这里</strong>
+            <div class="hint">视频会从首帧/首段视频自然过渡到这一帧</div>
+            <input type="file" id="fileInput-last-i2v" accept="image/jpeg,image/png,image/bmp,image/webp" style="display:none" />
+          </div>
+          <div class="single-img" id="singleImg-last-i2v">
+            <img id="singleImgEl-last-i2v" alt="last frame" />
+            <div class="info" id="singleImgInfo-last-i2v"></div>
+            <button class="remove" id="singleImgRemove-last-i2v">×</button>
+          </div>
+        </div>
+
+        <div data-slot="first_clip" style="display:none">
+          <label>首段视频 URL <span style="color: var(--muted)">（必填，MP4/MOV，2~10s，≤100MB）</span></label>
+          <input type="text" id="firstClip-i2v" placeholder="https://… 或 oss://…" />
+        </div>
+
+        <div data-slot="driving_audio" style="display:none">
+          <label>驱动音频 URL <span style="color: var(--muted)">（可选，wav/mp3，2~30s，≤15MB；用于口型/动作同步）</span></label>
+          <input type="text" id="drivingAudio-i2v" placeholder="https://… 或 oss://…" />
+        </div>
+
+        <div class="prompt-head">
+          <label>Prompt <span style="color: var(--muted)" id="promptHint-i2v">（可选，描述"接下来发生什么"）</span></label>
+          <div class="prompt-tools">
+            <button class="ghost-sm" id="optimizeBtn-i2v" title="用 qwen-vl-max 看图后润色 prompt" data-model-title="vision">
+              <span class="spark">✨</span><span data-label>自动优化</span>
+            </button>
+            <button class="ghost-sm" id="undoBtn-i2v" style="display:none">↶ 撤销</button>
+          </div>
+        </div>
+        <textarea id="prompt-i2v" placeholder="示例：一只猫在草地上奔跑，镜头跟随其侧面缓缓推近..."></textarea>
+        <div class="optimize-hint" id="optimizeHint-i2v"></div>
+
+        <div class="wan-only" data-i2v-wan style="display:none">
+          <label>反向提示词 <span style="color: var(--muted)">（可选，≤500 字符）</span></label>
+          <textarea id="negative-i2v" rows="2" placeholder="例：低分辨率、模糊、错误比例…" style="min-height:60px"></textarea>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2><span class="dot"></span>生成参数</h2>
+        <div class="row-3">
+          <div>
+            <label class="first">分辨率</label>
+            <select id="resolution-i2v">
+              <option value="720P" selected>720P（默认）</option>
+              <option value="1080P">1080P</option>
+            </select>
+          </div>
+          <div>
+            <label class="first">时长（秒，3-15）</label>
+            <input type="number" id="duration-i2v" value="5" min="3" max="15" />
+          </div>
+          <div>
+            <label class="first">宽高比</label>
+            <input type="text" value="自动跟随首帧" disabled style="opacity:.6" />
+          </div>
+        </div>
+        <div class="row-2">
+          <div>
+            <label>Seed（可选，0-2147483647）</label>
+            <input type="number" id="seed-i2v" placeholder="留空随机" min="0" max="2147483647" />
+          </div>
+          <div>
+            <label>水印</label>
+            <div class="checkbox">
+              <input type="checkbox" id="watermark-i2v" />
+              <label for="watermark-i2v" style="margin:0;color:var(--text)">添加水印</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="wan-only" data-i2v-wan style="display:none;margin-top:6px">
+          <div class="checkbox">
+            <input type="checkbox" id="prompt-extend-i2v" checked />
+            <label for="prompt-extend-i2v" style="margin:0;color:var(--text)">prompt 智能改写（prompt_extend）</label>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="primary" id="submitBtn-i2v">生成视频</button>
+          <button class="ghost" id="resetBtn-i2v">重置</button>
+        </div>
+
+        <div class="status" id="status-i2v">
+          <span style="color: var(--muted)">上传首帧图后点击「生成视频」</span>
+        </div>
+        <div class="video-out" id="videoOut-i2v" style="display:none">
+          <video id="videoEl-i2v" controls preload="metadata"></video>
+          <div class="meta" id="videoMeta-i2v"></div>
+          <div class="actions">
+            <button class="primary" id="downloadBtn-i2v">下载视频</button>
+            <button class="ghost" id="copyBtn-i2v">复制视频链接</button>
+          </div>
+        </div>
+        <div class="log" id="log-i2v"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====== Tab 3: 文生视频 ====== -->
+  <div class="tab-content" data-tab="t2v">
+    <div class="grid">
+      <div class="panel">
+        <h2><span class="dot"></span>提示词</h2>
+        <div class="prompt-head">
+          <label class="first">Prompt <span style="color: var(--muted)">（详细描述要生成的视频内容、镜头、运动）</span></label>
+          <div class="prompt-tools">
+            <button class="ghost-sm" id="optimizeBtn-t2v" title="用 qwen3.7-max 润色 prompt" data-model-title="text">
+              <span class="spark">✨</span><span data-label>自动优化</span>
+            </button>
+            <button class="ghost-sm" id="undoBtn-t2v" style="display:none">↶ 撤销</button>
+          </div>
+        </div>
+        <textarea id="prompt-t2v" class="tall" placeholder="示例：一座由硬纸板和瓶盖搭建的微型城市，在夜晚焕发出生机。一列硬纸板火车缓缓驶过，小灯点缀其间，照亮前路。"></textarea>
+        <div class="optimize-hint" id="optimizeHint-t2v"></div>
+
+        <div style="margin-top: 16px; padding: 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--muted);">
+          <strong style="color: var(--text);">写好 prompt 的小贴士</strong><br>
+          • 主体：人/物/场景的具体细节（颜色、材质、表情）<br>
+          • 动作：明确发生了什么<br>
+          • 镜头：推近 / 拉远 / 环绕 / 俯拍 / 仰拍<br>
+          • 氛围：光影、时间、天气、情绪<br>
+          • 长度限制：≤2500 中文字符 / 5000 非中文字符
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2><span class="dot"></span>生成参数</h2>
+        <div class="row-3">
+          <div>
+            <label class="first">分辨率</label>
+            <select id="resolution-t2v">
+              <option value="720P" selected>720P（默认）</option>
+              <option value="1080P">1080P</option>
+            </select>
+          </div>
+          <div>
+            <label class="first">宽高比</label>
+            <select id="ratio-t2v">
+              <option value="16:9">16:9（默认）</option>
+              <option value="9:16">9:16</option>
+              <option value="1:1">1:1</option>
+              <option value="4:3">4:3</option>
+              <option value="3:4">3:4</option>
+              <option value="4:5">4:5</option>
+              <option value="5:4">5:4</option>
+            </select>
+          </div>
+          <div>
+            <label class="first">时长（秒，3-15）</label>
+            <input type="number" id="duration-t2v" value="5" min="3" max="15" />
+          </div>
+        </div>
+        <div class="row-2">
+          <div>
+            <label>Seed（可选，0-2147483647）</label>
+            <input type="number" id="seed-t2v" placeholder="留空随机" min="0" max="2147483647" />
+          </div>
+          <div>
+            <label>水印</label>
+            <div class="checkbox">
+              <input type="checkbox" id="watermark-t2v" />
+              <label for="watermark-t2v" style="margin:0;color:var(--text)">添加 "OmniGen AI" 水印</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="primary" id="submitBtn-t2v">生成视频</button>
+          <button class="ghost" id="resetBtn-t2v">重置</button>
+        </div>
+
+        <div class="status" id="status-t2v">
+          <span style="color: var(--muted)">填写 prompt 后点击「生成视频」</span>
+        </div>
+        <div class="video-out" id="videoOut-t2v" style="display:none">
+          <video id="videoEl-t2v" controls preload="metadata"></video>
+          <div class="meta" id="videoMeta-t2v"></div>
+          <div class="actions">
+            <button class="primary" id="downloadBtn-t2v">下载视频</button>
+            <button class="ghost" id="copyBtn-t2v">复制视频链接</button>
+          </div>
+        </div>
+        <div class="log" id="log-t2v"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====== Tab 4: 图片生成 ====== -->
+  <div class="tab-content" data-tab="imggen">
+    <div class="grid">
+      <div class="panel">
+        <h2><span class="dot"></span>素材与提示词</h2>
+
+        <label class="first">模式</label>
+        <div class="seg-tabs" id="imggenModeTabs">
+          <button class="seg-tab active" data-mode="t2i">文生图</button>
+          <button class="seg-tab" data-mode="edit">图片编辑</button>
+        </div>
+
+        <label>模型</label>
+        <select id="model-imggen">
+          <!-- Options populated dynamically by imggen.js -->
+        </select>
+
+        <div data-slot="edit_images" style="display:none">
+          <label id="imageLabel-imggen">输入图像 <span style="color: var(--muted)">（1~3 张，JPG/PNG/WEBP，≤20MB）</span></label>
+          <div class="uploader" id="uploader-imggen">
+            <strong>点击或拖拽图片到这里上传</strong>
+            <div class="hint">用「图1」「图2」「图3」在 prompt 中指代上方图片</div>
+            <input type="file" id="fileInput-imggen" accept="image/jpeg,image/png,image/webp,image/bmp" multiple style="display:none" />
+          </div>
+          <div class="images" id="images-imggen"></div>
+        </div>
+
+        <label>Prompt <span style="color: var(--muted)" id="promptHint-imggen">（描述你想生成的图片）</span></label>
+        <textarea id="prompt-imggen" placeholder="示例：一只坐着的橘黄色的猫，表情愉悦，活泼可爱，逼真准确"></textarea>
+
+        <label>反向提示词 <span style="color: var(--muted)">（可选，描述不希望出现的内容）</span></label>
+        <textarea id="negative-imggen" rows="2" placeholder="例：低分辨率、模糊、多余的手指、错误比例…" style="min-height:60px"></textarea>
+      </div>
+
+      <div class="panel">
+        <h2><span class="dot"></span>生成参数</h2>
+        <div class="row-2">
+          <div>
+            <label class="first">尺寸</label>
+            <select id="size-imggen">
+              <!-- Options populated dynamically by imggen.js -->
+            </select>
+          </div>
+          <div>
+            <label class="first">生成数量</label>
+            <select id="count-imggen">
+              <option value="1" selected>1</option>
+            </select>
+          </div>
+        </div>
+        <div class="row-2">
+          <div>
+            <label>Seed（可选，0-2147483647）</label>
+            <input type="number" id="seed-imggen" placeholder="留空随机" min="0" max="2147483647" />
+          </div>
+          <div>
+            <label>水印</label>
+            <div class="checkbox">
+              <input type="checkbox" id="watermark-imggen" />
+              <label for="watermark-imggen" style="margin:0;color:var(--text)">添加水印</label>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:8px">
+          <div class="checkbox">
+            <input type="checkbox" id="prompt-extend-imggen" checked />
+            <label for="prompt-extend-imggen" style="margin:0;color:var(--text)">prompt 智能改写（短 prompt 建议开启）</label>
+          </div>
+        </div>
+
+        <div class="wan-only" data-imggen-wan style="display:none;margin-top:8px">
+          <div class="checkbox">
+            <input type="checkbox" id="thinking-imggen" checked />
+            <label for="thinking-imggen" style="margin:0;color:var(--text)">思考模式（thinking_mode，文生图时生效）</label>
+          </div>
+          <div class="checkbox" style="margin-top:6px">
+            <input type="checkbox" id="sequential-imggen" />
+            <label for="sequential-imggen" style="margin:0;color:var(--text)">组图模式（enable_sequential，一次生成多张关联图）</label>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="primary" id="submitBtn-imggen">生成图片</button>
+          <button class="ghost" id="resetBtn-imggen">重置</button>
+        </div>
+
+        <div class="status" id="status-imggen">
+          <span style="color: var(--muted)">填写参数后点击「生成图片」</span>
+        </div>
+        <div class="image-out" id="imageOut-imggen" style="display:none">
+          <div class="meta" id="imageMeta-imggen"></div>
+          <div class="image-grid" id="imageGrid-imggen"></div>
+        </div>
+        <div class="log" id="log-imggen"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====== Tab 5: 历史记录 ====== -->
+  <div class="tab-content" data-tab="history">
+    <div class="history-toolbar">
+      <div class="meta" id="historyMeta">尚无记录</div>
+      <div style="display:flex;gap:8px">
+        <button class="ghost-sm" id="exportHistoryBtn">导出 JSON</button>
+        <button class="ghost-sm" id="clearHistoryBtn">清空全部</button>
+      </div>
+    </div>
+    <div id="historyList"></div>
+  </div>
+
+  <!-- ====== Tab 5: 设置 ====== -->
+  <div class="tab-content" data-tab="settings">
+    <div class="panel" style="max-width:520px">
+      <h2><span class="dot"></span>设置</h2>
+      <div class="settings-form">
+        <label class="first">API Key（DashScope）</label>
+        <input type="password" id="apiKey" placeholder="sk-xxxxxxxxxxxxxxxx" autocomplete="off" />
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">仅保存在你浏览器的 localStorage 里，不会上传到任何第三方。</div>
+
+        <label>地域</label>
+        <select id="region">
+          <option value="cn-beijing">华北2（北京）</option>
+          <option value="ap-southeast-1">新加坡</option>
+          <option value="us-east-1">美国（弗吉尼亚）</option>
+          <option value="eu-central-1">德国（法兰克福）</option>
+        </select>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">注意：API Key、模型、Endpoint 必须同地域，跨地域调用会失败。</div>
+
+        <div id="workspaceWrap" style="display:none">
+          <label>WorkspaceId（仅法兰克福）</label>
+          <input type="text" id="workspaceId" placeholder="ws_xxxxxx" />
+        </div>
+
+        <div style="margin-top:18px;display:flex;justify-content:flex-end;gap:8px">
+          <button class="primary" id="settingsSave" style="padding:6px 16px;font-size:13px">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer-tip">
+    API Key 与图片仅在你的浏览器与本机服务之间传输。视频链接 24 小时内有效，请及时下载。
+  </div>
+
+  </div><!-- /container -->
+  </main>
+
+  <!-- 详情弹层 -->
+  <div class="modal-mask" id="detailModal">
+    <div class="modal">
+      <button class="modal-close" id="detailClose">×</button>
+      <h3 id="detailTitle">任务详情</h3>
+      <div id="detailBody"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Scripts (order matters: dependencies first) -->
+<script src="js/app.js"></script>
+<script src="js/task.js"></script>
+<script src="js/history.js"></script>
+<script src="js/r2v.js"></script>
+<script src="js/i2v.js"></script>
+<script src="js/imggen.js"></script>
+</body>
+</html>
