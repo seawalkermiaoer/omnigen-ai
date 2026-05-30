@@ -12,14 +12,14 @@ const imggen = {
 // ─── Model definitions ─────────────────────────────────────────
 const IMGGEN_MODELS = {
   t2i: [
-    { value: 'Qwen-Image-Plus', label: 'Qwen-Image-Plus（高质量，OpenAI 协议）' },
-    { value: 'Qwen-Image', label: 'Qwen-Image（快速，OpenAI 协议）' },
+    { value: 'qwen-image-plus', label: 'Qwen-Image-Plus（高质量，DashScope 协议）' },
+    { value: 'qwen-image', label: 'Qwen-Image（快速，DashScope 协议）' },
     { value: 'wan2.7-image-pro', label: 'Wan 2.7 Image Pro（高质量，DashScope 协议）' },
     { value: 'wan2.7-image', label: 'Wan 2.7 Image（基础版，DashScope 协议）' },
   ],
   edit: [
-    { value: 'Qwen-Image-Edit-Plus', label: 'Qwen-Image-Edit-Plus（多图融合，OpenAI 协议）' },
-    { value: 'Qwen-Image-Edit', label: 'Qwen-Image-Edit（OpenAI 协议）' },
+    { value: 'qwen-image-edit-plus', label: 'Qwen-Image-Edit-Plus（多图融合，DashScope 协议）' },
+    { value: 'qwen-image-edit', label: 'Qwen-Image-Edit（DashScope 协议）' },
     { value: 'wan2.7-image-pro', label: 'Wan 2.7 Image Pro（DashScope 协议）' },
     { value: 'wan2.7-image', label: 'Wan 2.7 Image（DashScope 协议）' },
   ],
@@ -117,13 +117,13 @@ function updateCountOptions() {
   const countSelect = $('count-imggen');
   let options = [];
 
-  if (model === 'Qwen-Image-Plus' || model === 'Qwen-Image') {
+  if (model === 'qwen-image-plus' || model === 'qwen-image') {
     // Qwen T2I: n fixed at 1
     options = [1];
-  } else if (model === 'Qwen-Image-Edit-Plus') {
+  } else if (model === 'qwen-image-edit-plus') {
     // Qwen Edit: 1-6
     options = [1, 2, 3, 4, 5, 6];
-  } else if (model === 'Qwen-Image-Edit') {
+  } else if (model === 'qwen-image-edit') {
     // Qwen Edit: n fixed at 1
     options = [1];
   } else if (isWanModel(model)) {

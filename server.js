@@ -29,10 +29,8 @@ const MODELS = {
   VISION_OPTIMIZE: 'qwen-vl-max-latest',
   /** Display label shown in UI (short form, no "-latest" suffix) */
   VISION_OPTIMIZE_LABEL: 'qwen-vl-max',
-  /** Image generation models using OpenAI-compatible protocol */
-  IMAGE_OPENAI: ['Qwen-Image-Plus', 'Qwen-Image', 'Qwen-Image-Edit-Plus', 'Qwen-Image-Edit'],
-  /** Image generation models using DashScope native protocol */
-  IMAGE_DASHSCOPE: ['wan2.7-image-pro', 'wan2.7-image'],
+  /** Image generation models — all use DashScope native protocol (model names are lowercase) */
+  IMAGE: ['qwen-image-plus', 'qwen-image', 'qwen-image-edit-plus', 'qwen-image-edit', 'wan2.7-image-pro', 'wan2.7-image'],
 };
 
 function getEndpoint(region, workspaceId) {
@@ -43,7 +41,7 @@ function getEndpoint(region, workspaceId) {
   return REGION_ENDPOINTS[region] || REGION_ENDPOINTS['cn-beijing'];
 }
 
-function forwardJSON(targetUrl, method, headers, bodyObj) {
+function forwardJSON(targetUrl, method, headers, bodyObj, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
     const url = new URL(targetUrl);
     const body = bodyObj ? JSON.stringify(bodyObj) : null;
@@ -59,6 +57,7 @@ function forwardJSON(targetUrl, method, headers, bodyObj) {
         path: url.pathname + url.search,
         method,
         headers: reqHeaders,
+        timeout: timeoutMs,
       },
       (res) => {
         const chunks = [];
@@ -71,6 +70,10 @@ function forwardJSON(targetUrl, method, headers, bodyObj) {
         });
       }
     );
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error(`上游请求超时（${timeoutMs / 1000}s）: ${url.hostname}${url.pathname}`));
+    });
     req.on('error', reject);
     if (body) req.write(body);
     req.end();
@@ -103,88 +106,66 @@ app.post('/api/generate-image', async (req, res) => {
     if (!model) return res.status(400).json({ error: '缺少 model' });
 
     const endpoint = getEndpoint(region, workspaceId);
-    const isQwen = MODELS.IMAGE_OPENAI.includes(model);
-    const isDashScope = MODELS.IMAGE_DASHSCOPE.includes(model);
-    if (!isQwen && !isDashScope) {
+    if (!MODELS.IMAGE.includes(model)) {
       return res.status(400).json({ error: '不支持的图片模型: ' + model });
     }
 
-    let url, payload;
+    // All image models use DashScope native protocol
+    const url = `${endpoint}/api/v1/services/aigc/multimodal-generation/generation`;
     const p = params || {};
-
-    if (isQwen) {
-      // OpenAI-compatible protocol
-      url = `${endpoint}/compatible-mode/v1/images/generations`;
-      payload = { model, prompt };
-      if (p.size) payload.size = p.size;
-      if (p.n != null) payload.n = p.n;
-      if (p.negative_prompt) payload.negative_prompt = p.negative_prompt;
-      if (p.watermark != null) payload.watermark = p.watermark;
-      if (p.prompt_extend != null) payload.prompt_extend = p.prompt_extend;
-      if (p.seed != null) payload.seed = p.seed;
-      // Attach input images for edit models
-      if (Array.isArray(images) && images.length > 0) {
-        payload.image = images[0];
-        if (images[1]) payload.image2 = images[1];
-        if (images[2]) payload.image3 = images[2];
-      }
-    } else {
-      // DashScope native protocol (wan2.7 series)
-      url = `${endpoint}/api/v1/services/aigc/multimodal-generation/generation`;
-      const content = [];
-      if (Array.isArray(images)) {
-        images.forEach(img => content.push({ image: img }));
-      }
-      if (prompt) content.push({ text: prompt });
-      payload = {
-        model,
-        input: {
-          messages: [{ role: 'user', content }],
-        },
-        parameters: {},
-      };
-      if (p.size) payload.parameters.size = p.size;
-      if (p.n != null) payload.parameters.n = p.n;
-      if (p.watermark != null) payload.parameters.watermark = p.watermark;
-      if (p.thinking_mode != null) payload.parameters.thinking_mode = p.thinking_mode;
-      if (p.seed != null) payload.parameters.seed = p.seed;
-      if (p.enable_sequential != null) payload.parameters.enable_sequential = p.enable_sequential;
+    const content = [];
+    if (Array.isArray(images)) {
+      images.forEach(img => content.push({ image: img }));
     }
+    if (prompt) content.push({ text: prompt });
+    const payload = {
+      model,
+      input: {
+        messages: [{ role: 'user', content }],
+      },
+      parameters: {},
+    };
+    if (p.size) payload.parameters.size = p.size;
+    if (p.n != null) payload.parameters.n = p.n;
+    if (p.watermark != null) payload.parameters.watermark = p.watermark;
+    if (p.thinking_mode != null) payload.parameters.thinking_mode = p.thinking_mode;
+    if (p.seed != null) payload.parameters.seed = p.seed;
+    if (p.enable_sequential != null) payload.parameters.enable_sequential = p.enable_sequential;
+    if (p.negative_prompt) payload.parameters.negative_prompt = p.negative_prompt;
+    if (p.prompt_extend != null) payload.parameters.prompt_extend = p.prompt_extend;
 
+    console.log(`[generate-image] → ${url}  model=${model}  region=${region}`);
     const r = await forwardJSON(url, 'POST', {
       Authorization: `Bearer ${apiKey}`,
-    }, payload);
+    }, payload, 180000);
+    console.log(`[generate-image] ← status=${r.status}  response=`, JSON.stringify(r.data).slice(0, 500));
 
-    // Error handling: both OpenAI and DashScope native formats
+    // Upstream HTTP error (non-2xx)
+    if (r.status >= 400) {
+      const msg = r.data?.error?.message || r.data?.message || r.data?.code || `上游返回 HTTP ${r.status}`;
+      return res.status(r.status).json({ error: msg, raw: r.data });
+    }
+
+    // Error handling: DashScope native format
     if (r.data && (r.data.code || r.data.error)) {
       const msg = r.data.message || r.data.error?.message || r.data.code || '调用失败';
-      return res.status(r.status || 400).json({ error: msg });
+      return res.status(r.status || 400).json({ error: msg, raw: r.data });
     }
 
-    // Normalize response to unified format: { images: [...], usage: {...}, model }
+    // Parse DashScope native response: { output: { choices: [{ message: { content: [{ image, type }] } }] }, usage: {...} }
     let imageUrls = [];
     let usage = {};
-
-    if (isQwen) {
-      // OpenAI response: { data: [{ url, b64_json }], usage: {...} }
-      if (Array.isArray(r.data?.data)) {
-        imageUrls = r.data.data.map(d => d.url || d.b64_json).filter(Boolean);
+    const choices = r.data?.output?.choices;
+    if (Array.isArray(choices) && choices.length > 0) {
+      const msgContent = choices[0]?.message?.content;
+      if (Array.isArray(msgContent)) {
+        imageUrls = msgContent
+          .filter(c => c.image || c.type === 'image')
+          .map(c => c.image)
+          .filter(Boolean);
       }
-      usage = r.data?.usage || {};
-    } else {
-      // DashScope native response: { output: { choices: [{ message: { content: [{ image, type }] } }] }, usage: {...} }
-      const choices = r.data?.output?.choices;
-      if (Array.isArray(choices) && choices.length > 0) {
-        const msgContent = choices[0]?.message?.content;
-        if (Array.isArray(msgContent)) {
-          imageUrls = msgContent
-            .filter(c => c.image || c.type === 'image')
-            .map(c => c.image)
-            .filter(Boolean);
-        }
-      }
-      usage = r.data?.usage || {};
     }
+    usage = r.data?.usage || {};
 
     if (imageUrls.length === 0) {
       return res.status(502).json({ error: '模型未返回图片结果', raw: r.data });
@@ -402,6 +383,10 @@ app.get('/api/download', (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`OmniGen AI Web running at http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`OmniGen AI Web running at http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;

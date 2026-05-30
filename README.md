@@ -17,10 +17,10 @@
 
 | 模型 | 用途 | 接口协议 |
 |------|------|----------|
-| `Qwen-Image-Plus` | 高质量文生图 | OpenAI 兼容 ✅ |
-| `Qwen-Image` | 快速文生图 | OpenAI 兼容 ✅ |
-| `Qwen-Image-Edit-Plus` | 图片编辑 / 多图融合 | OpenAI 兼容 ✅ |
-| `Qwen-Image-Edit` | 图片编辑 | OpenAI 兼容 ✅ |
+| `qwen-image-plus` | 高质量文生图 | DashScope 原生 |
+| `qwen-image` | 快速文生图 | DashScope 原生 |
+| `qwen-image-edit-plus` | 图片编辑 / 多图融合 | DashScope 原生 |
+| `qwen-image-edit` | 图片编辑 | DashScope 原生 |
 | `wan2.7-image-pro` | 万相 2.7 图像生成（文生图/编辑/组图） | DashScope 原生 |
 | `wan2.7-image` | 万相 2.7 图像生成（基础版） | DashScope 原生 |
 | `happyhorse-1.0-r2v` | 多图参考生视频 | DashScope 原生 |
@@ -102,10 +102,9 @@ omnigen-ai/
 
 ### 图片生成
 
-- **Qwen 系列** (`Qwen-Image-Plus`, `Qwen-Image`, `Qwen-Image-Edit-Plus`, `Qwen-Image-Edit`)：使用 OpenAI 兼容协议 (`/compatible-mode/v1/images/generations`)
-- **wan2.7 系列** (`wan2.7-image-pro`, `wan2.7-image`)：使用 DashScope 原生协议（不支持 OpenAI 协议）
+- **所有图片模型**（Qwen 系列 + wan2.7 系列）统一使用 DashScope 原生协议（Qwen-Image 系列不支持 OpenAI 协议）
   - 请求地址：`/api/v1/services/aigc/multimodal-generation/generation`
-  - 请求格式：`{ model, input: { messages: [{ role: "user", content: [{ text }, { image }] }] }, parameters: { size, n, watermark, thinking_mode, seed, enable_sequential } }`
+  - 请求格式：`{ model, input: { messages: [{ role: "user", content: [{ text }, { image }] }] }, parameters: { size, n, watermark, thinking_mode, seed, enable_sequential, negative_prompt, prompt_extend } }`
   - 响应格式：`{ output: { choices: [{ message: { content: [{ image: "url", type: "image" }] } }] }, usage: { image_count, size } }`
 
 ### 视频生成 & Prompt 优化

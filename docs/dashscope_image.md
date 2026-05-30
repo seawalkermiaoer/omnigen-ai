@@ -763,10 +763,10 @@ SDK 支持三种图像输入方式：
 
 | 模型 | OpenAI 协议 | DashScope 专有协议 | 推荐格式 |
 |------|:------------:|:------------------:|----------|
-| Qwen-Image-Plus | ✅ | ✅ | OpenAI |
-| Qwen-Image | ✅ | ✅ | OpenAI |
-| Qwen-Image-Edit-Plus | ✅ | ✅ | OpenAI |
-| Qwen-Image-Edit | ✅ | ✅ | OpenAI |
+| Qwen-Image-Plus | ❌ | ✅ | DashScope 专有 |
+| Qwen-Image | ❌ | ✅ | DashScope 专有 |
+| Qwen-Image-Edit-Plus | ❌ | ✅ | DashScope 专有 |
+| Qwen-Image-Edit | ❌ | ✅ | DashScope 专有 |
 | Wan2.5-T2I-Preview | ✅ | ✅ | OpenAI |
 | Wan2.5-I2I-Preview | ✅ | ✅ | OpenAI |
 | wan2.7-image-pro | ❌ | ✅ | DashScope 专有 |

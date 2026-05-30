@@ -12,8 +12,7 @@ let MODEL_NAMES = { TEXT_OPTIMIZE: 'qwen3.7-max', VISION_OPTIMIZE_LABEL: 'qwen-v
     MODEL_NAMES = {
       TEXT_OPTIMIZE: cfg.models.TEXT_OPTIMIZE,
       VISION_OPTIMIZE_LABEL: cfg.models.VISION_OPTIMIZE_LABEL,
-      IMAGE_OPENAI: cfg.models.IMAGE_OPENAI,
-      IMAGE_DASHSCOPE: cfg.models.IMAGE_DASHSCOPE,
+      IMAGE: cfg.models.IMAGE,
     };
     document.querySelectorAll('[data-model-title="vision"]').forEach(el => {
       el.title = `用 ${MODEL_NAMES.VISION_OPTIMIZE_LABEL} 看图后润色 prompt`;

@@ -1,0 +1,238 @@
+/**
+ * OmniGen AI API Integration Tests
+ *
+ * Usage:
+ *   npm test                        # runs with .env loaded (local dev)
+ *   TOKEN=sk-xxx npm test           # runs with env var (CI / production)
+ *
+ * Environment:
+ *   - Local: reads token from .env file via dotenv
+ *   - Production / CI: expects TOKEN env var already set (no .env loaded)
+ */
+
+// Load .env only when file exists (local dev); skip silently in production
+const dotenvPath = require('path').resolve(__dirname, '..', '.env');
+try {
+  require('dotenv').config({ path: dotenvPath });
+} catch { /* ignore if dotenv not installed in prod */ }
+
+const { describe, it, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const http = require('node:http');
+
+const app = require('../server');
+
+const API_KEY = process.env.token || process.env.TOKEN;
+const REGION = process.env.REGION || 'cn-beijing';
+const BASE_URL = () => `http://localhost:${server.address().port}`;
+
+let server;
+
+/** Helper: make an HTTP request and return parsed JSON + status */
+function request(method, path, body) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(path, BASE_URL());
+    const payload = body ? JSON.stringify(body) : null;
+    const req = http.request(
+      {
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname + url.search,
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let data;
+          try { data = JSON.parse(text); } catch { data = text; }
+          resolve({ status: res.statusCode, data });
+        });
+      },
+    );
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+// ─── Setup / Teardown ───────────────────────────────────────────────
+before(async () => {
+  server = app.listen(0); // random available port
+  await new Promise((r) => server.on('listening', r));
+  console.log(`  Test server on port ${server.address().port}`);
+});
+
+after(() => {
+  if (server) server.close();
+});
+
+// ─── GET /api/config ────────────────────────────────────────────────
+describe('GET /api/config', () => {
+  it('should return model configuration', async () => {
+    const { status, data } = await request('GET', '/api/config');
+    assert.equal(status, 200);
+    assert.ok(data.models, 'should have models key');
+    assert.ok(Array.isArray(data.models.IMAGE), 'IMAGE should be an array');
+    assert.ok(data.models.TEXT_OPTIMIZE, 'should have TEXT_OPTIMIZE');
+    assert.ok(data.models.VISION_OPTIMIZE, 'should have VISION_OPTIMIZE');
+  });
+
+  it('IMAGE array should contain known models', async () => {
+    const { data } = await request('GET', '/api/config');
+    const img = data.models.IMAGE;
+    assert.ok(img.includes('qwen-image'), 'should include qwen-image');
+    assert.ok(img.includes('wan2.7-image'), 'should include wan2.7-image');
+  });
+});
+
+// ─── POST /api/generate-image ───────────────────────────────────────
+describe('POST /api/generate-image — input validation', () => {
+  it('400 when apiKey is missing', async () => {
+    const { status, data } = await request('POST', '/api/generate-image', { model: 'qwen-image', prompt: 'cat' });
+    assert.equal(status, 400);
+    assert.match(data.error, /API Key/i);
+  });
+
+  it('400 when model is missing', async () => {
+    const { status, data } = await request('POST', '/api/generate-image', { apiKey: 'test', prompt: 'cat' });
+    assert.equal(status, 400);
+    assert.match(data.error, /model/i);
+  });
+
+  it('400 for unsupported model', async () => {
+    const { status, data } = await request('POST', '/api/generate-image', { apiKey: 'test', model: 'invalid-xyz', prompt: 'cat' });
+    assert.equal(status, 400);
+    assert.match(data.error, /不支持/);
+  });
+});
+
+describe('POST /api/generate-image — real generation', { skip: !API_KEY && 'TOKEN not set' }, () => {
+  it('qwen-image text-to-image should return image URLs', { timeout: 200_000 }, async () => {
+    const { status, data } = await request('POST', '/api/generate-image', {
+      apiKey: API_KEY,
+      region: REGION,
+      model: 'qwen-image',
+      prompt: 'a cute orange cat sitting on a chair',
+      params: { size: '1024*1024', n: 1, watermark: false, prompt_extend: true },
+    });
+    assert.equal(status, 200, `expected 200 but got ${status}: ${JSON.stringify(data)}`);
+    assert.ok(Array.isArray(data.images), 'should have images array');
+    assert.ok(data.images.length >= 1, 'should return at least 1 image');
+    assert.ok(data.images[0].startsWith('http'), 'image URL should start with http');
+    assert.equal(data.model, 'qwen-image');
+    assert.ok(data.usage, 'should have usage info');
+  });
+
+  it('wan2.7-image text-to-image should return image URLs', { timeout: 200_000 }, async () => {
+    const { status, data } = await request('POST', '/api/generate-image', {
+      apiKey: API_KEY,
+      region: REGION,
+      model: 'wan2.7-image',
+      prompt: 'a beautiful sunset over the ocean, photorealistic',
+      params: { size: '1K', n: 1, watermark: false },
+    });
+    assert.equal(status, 200, `expected 200 but got ${status}: ${JSON.stringify(data)}`);
+    assert.ok(data.images.length >= 1);
+    assert.equal(data.model, 'wan2.7-image');
+  });
+
+  it('qwen-image with negative_prompt should succeed', { timeout: 200_000 }, async () => {
+    const { status, data } = await request('POST', '/api/generate-image', {
+      apiKey: API_KEY,
+      region: REGION,
+      model: 'qwen-image',
+      prompt: 'a red rose in a glass vase',
+      params: { size: '1024*1024', n: 1, negative_prompt: 'blurry, low quality', prompt_extend: false },
+    });
+    assert.equal(status, 200, `expected 200 but got ${status}: ${JSON.stringify(data)}`);
+    assert.ok(data.images.length >= 1);
+  });
+
+  it('invalid apiKey should return auth error from upstream', { timeout: 30_000 }, async () => {
+    const { status, data } = await request('POST', '/api/generate-image', {
+      apiKey: 'sk-invalid-key-12345',
+      region: REGION,
+      model: 'qwen-image',
+      prompt: 'cat',
+      params: { size: '1024*1024', n: 1 },
+    });
+    assert.ok(status >= 400, `expected error status, got ${status}`);
+    assert.ok(data.error, 'should have error message');
+  });
+});
+
+// ─── POST /api/optimize-prompt ──────────────────────────────────────
+describe('POST /api/optimize-prompt — input validation', () => {
+  it('400 when apiKey is missing', async () => {
+    const { status, data } = await request('POST', '/api/optimize-prompt', { draft: 'cat' });
+    assert.equal(status, 400);
+    assert.match(data.error, /API Key/i);
+  });
+});
+
+describe('POST /api/optimize-prompt — real call', { skip: !API_KEY && 'TOKEN not set' }, () => {
+  it('text prompt optimization (t2v mode) should return optimized prompt', { timeout: 60_000 }, async () => {
+    const { status, data } = await request('POST', '/api/optimize-prompt', {
+      apiKey: API_KEY,
+      region: REGION,
+      draft: '一只猫在草地上跑',
+      mode: 't2v',
+    });
+    assert.equal(status, 200, `expected 200 but got ${status}: ${JSON.stringify(data)}`);
+    assert.ok(data.prompt, 'should return prompt text');
+    assert.ok(data.prompt.length > 10, 'optimized prompt should be longer than original');
+    assert.ok(data.model, 'should return model name');
+  });
+});
+
+// ─── POST /api/create-task ──────────────────────────────────────────
+describe('POST /api/create-task — input validation', () => {
+  it('400 when apiKey is missing', async () => {
+    const { status, data } = await request('POST', '/api/create-task', { payload: {} });
+    assert.equal(status, 400);
+    assert.match(data.error, /API Key/i);
+  });
+
+  it('400 when payload is missing', async () => {
+    const { status, data } = await request('POST', '/api/create-task', { apiKey: 'test' });
+    assert.equal(status, 400);
+    assert.match(data.error, /payload/i);
+  });
+});
+
+// ─── GET /api/task/:taskId ──────────────────────────────────────────
+describe('GET /api/task/:taskId — input validation', () => {
+  it('400 when apiKey query is missing', async () => {
+    const { status, data } = await request('GET', '/api/task/fake-id-123');
+    assert.equal(status, 400);
+    assert.match(data.error, /API Key/i);
+  });
+});
+
+// ─── GET /api/download ──────────────────────────────────────────────
+describe('GET /api/download', () => {
+  it('400 when url is missing', async () => {
+    const { status } = await request('GET', '/api/download');
+    assert.equal(status, 400);
+  });
+
+  it('400 for invalid url', async () => {
+    const { status } = await request('GET', '/api/download?url=not-a-url');
+    assert.equal(status, 400);
+  });
+});
+
+// ─── Static files ───────────────────────────────────────────────────
+describe('Static files', () => {
+  it('GET / should return HTML', async () => {
+    const { status, data } = await request('GET', '/');
+    assert.equal(status, 200);
+    assert.match(String(data), /<!doctype|<html/i);
+  });
+});

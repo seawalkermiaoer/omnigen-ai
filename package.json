@@ -4,9 +4,13 @@
   "description": "OmniGen AI 图片生成，视频生成 Web UI",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test tests/api.test.js"
   },
   "dependencies": {
     "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "dotenv": "^17.4.2"
   }
 }
