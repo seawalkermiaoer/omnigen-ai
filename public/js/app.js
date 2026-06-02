@@ -28,6 +28,9 @@ const apiKeyEl = $('apiKey');
 const regionEl = $('region');
 const workspaceWrap = $('workspaceWrap');
 const workspaceIdEl = $('workspaceId');
+const endpointEl = $('endpoint');
+const customEndpointWrap = $('customEndpointWrap');
+const customEndpointEl = $('customEndpoint');
 const configChip = $('configChip');
 const configChipText = $('configChipText');
 const setupHint = $('setupHint');
@@ -35,6 +38,9 @@ const setupHint = $('setupHint');
 apiKeyEl.value = localStorage.getItem('hh_api_key') || '';
 regionEl.value = localStorage.getItem('hh_region') || 'cn-beijing';
 workspaceIdEl.value = localStorage.getItem('hh_ws_id') || '';
+endpointEl.value = localStorage.getItem('hh_endpoint') || '';
+customEndpointEl.value = localStorage.getItem('hh_custom_endpoint') || '';
+toggleCustomEndpoint();
 
 const REGION_LABELS = {
   'cn-beijing': '北京',
@@ -49,12 +55,26 @@ function toggleWorkspace() {
 }
 toggleWorkspace();
 
+endpointEl.addEventListener('change', toggleCustomEndpoint);
+function toggleCustomEndpoint() {
+  customEndpointWrap.style.display = endpointEl.value === 'custom' ? '' : 'none';
+}
+
 function refreshConfigChip() {
   const hasKey = !!apiKeyEl.value.trim();
   const region = REGION_LABELS[regionEl.value] || regionEl.value;
+  let epLabel = '';
+  if (endpointEl.value === 'custom') {
+    const ce = customEndpointEl.value.trim();
+    if (ce) {
+      try { epLabel = ' · ' + new URL(ce).hostname; } catch { epLabel = ' · 自定义'; }
+    }
+  } else if (endpointEl.value) {
+    try { epLabel = ' · ' + new URL(endpointEl.value).hostname; } catch { /* */ }
+  }
   if (hasKey) {
     configChip.classList.add('ok');
-    configChipText.textContent = `已就绪 · ${region}`;
+    configChipText.textContent = `已就绪 · ${region}${epLabel}`;
     setupHint.style.display = 'none';
   } else {
     configChip.classList.remove('ok');
@@ -72,15 +92,27 @@ $('settingsSave').addEventListener('click', () => {
   localStorage.setItem('hh_api_key', apiKeyEl.value.trim());
   localStorage.setItem('hh_region', regionEl.value);
   localStorage.setItem('hh_ws_id', workspaceIdEl.value.trim());
+  localStorage.setItem('hh_endpoint', endpointEl.value);
+  localStorage.setItem('hh_custom_endpoint', customEndpointEl.value.trim());
   refreshConfigChip();
   switchToTab('r2v');
 });
+
+/**
+ * Resolves the effective base URL for API requests.
+ * Returns empty string if using official endpoints (server will compute from region).
+ */
+function getEndpointUrl() {
+  if (endpointEl.value === 'custom') return customEndpointEl.value.trim();
+  return endpointEl.value; // '' means official
+}
 
 function getAuth() {
   return {
     apiKey: apiKeyEl.value.trim(),
     region: regionEl.value,
     workspaceId: workspaceIdEl.value.trim(),
+    endpoint: getEndpointUrl(),
   };
 }
 function checkAuth(needsWs = true) {

@@ -1,13 +1,102 @@
+try { require('dotenv').config(); } catch { /* dotenv optional */ }
 const express = require('express');
 const path = require('path');
 const https = require('https');
 const { URL } = require('url');
+const crypto = require('crypto');
+const sharp = require('sharp');
+const OSS = require('ali-oss');
+const StsClient = require('@alicloud/sts20150401');
+const multer = require('multer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json({ limit: '200mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ─── File upload middleware ────────────────────────────────────
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 },  // 50MB raw file limit
+  fileFilter: (_req, file, cb) => {
+    const allowed = /^image\/(jpeg|png|webp|bmp)$/;
+    if (allowed.test(file.mimetype)) cb(null, true);
+    else cb(null, false);
+  },
+});
+
+// ─── OSS configuration ─────────────────────────────────────────
+const OSS_CONFIG = {
+  accessKeyId: process.env.OSS_ACCESS_KEY_ID || process.env.AccessKeyID,
+  accessKeySecret: process.env.OSS_ACCESS_KEY_SECRET || process.env.AccessKeySecret,
+  bucket: process.env.OSS_BUCKET || 'trans-ai-cn',
+  region: process.env.OSS_REGION || 'oss-cn-chengdu',
+  roleArn: process.env.OSS_ROLE_ARN,
+  tokenExpireSeconds: parseInt(process.env.OSS_TOKEN_EXPIRE_SECONDS, 10) || 3600,
+};
+
+const OSS_ENABLED = !!(OSS_CONFIG.accessKeyId && OSS_CONFIG.accessKeySecret
+  && OSS_CONFIG.bucket);
+const OSS_USE_STS = !!(OSS_CONFIG.roleArn);
+
+if (OSS_ENABLED) {
+  console.log(`[oss] enabled: bucket=${OSS_CONFIG.bucket} region=${OSS_CONFIG.region} mode=${OSS_USE_STS ? 'STS' : 'direct AK/SK'}`);
+} else {
+  console.log('[oss] disabled (missing env vars) — files > 12MB will be rejected');
+}
+
+// ─── STS token caching (only used when OSS_ROLE_ARN is configured) ─
+let stsCache = { credentials: null, expiresAt: 0 };
+
+async function getSTSCredentials() {
+  const now = Date.now();
+  if (stsCache.credentials && now < stsCache.expiresAt - 60_000) {
+    return stsCache.credentials;
+  }
+
+  const sts = new StsClient({
+    endpoint: 'sts.aliyuncs.com',
+    accessKeyId: OSS_CONFIG.accessKeyId,
+    accessKeySecret: OSS_CONFIG.accessKeySecret,
+  });
+
+  const result = await sts.assumeRole(
+    OSS_CONFIG.roleArn,
+    `omnigen-upload-${Date.now()}`,
+    null,
+    OSS_CONFIG.tokenExpireSeconds,
+  );
+
+  stsCache.credentials = result.Credentials;
+  stsCache.expiresAt = Date.now() + (OSS_CONFIG.tokenExpireSeconds * 1000);
+  console.log(`[oss] STS token refreshed, expires in ${OSS_CONFIG.tokenExpireSeconds}s`);
+  return stsCache.credentials;
+}
+
+async function getOSSClient() {
+  if (OSS_USE_STS) {
+    const creds = await getSTSCredentials();
+    return new OSS({
+      region: OSS_CONFIG.region,
+      accessKeyId: creds.AccessKeyId,
+      accessKeySecret: creds.AccessKeySecret,
+      stsToken: creds.SecurityToken,
+      bucket: OSS_CONFIG.bucket,
+      secure: true,
+      timeout: 30000,
+    });
+  }
+  // Direct AK/SK mode (local dev, no STS)
+  return new OSS({
+    region: OSS_CONFIG.region,
+    accessKeyId: OSS_CONFIG.accessKeyId,
+    accessKeySecret: OSS_CONFIG.accessKeySecret,
+    bucket: OSS_CONFIG.bucket,
+    secure: true,
+    timeout: 30000,
+  });
+}
 
 // Expose model configuration to the frontend
 app.get('/api/config', (_req, res) => {
@@ -80,14 +169,96 @@ function forwardJSON(targetUrl, method, headers, bodyObj, timeoutMs = 120000) {
   });
 }
 
+/**
+ * Resolves the base URL for a request.
+ * If the client passes a custom `endpoint`, use it directly (stripping any trailing slash).
+ * Otherwise fall back to the region-based official endpoint.
+ */
+function resolveEndpoint(endpoint, region, workspaceId) {
+  if (endpoint && typeof endpoint === 'string' && endpoint.startsWith('http')) {
+    return endpoint.replace(/\/+$/, '');
+  }
+  return getEndpoint(region, workspaceId);
+}
+
+// ─── Image upload (compression + optional OSS storage) ─────────
+function uploadMiddleware(req, res, next) {
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: '文件超过 50MB 限制' });
+      return res.status(400).json({ error: err.message });
+    }
+    next();
+  });
+}
+
+app.post('/api/upload-image', uploadMiddleware, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: '未提供文件或文件类型不支持（仅支持 JPG/PNG/WEBP/BMP）' });
+
+    const { buffer, originalname, mimetype, size: originalSize } = req.file;
+    const SIZE_THRESHOLD = 12 * 1024 * 1024;  // 12MB
+
+    // Get image metadata
+    const metadata = await sharp(buffer).metadata();
+    const hasAlpha = metadata.hasAlpha || mimetype === 'image/png';
+
+    // Compress: resize to max 4096px, convert to JPEG (or PNG if alpha)
+    let compressed;
+    if (hasAlpha) {
+      compressed = await sharp(buffer)
+        .resize(4096, 4096, { fit: 'inside', withoutEnlargement: true })
+        .png({ quality: 80, compressionLevel: 6 })
+        .toBuffer();
+    } else {
+      compressed = await sharp(buffer)
+        .resize(4096, 4096, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 85, mozjpeg: true })
+        .toBuffer();
+    }
+
+    // Use original if compression didn't help
+    const finalBuffer = compressed.length < buffer.length ? compressed : buffer;
+    const ext = hasAlpha ? 'png' : 'jpg';
+    const finalMime = hasAlpha ? 'image/png' : 'image/jpeg';
+
+    console.log(`[upload] ${originalname}: ${(originalSize / 1024 / 1024).toFixed(1)}MB → ${(finalBuffer.length / 1024 / 1024).toFixed(1)}MB`);
+
+    // ≤12MB: Base64 path
+    if (originalSize <= SIZE_THRESHOLD) {
+      const b64 = finalBuffer.toString('base64');
+      return res.json({ url: `data:${finalMime};base64,${b64}`, size: finalBuffer.length });
+    }
+
+    // >12MB: OSS path
+    if (!OSS_ENABLED) {
+      return res.status(413).json({ error: '文件超过 12MB 但 OSS 未配置，请联系管理员' });
+    }
+
+    const client = await getOSSClient();
+    const objectKey = `omnigen-uploads/${Date.now()}-${crypto.randomBytes(8).toString('hex')}.${ext}`;
+    await client.put(objectKey, finalBuffer, {
+      mime: finalMime,
+      headers: { 'Cache-Control': 'public, max-age=86400' },
+    });
+    const signedUrl = client.signatureUrl(objectKey, { expires: 86400 });
+    console.log(`[upload] → OSS: ${objectKey}`);
+
+    res.json({ url: signedUrl, key: objectKey, size: finalBuffer.length });
+  } catch (e) {
+    console.error('[upload] error:', e.message);
+    res.status(500).json({ error: '图片处理失败: ' + e.message });
+  }
+});
+
 app.post('/api/create-task', async (req, res) => {
   try {
-    const { apiKey, region, workspaceId, payload } = req.body;
+    const { apiKey, region, workspaceId, endpoint, payload } = req.body;
     if (!apiKey) return res.status(400).json({ error: '缺少 API Key' });
     if (!payload) return res.status(400).json({ error: '缺少 payload' });
 
-    const endpoint = getEndpoint(region, workspaceId);
-    const url = `${endpoint}/api/v1/services/aigc/video-generation/video-synthesis`;
+    const base = resolveEndpoint(endpoint, region, workspaceId);
+    const url = `${base}/api/v1/services/aigc/video-generation/video-synthesis`;
     const r = await forwardJSON(url, 'POST', {
       Authorization: `Bearer ${apiKey}`,
       'X-DashScope-Async': 'enable',
@@ -101,17 +272,17 @@ app.post('/api/create-task', async (req, res) => {
 // ─── Image generation (synchronous) ─────────────────────────────
 app.post('/api/generate-image', async (req, res) => {
   try {
-    const { apiKey, region, workspaceId, model, prompt, images, params } = req.body;
+    const { apiKey, region, workspaceId, endpoint, model, prompt, images, params } = req.body;
     if (!apiKey) return res.status(400).json({ error: '缺少 API Key' });
     if (!model) return res.status(400).json({ error: '缺少 model' });
 
-    const endpoint = getEndpoint(region, workspaceId);
+    const base = resolveEndpoint(endpoint, region, workspaceId);
     if (!MODELS.IMAGE.includes(model)) {
       return res.status(400).json({ error: '不支持的图片模型: ' + model });
     }
 
     // All image models use DashScope native protocol
-    const url = `${endpoint}/api/v1/services/aigc/multimodal-generation/generation`;
+    const url = `${base}/api/v1/services/aigc/multimodal-generation/generation`;
     const p = params || {};
     const content = [];
     if (Array.isArray(images)) {
@@ -134,7 +305,7 @@ app.post('/api/generate-image', async (req, res) => {
     if (p.negative_prompt) payload.parameters.negative_prompt = p.negative_prompt;
     if (p.prompt_extend != null) payload.parameters.prompt_extend = p.prompt_extend;
 
-    console.log(`[generate-image] → ${url}  model=${model}  region=${region}`);
+    console.log(`[generate-image] → ${url}  model=${model}  region=${region}${endpoint ? '  custom=' + endpoint : ''}`);
     const r = await forwardJSON(url, 'POST', {
       Authorization: `Bearer ${apiKey}`,
     }, payload, 180000);
@@ -288,10 +459,10 @@ const SYSTEM_PROMPTS = {
 
 app.post('/api/optimize-prompt', async (req, res) => {
   try {
-    const { apiKey, region, workspaceId, draft, images, mode, videoCount } = req.body;
+    const { apiKey, region, workspaceId, endpoint, draft, images, mode, videoCount } = req.body;
     if (!apiKey) return res.status(400).json({ error: '缺少 API Key' });
 
-    const endpoint = getEndpoint(region, workspaceId);
+    const base = resolveEndpoint(endpoint, region, workspaceId);
     const hasImages = Array.isArray(images) && images.length > 0;
     const vCount = Number.isInteger(videoCount) ? videoCount : 0;
     const sysPrompt = SYSTEM_PROMPTS[mode] || SYSTEM_PROMPTS.t2v;
@@ -316,7 +487,7 @@ app.post('/api/optimize-prompt', async (req, res) => {
     if (hasImages) {
       // 有参考图 → 多模态原生接口
       model = MODELS.VISION_OPTIMIZE;
-      url = `${endpoint}/api/v1/services/aigc/multimodal-generation/generation`;
+      url = `${base}/api/v1/services/aigc/multimodal-generation/generation`;
       const userContent = images.map(img => ({ image: img }));
       userContent.push({ text: draftText });
       payload = {
@@ -332,7 +503,7 @@ app.post('/api/optimize-prompt', async (req, res) => {
     } else {
       // 无图（文生视频，或 i2v 优化时还没传首帧）→ OpenAI 兼容
       model = MODELS.TEXT_OPTIMIZE;
-      url = `${endpoint}/compatible-mode/v1/chat/completions`;
+      url = `${base}/compatible-mode/v1/chat/completions`;
       isCompat = true;
       payload = {
         model,
@@ -372,12 +543,12 @@ app.post('/api/optimize-prompt', async (req, res) => {
 
 app.get('/api/task/:taskId', async (req, res) => {
   try {
-    const { apiKey, region, workspaceId } = req.query;
+    const { apiKey, region, workspaceId, endpoint } = req.query;
     const { taskId } = req.params;
     if (!apiKey) return res.status(400).json({ error: '缺少 API Key' });
 
-    const endpoint = getEndpoint(region, workspaceId);
-    const url = `${endpoint}/api/v1/tasks/${taskId}`;
+    const base = resolveEndpoint(endpoint, region, workspaceId);
+    const url = `${base}/api/v1/tasks/${taskId}`;
     const r = await forwardJSON(url, 'GET', {
       Authorization: `Bearer ${apiKey}`,
     }, null);

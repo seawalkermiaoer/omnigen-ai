@@ -16,8 +16,8 @@ modelR2vEl.addEventListener('change', () => {
     el.style.display = wan ? '' : 'none';
   });
   $('imageLabel-r2v').innerHTML = wan
-    ? `参考图像 <span style="color: var(--muted)">（图+视频合计 ≤5，JPG/PNG/BMP/WEBP，宽高 240-8000px，≤20MB）</span>`
-    : `参考图像 <span style="color: var(--muted)">（1~9 张，JPG/PNG/WEBP，≤20MB，短边 ≥400px）</span>`;
+    ? `参考图像 <span style="color: var(--muted)">（图+视频合计 ≤5，JPG/PNG/BMP/WEBP，宽高 240-8000px，≤50MB）</span>`
+    : `参考图像 <span style="color: var(--muted)">（1~9 张，JPG/PNG/WEBP，≤50MB，短边 ≥400px）</span>`;
   $('prompt-r2v').placeholder = wan
     ? '示例：图1中的女孩抱着图2的小猫，在视频1的房间里轻声说道："今天的阳光真好"。镜头从中景缓缓推近至特写。'
     : '示例：[Image 1]中身着红色旗袍的女性，镜头先以侧面中景勾勒旗袍修身剪裁与S型曲线，随即切换至低角度仰拍...';
@@ -51,10 +51,15 @@ async function handleFiles(fileList) {
       log(`已达上限 ${limit} 张${wan ? '（图+视频 ≤5）' : ''}，已忽略多余文件`, 'err');
       break;
     }
-    if (f.size > 20 * 1024 * 1024) { log(`${f.name} 超过 20MB，已跳过`, 'err'); continue; }
-    const dataUrl = await readAsDataURL(f);
     const thumb = await makeThumb(f, 64);
-    r2v.state.images.push({ file: f, dataUrl, base64Url: dataUrl, thumb, voiceUrl: '' });
+    log(`正在上传 ${f.name}…`);
+    try {
+      const uploadUrl = await uploadImageToServer(f);
+      r2v.state.images.push({ file: f, dataUrl: thumb || '', base64Url: uploadUrl, thumb, voiceUrl: '' });
+      log(`✓ ${f.name} 上传完成`, 'ok');
+    } catch (e) {
+      log(`${f.name} 上传失败: ${e.message}`, 'err');
+    }
   }
   renderImages();
   fileInputEl.value = '';

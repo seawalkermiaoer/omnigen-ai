@@ -72,6 +72,7 @@ PORT=8080 npm start
 omnigen-ai/
 ├── server.js              # Express 后端，API 代理
 ├── package.json
+├── .env.example           # 环境变量示例
 └── public/
     ├── index.html         # HTML 页面骨架
     ├── css/
@@ -81,6 +82,7 @@ omnigen-ai/
         ├── task.js         # 任务：提交、轮询、优化、视频渲染
         ├── history.js     # 历史记录：CRUD、卡片渲染
         ├── imggen.js      # 图片生成：文生图、图片编辑逻辑
+        ├── imgedit.js     # 图片编辑：多图上传与编辑
         ├── r2v.js         # 参考生视频 + 文生视频逻辑
         └── i2v.js         # 图生视频逻辑
 ```
@@ -97,6 +99,7 @@ omnigen-ai/
 | POST | `/api/optimize-prompt` | AI 优化 Prompt |
 | GET | `/api/task/:taskId` | 查询任务状态 |
 | GET | `/api/download?url=...` | 代理下载文件（视频/图片） |
+| POST | `/api/upload-image` | 图片上传（压缩 + OSS 存储） |
 
 ## 接口协议说明
 
@@ -122,6 +125,61 @@ omnigen-ai/
 | 新加坡 | `https://dashscope-intl.aliyuncs.com` |
 | 美国（弗吉尼亚） | `https://dashscope-us.aliyuncs.com` |
 | 德国（法兰克福） | `https://{workspaceId}.eu-central-1.maas.aliyuncs.com` |
+
+## OSS 大文件上传（可选）
+
+当上传图片 > 12MB 时，应用会自动上传至阿里云 OSS 并返回签名 URL，避免 Base64 编码膨胀问题。
+
+### 环境变量配置
+
+在 `.env` 文件中配置以下 OSS 相关变量（参考 `.env.example`）：
+
+```bash
+OSS_ACCESS_KEY_ID=          # RAM 用户 AccessKey ID（必填）
+OSS_ACCESS_KEY_SECRET=      # RAM 用户 AccessKey Secret（必填）
+OSS_BUCKET=trans-ai-cn      # OSS Bucket 名称（默认 trans-ai-cn）
+OSS_REGION=oss-cn-chengdu   # OSS 地域（默认 oss-cn-chengdu）
+OSS_ROLE_ARN=               # RAM 角色 ARN（可选，不填则使用直接 AK/SK 模式）
+OSS_TOKEN_EXPIRE_SECONDS=3600  # STS Token 有效期（仅 STS 模式，默认 3600 秒）
+```
+
+### 两种认证模式
+
+| 模式 | 条件 | 说明 |
+|------|------|------|
+| **直接 AK/SK** | `OSS_ACCESS_KEY_ID` + `OSS_ACCESS_KEY_SECRET` 已配置，`OSS_ROLE_ARN` 为空 | 本地开发推荐，直接使用 AK/SK 访问 OSS |
+| **STS 临时令牌** | 上述 + `OSS_ROLE_ARN` 已配置 | 生产环境推荐，通过 RAM 角色获取临时凭证，更安全 |
+
+### RAM 角色配置（仅 STS 模式）
+
+需要在阿里云 RAM 控制台创建一个角色，授予该角色 `oss:PutObject` 权限，角色策略示例：
+
+```json
+{
+  "Version": "1",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["oss:PutObject"],
+    "Resource": ["acs:oss:*:*:${BUCKET}/omnigen-uploads/*"]
+  }]
+}
+```
+
+同时需要配置信任策略，允许 RAM 用户（`OSS_ACCESS_KEY_ID`）扮演该角色。
+
+### 安全说明
+
+- **直接 AK/SK 模式**：适合本地开发，AK/SK 仅存储在 `.env` 文件中（已 gitignore）
+- **STS 临时令牌模式**：服务器通过 `@alicloud/sts20150401` 动态获取临时令牌（有效期 1 小时），定期自动刷新，不暴露永久 AK/SK
+- **最小权限**：RAM 角色仅授予 `oss:PutObject` 权限，无读取/删除/列举权限
+- **签名 URL**：OSS 对象为私有访问，通过签名 URL 授权（24 小时有效）
+- **图像压缩**：使用 `sharp` 进行服务器端图像压缩（最大 4096×4096px，JPEG Q85），大幅降低文件体积
+
+### 上传流程
+
+- **≤12MB**：压缩后 Base64 编码，直接嵌入请求体（与现有流程兼容）
+- **>12MB**：压缩后上传至 OSS，返回 HTTPS 签名 URL，由 DashScope 直接访问
+- **未配置 OSS**：≤12MB 文件正常工作，>12MB 文件返回清晰错误提示
 
 ## 注意事项
 

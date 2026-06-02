@@ -21,10 +21,10 @@ modelI2vEl.addEventListener('change', () => {
     el.style.display = wan ? '' : 'none';
   });
   if (wan) {
-    $('firstFrameLabel-i2v').innerHTML = '首帧图像 <span style="color: var(--muted)">（JPG/PNG/BMP/WEBP，宽高 240~8000px，宽高比 1:8~8:1，≤20MB）</span>';
+    $('firstFrameLabel-i2v').innerHTML = '首帧图像 <span style="color: var(--muted)">（JPG/PNG/BMP/WEBP，宽高 240~8000px，宽高比 1:8~8:1，≤50MB）</span>';
     $('promptHint-i2v').textContent = '（可选，描述视频内容；首尾帧任务可描述过渡过程）';
   } else {
-    $('firstFrameLabel-i2v').innerHTML = '首帧图像 <span style="color: var(--muted)">（必填，1 张，JPG/PNG/WEBP，宽高 ≥300px，宽高比 1:2.5~2.5:1，≤20MB）</span>';
+    $('firstFrameLabel-i2v').innerHTML = '首帧图像 <span style="color: var(--muted)">（必填，1 张，JPG/PNG/WEBP，宽高 ≥300px，宽高比 1:2.5~2.5:1，≤50MB）</span>';
     $('promptHint-i2v').textContent = '（可选，描述"接下来发生什么"）';
   }
   applyI2vSlots();
@@ -79,8 +79,7 @@ function bindSingleImageUploader(opts) {
     const log = makeLog('log-i2v');
     if (!file) return;
     if (!accept.test(file.type)) { log('文件类型不支持', 'err'); return; }
-    if (file.size > 20 * 1024 * 1024) { log('文件超过 20MB', 'err'); return; }
-    const dataUrl = await readAsDataURL(file);
+    const uploadUrl = await uploadImageToServer(file);
     await new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
@@ -95,16 +94,16 @@ function bindSingleImageUploader(opts) {
           resolve(); return;
         }
         makeThumb(file, 96).then(thumb => {
-          imgEl.src = dataUrl;
+          imgEl.src = uploadUrl;
           info.textContent = `${w}×${h} · ${(file.size/1024/1024).toFixed(2)} MB`;
           preview.style.display = '';
           uploader.style.display = 'none';
-          onLoad({ file, dataUrl, base64Url: dataUrl, w, h, thumb });
+          onLoad({ file, dataUrl: uploadUrl, base64Url: uploadUrl, w, h, thumb });
           resolve();
         });
       };
       img.onerror = () => { log('图像无法解码', 'err'); resolve(); };
-      img.src = dataUrl;
+      img.src = uploadUrl;
     });
     fileInput.value = '';
   }

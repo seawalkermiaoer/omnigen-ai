@@ -236,3 +236,93 @@ describe('Static files', () => {
     assert.match(String(data), /<!doctype|<html/i);
   });
 });
+
+// ─── POST /api/upload-image ─────────────────────────────────────────
+// Utils for generating test images
+async function makeTestJpeg(width = 100, height = 100, quality = 95) {
+  const sharp = require('sharp');
+  return await sharp({
+    create: { width, height, channels: 3, background: { r: 128, g: 128, b: 128 } },
+  }).jpeg({ quality }).toBuffer();
+}
+
+async function makeTestPng(width = 100, height = 100) {
+  const sharp = require('sharp');
+  return await sharp({
+    create: { width, height, channels: 3, background: { r: 128, g: 128, b: 128 } },
+  }).png().toBuffer();
+}
+
+/** Helper: upload a buffer as multipart/form-data */
+function uploadFile(fileName, buffer, mime) {
+  return new Promise((resolve, reject) => {
+    const boundary = '----TestBoundary' + Date.now();
+    const buf = Buffer.from(buffer);
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: ${mime}\r\n\r\n`),
+      buf,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+
+    const url = new URL('/api/upload-image', BASE_URL());
+    const req = http.request(
+      {
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': body.length,
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let data;
+          try { data = JSON.parse(text); } catch { data = text; }
+          resolve({ status: res.statusCode, data });
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+describe('POST /api/upload-image', () => {
+  it('400 when no file is provided', async () => {
+    const { status } = await request('POST', '/api/upload-image', {});
+    assert.equal(status, 400);
+  });
+
+  it('400 for invalid file type', async () => {
+    const { status } = await uploadFile('test.txt', Buffer.from('hello world'), 'text/plain');
+    assert.equal(status, 400);
+  });
+
+  it('should return data URL for small JPEG', async () => {
+    const buf = await makeTestJpeg(100, 100);
+    const { status, data } = await uploadFile('test.jpg', buf, 'image/jpeg');
+    assert.equal(status, 200);
+    assert.ok(data.url.startsWith('data:image/jpeg;base64,'));
+  });
+
+  it('should return data URL for small PNG (preserving alpha if present)', async () => {
+    const buf = await makeTestPng(100, 100);
+    const { status, data } = await uploadFile('test.png', buf, 'image/png');
+    assert.equal(status, 200);
+    assert.ok(data.url.startsWith('data:image/png;base64,'));
+  });
+
+  it('should compress large images and return data URL when ≤12MB', { timeout: 30_000 }, async () => {
+    // Generate a large JPEG (~15MB raw, but after sharp compression should be small)
+    const buf = await makeTestJpeg(5000, 5000, 100);
+    const { status, data } = await uploadFile('large.jpg', buf, 'image/jpeg');
+    assert.equal(status, 200);
+    assert.ok(data.url.startsWith('data:image/jpeg;base64,') || data.url.startsWith('data:image/png;base64,'));
+  });
+});

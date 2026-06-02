@@ -23,6 +23,26 @@ function readAsDataURL(file) {
     r.readAsDataURL(file);
   });
 }
+
+// Upload file to server for compression + optional OSS storage.
+// Returns a URL: either data:... Base64 or https://... signed OSS URL.
+async function uploadImageToServer(file) {
+  let lastError;
+  for (let attempt = 0; attempt <= 2; attempt++) {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/upload-image', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `上传失败 (${res.status})`);
+      return data.url;
+    } catch (e) {
+      lastError = e;
+      if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
 async function makeThumb(file, max = 96, quality = 0.7) {
   const dataUrl = await readAsDataURL(file);
   return new Promise((resolve) => {
@@ -76,7 +96,7 @@ async function pollTask(ctx, taskId, log) {
   while (true) {
     try {
       const params = new URLSearchParams({
-        apiKey: auth.apiKey, region: auth.region, workspaceId: auth.workspaceId || ''
+        apiKey: auth.apiKey, region: auth.region, workspaceId: auth.workspaceId || '', endpoint: auth.endpoint || ''
       });
       const r = await fetch(`/api/task/${taskId}?` + params);
       const d = await r.json();

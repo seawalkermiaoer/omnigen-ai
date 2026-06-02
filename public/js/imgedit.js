@@ -125,13 +125,13 @@ async function handleImgeditFiles(fileList) {
       alert(`当前模型最多支持 ${maxImages} 张输入图片`);
       break;
     }
-    if (file.size > 20 * 1024 * 1024) {
-      alert(`${file.name} 超过 20MB 限制`);
-      continue;
-    }
-    const base64Url = await readAsDataURL(file);
     const thumb = await makeThumb(file, 96, 0.7);
-    imgedit.state.images.push({ file, base64Url, thumb, name: file.name });
+    try {
+      const uploadUrl = await uploadImageToServer(file);
+      imgedit.state.images.push({ file, base64Url: uploadUrl, thumb, name: file.name });
+    } catch (e) {
+      alert(`${file.name} 上传失败: ${e.message}`);
+    }
   }
   renderImgeditImages();
 }
