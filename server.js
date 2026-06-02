@@ -199,30 +199,13 @@ app.post('/api/upload-image', uploadMiddleware, async (req, res) => {
     const { buffer, originalname, mimetype, size: originalSize } = req.file;
     const SIZE_THRESHOLD = 12 * 1024 * 1024;  // 12MB
 
-    // Get image metadata
-    const metadata = await sharp(buffer).metadata();
-    const hasAlpha = metadata.hasAlpha || mimetype === 'image/png';
+    // Use original buffer directly (no compression)
+    const extMap = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/bmp': 'bmp' };
+    const ext = extMap[mimetype] || 'jpg';
+    const finalMime = mimetype;
+    const finalBuffer = buffer;
 
-    // Compress: resize to max 4096px, convert to JPEG (or PNG if alpha)
-    let compressed;
-    if (hasAlpha) {
-      compressed = await sharp(buffer)
-        .resize(4096, 4096, { fit: 'inside', withoutEnlargement: true })
-        .png({ quality: 80, compressionLevel: 6 })
-        .toBuffer();
-    } else {
-      compressed = await sharp(buffer)
-        .resize(4096, 4096, { fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 85, mozjpeg: true })
-        .toBuffer();
-    }
-
-    // Use original if compression didn't help
-    const finalBuffer = compressed.length < buffer.length ? compressed : buffer;
-    const ext = hasAlpha ? 'png' : 'jpg';
-    const finalMime = hasAlpha ? 'image/png' : 'image/jpeg';
-
-    console.log(`[upload] ${originalname}: ${(originalSize / 1024 / 1024).toFixed(1)}MB → ${(finalBuffer.length / 1024 / 1024).toFixed(1)}MB`);
+    console.log(`[upload] ${originalname}: ${(originalSize / 1024 / 1024).toFixed(1)}MB`);
 
     // ≤12MB: Base64 path
     if (originalSize <= SIZE_THRESHOLD) {
