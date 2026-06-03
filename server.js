@@ -84,7 +84,7 @@ async function getOSSClient() {
       stsToken: creds.SecurityToken,
       bucket: OSS_CONFIG.bucket,
       secure: true,
-      timeout: 30000,
+      timeout: 120000,
     });
   }
   // Direct AK/SK mode (local dev, no STS)
@@ -94,7 +94,7 @@ async function getOSSClient() {
     accessKeySecret: OSS_CONFIG.accessKeySecret,
     bucket: OSS_CONFIG.bucket,
     secure: true,
-    timeout: 30000,
+    timeout: 120000,
   });
 }
 
