@@ -182,7 +182,7 @@ async function submitImgedit() {
   const params = {
     size: $('size-imgedit').value,
     n: parseInt($('count-imgedit').value, 10) || 1,
-    watermark: $('watermark-imgedit').checked,
+    ...collectWatermarkParams('imgedit'),
   };
   const negPrompt = $('negative-imgedit').value.trim();
   if (negPrompt) params.negative_prompt = negPrompt;

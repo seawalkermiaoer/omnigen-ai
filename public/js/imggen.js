@@ -117,7 +117,7 @@ async function submitImggen() {
   const params = {
     size: $('size-imggen').value,
     n: parseInt($('count-imggen').value, 10) || 1,
-    watermark: $('watermark-imggen').checked,
+    ...collectWatermarkParams('imggen'),
   };
   const negPrompt = $('negative-imggen').value.trim();
   if (negPrompt) params.negative_prompt = negPrompt;

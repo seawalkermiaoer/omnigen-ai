@@ -22,3 +22,9 @@ npm-debug.log*
 
 # Qoder
 .qoder/
+
+.claude/
+
+.trellis/
+
+AGENTS.md

@@ -1,5 +1,7 @@
 /* ── OmniGen AI: Shared task utilities (log, poll, submit, optimize, video) ── */
 
+const DEFAULT_WATERMARK_TEXT = 'OmniGen AIStudio';
+
 // ---------- Logging & status ----------
 function makeLog(elId) {
   const el = $(elId);
@@ -63,6 +65,11 @@ function escapeHTML(s) {
   return String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 function escapeAttr(s) { return String(s || '').replace(/"/g, '&quot;'); }
+
+function collectWatermarkParams(kind) {
+  const enabled = $('watermark-' + kind).checked;
+  return { watermark: enabled };
+}
 
 // ---------- Video panel ----------
 function renderVideo(ctx, url, data) {
@@ -291,7 +298,7 @@ function collectParams(kind) {
   const params = {
     resolution: $('resolution-' + kind).value,
     duration: parseInt($('duration-' + kind).value, 10) || 5,
-    watermark: $('watermark-' + kind).checked,
+    ...collectWatermarkParams(kind),
   };
   const ratioEl = $('ratio-' + kind);
   if (ratioEl) params.ratio = ratioEl.value;

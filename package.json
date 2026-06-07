@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/api.test.js"
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "@alicloud/sts20150401": "^1.2.0",
