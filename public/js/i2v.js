@@ -54,7 +54,7 @@ function applyI2vSlots() {
 
 // ---------- Single image uploader ----------
 function bindSingleImageUploader(opts) {
-  const { uploaderId, fileInputId, previewId, imgElId, infoId, removeId, errorId, accept, minSize, ratioMin, ratioMax, onLoad, onClear } = opts;
+  const { uploaderId, fileInputId, previewId, imgElId, infoId, removeId, errorId, accept, onLoad, onClear } = opts;
   const uploader = $(uploaderId);
   const fileInput = $(fileInputId);
   const preview = $(previewId);
@@ -89,52 +89,85 @@ function bindSingleImageUploader(opts) {
     onClear();
   }
 
+  function clearFileInput() {
+    fileInput.value = '';
+  }
+
+  function getValidationLimits() {
+    return {
+      minSize: Number(opts.minSize),
+      ratioMin: Number(opts.ratioMin),
+      ratioMax: Number(opts.ratioMax),
+    };
+  }
+
+  function loadImageDimensions(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+      img.onerror = () => reject(new Error('图像无法解码，请换一张图片'));
+      img.src = src;
+    });
+  }
+
+  async function inspectLocalImage(file) {
+    const localUrl = URL.createObjectURL(file);
+    try {
+      return await loadImageDimensions(localUrl);
+    } finally {
+      URL.revokeObjectURL(localUrl);
+    }
+  }
+
+  function rejectSelectedFile(message) {
+    showI2vUploadError(message);
+    clearFileInput();
+  }
+
   async function handleFile(file) {
     const log = makeLog('log-i2v');
     if (!file) return;
     if (!accept.test(file.type)) {
-      showI2vUploadError('文件类型不支持，请上传 JPG/PNG/WEBP 图片');
-      fileInput.value = '';
+      rejectSelectedFile('文件类型不支持，请上传 JPG/PNG/WEBP 图片');
       return;
     }
     errorEl.style.display = 'none';
     errorEl.textContent = '';
+    let dimensions;
+    try {
+      dimensions = await inspectLocalImage(file);
+    } catch (e) {
+      rejectSelectedFile(e.message);
+      return;
+    }
+    const { minSize, ratioMin, ratioMax } = getValidationLimits();
+    const { w, h } = dimensions;
+    if (w < minSize || h < minSize) {
+      rejectSelectedFile(`图像尺寸 ${w}×${h} 不满足（宽高需 ≥${minSize}px），请换一张更大的图片`);
+      return;
+    }
+    const r = w / h;
+    if (r < ratioMin || r > ratioMax) {
+      rejectSelectedFile(`宽高比 ${r.toFixed(2)} 超出范围（要求 ${ratioMin.toFixed(2)}~${ratioMax.toFixed(2)}），请换一张比例更接近视频画面的图片`);
+      return;
+    }
+
     let uploadUrl;
     try {
       uploadUrl = await uploadImageToServer(file);
     } catch (e) {
-      showI2vUploadError(`${file.name} 上传失败：${e.message}`);
-      fileInput.value = '';
+      rejectSelectedFile(`${file.name} 上传失败：${e.message}`);
       return;
     }
-    await new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        const w = img.naturalWidth, h = img.naturalHeight;
-        if (w < minSize || h < minSize) {
-          showI2vUploadError(`图像尺寸 ${w}×${h} 不满足（宽高需 ≥${minSize}px），请换一张更大的图片`);
-          resolve(); return;
-        }
-        const r = w / h;
-        if (r < ratioMin || r > ratioMax) {
-          showI2vUploadError(`宽高比 ${r.toFixed(2)} 超出范围（要求 ${ratioMin.toFixed(2)}~${ratioMax.toFixed(2)}），请换一张比例更接近视频画面的图片`);
-          resolve(); return;
-        }
-        makeThumb(file, 96).then(thumb => {
-          imgEl.src = uploadUrl;
-          info.textContent = `${w}×${h} · ${(file.size/1024/1024).toFixed(2)} MB`;
-          errorEl.style.display = 'none';
-          errorEl.textContent = '';
-          preview.style.display = '';
-          uploader.style.display = 'none';
-          onLoad({ file, dataUrl: uploadUrl, base64Url: uploadUrl, w, h, thumb });
-          resolve();
-        });
-      };
-      img.onerror = () => { showI2vUploadError('图像无法解码，请换一张图片'); resolve(); };
-      img.src = uploadUrl;
-    });
-    fileInput.value = '';
+    const thumb = await makeThumb(file, 96);
+    imgEl.src = uploadUrl;
+    info.textContent = `${w}×${h} · ${(file.size/1024/1024).toFixed(2)} MB`;
+    errorEl.style.display = 'none';
+    errorEl.textContent = '';
+    preview.style.display = '';
+    uploader.style.display = 'none';
+    onLoad({ file, dataUrl: uploadUrl, base64Url: uploadUrl, w, h, thumb });
+    clearFileInput();
   }
 }
 
