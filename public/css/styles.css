@@ -143,6 +143,11 @@ textarea.tall { min-height: 180px; }
 .uploader:hover, .uploader.drag { border-color: var(--accent); background: rgba(108, 140, 255, .05); }
 .uploader strong { color: var(--text); }
 .uploader .hint { font-size: 12px; margin-top: 6px; }
+.upload-error {
+  display: none; margin-top: 8px; padding: 8px 10px;
+  border: 1px solid rgba(255, 92, 92, .45); border-radius: 6px;
+  background: rgba(255, 92, 92, .08); color: #ff9a9a; font-size: 12px;
+}
 .images { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; margin-top: 12px; }
 .img-card {
   position: relative; background: var(--panel-2);

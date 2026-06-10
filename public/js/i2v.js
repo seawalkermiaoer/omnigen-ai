@@ -54,12 +54,13 @@ function applyI2vSlots() {
 
 // ---------- Single image uploader ----------
 function bindSingleImageUploader(opts) {
-  const { uploaderId, fileInputId, previewId, imgElId, infoId, removeId, accept, minSize, ratioMin, ratioMax, onLoad, onClear } = opts;
+  const { uploaderId, fileInputId, previewId, imgElId, infoId, removeId, errorId, accept, minSize, ratioMin, ratioMax, onLoad, onClear } = opts;
   const uploader = $(uploaderId);
   const fileInput = $(fileInputId);
   const preview = $(previewId);
   const imgEl = $(imgElId);
   const info = $(infoId);
+  const errorEl = $(errorId);
   uploader.addEventListener('click', () => fileInput.click());
   uploader.addEventListener('dragover', (e) => { e.preventDefault(); uploader.classList.add('drag'); });
   uploader.addEventListener('dragleave', () => uploader.classList.remove('drag'));
@@ -73,36 +74,64 @@ function bindSingleImageUploader(opts) {
     onClear();
     preview.style.display = 'none';
     uploader.style.display = '';
+    errorEl.style.display = 'none';
+    errorEl.textContent = '';
   });
+
+  function showI2vUploadError(message) {
+    const log = makeLog('log-i2v');
+    log(message, 'err');
+    errorEl.textContent = message;
+    errorEl.style.display = 'block';
+    setStatusHTML('status-i2v', `<span class="pill FAILED">上传失败</span> ${escapeHTML(message)}`);
+    preview.style.display = 'none';
+    uploader.style.display = '';
+    onClear();
+  }
 
   async function handleFile(file) {
     const log = makeLog('log-i2v');
     if (!file) return;
-    if (!accept.test(file.type)) { log('文件类型不支持', 'err'); return; }
-    const uploadUrl = await uploadImageToServer(file);
+    if (!accept.test(file.type)) {
+      showI2vUploadError('文件类型不支持，请上传 JPG/PNG/WEBP 图片');
+      fileInput.value = '';
+      return;
+    }
+    errorEl.style.display = 'none';
+    errorEl.textContent = '';
+    let uploadUrl;
+    try {
+      uploadUrl = await uploadImageToServer(file);
+    } catch (e) {
+      showI2vUploadError(`${file.name} 上传失败：${e.message}`);
+      fileInput.value = '';
+      return;
+    }
     await new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
         const w = img.naturalWidth, h = img.naturalHeight;
         if (w < minSize || h < minSize) {
-          log(`图像尺寸 ${w}×${h} 不满足（宽高需 ≥${minSize}px）`, 'err');
+          showI2vUploadError(`图像尺寸 ${w}×${h} 不满足（宽高需 ≥${minSize}px），请换一张更大的图片`);
           resolve(); return;
         }
         const r = w / h;
         if (r < ratioMin || r > ratioMax) {
-          log(`宽高比 ${r.toFixed(2)} 超出范围（要求 ${ratioMin.toFixed(2)}~${ratioMax.toFixed(2)}）`, 'err');
+          showI2vUploadError(`宽高比 ${r.toFixed(2)} 超出范围（要求 ${ratioMin.toFixed(2)}~${ratioMax.toFixed(2)}），请换一张比例更接近视频画面的图片`);
           resolve(); return;
         }
         makeThumb(file, 96).then(thumb => {
           imgEl.src = uploadUrl;
           info.textContent = `${w}×${h} · ${(file.size/1024/1024).toFixed(2)} MB`;
+          errorEl.style.display = 'none';
+          errorEl.textContent = '';
           preview.style.display = '';
           uploader.style.display = 'none';
           onLoad({ file, dataUrl: uploadUrl, base64Url: uploadUrl, w, h, thumb });
           resolve();
         });
       };
-      img.onerror = () => { log('图像无法解码', 'err'); resolve(); };
+      img.onerror = () => { showI2vUploadError('图像无法解码，请换一张图片'); resolve(); };
       img.src = uploadUrl;
     });
     fileInput.value = '';
@@ -117,6 +146,7 @@ bindSingleImageUploader({
   imgElId: 'singleImgEl-i2v',
   infoId: 'singleImgInfo-i2v',
   removeId: 'singleImgRemove-i2v',
+  errorId: 'uploadError-i2v',
   accept: /^image\/(jpeg|png|bmp|webp)$/,
   get minSize() { return isWanI2v() ? 240 : 300; },
   get ratioMin() { return isWanI2v() ? 1/8 : 1/2.5; },
@@ -133,6 +163,7 @@ bindSingleImageUploader({
   imgElId: 'singleImgEl-last-i2v',
   infoId: 'singleImgInfo-last-i2v',
   removeId: 'singleImgRemove-last-i2v',
+  errorId: 'uploadError-last-i2v',
   accept: /^image\/(jpeg|png|bmp|webp)$/,
   minSize: 240,
   ratioMin: 1/8,
@@ -206,8 +237,12 @@ $('resetBtn-i2v').addEventListener('click', () => {
   i2v.state.drivingAudio = '';
   $('singleImg-i2v').style.display = 'none';
   $('uploader-i2v').style.display = '';
+  $('uploadError-i2v').style.display = 'none';
+  $('uploadError-i2v').textContent = '';
   $('singleImg-last-i2v').style.display = 'none';
   $('uploader-last-i2v').style.display = '';
+  $('uploadError-last-i2v').style.display = 'none';
+  $('uploadError-last-i2v').textContent = '';
   $('firstClip-i2v').value = '';
   $('drivingAudio-i2v').value = '';
   $('prompt-i2v').value = '';
