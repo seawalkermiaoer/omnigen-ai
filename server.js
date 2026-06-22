@@ -113,7 +113,7 @@ const REGION_ENDPOINTS = {
 // Centralized model names — update here to change models globally.
 const MODELS = {
   /** Text-only prompt optimization (OpenAI-compatible) */
-  TEXT_OPTIMIZE: 'qwen3.7-max',
+  TEXT_OPTIMIZE: 'qwen3.7-plus',
   /** Multimodal prompt optimization with reference images (DashScope native) */
   VISION_OPTIMIZE: 'qwen-vl-max-latest',
   /** Display label shown in UI (short form, no "-latest" suffix) */
@@ -573,5 +573,11 @@ if (require.main === module) {
     console.log(`OmniGen AI Web running at http://localhost:${PORT}`);
   });
 }
+
+// Exported for testing
+app._resolveEndpoint = resolveEndpoint;
+app._getEndpoint = getEndpoint;
+app._REGION_ENDPOINTS = REGION_ENDPOINTS;
+app._MODELS = MODELS;
 
 module.exports = app;

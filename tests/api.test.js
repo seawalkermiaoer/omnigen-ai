@@ -79,7 +79,7 @@ describe('GET /api/config', () => {
     assert.equal(status, 200);
     assert.ok(data.models, 'should have models key');
     assert.ok(Array.isArray(data.models.IMAGE), 'IMAGE should be an array');
-    assert.ok(data.models.TEXT_OPTIMIZE, 'should have TEXT_OPTIMIZE');
+    assert.equal(data.models.TEXT_OPTIMIZE, 'qwen3.7-plus');
     assert.ok(data.models.VISION_OPTIMIZE, 'should have VISION_OPTIMIZE');
   });
 
@@ -253,6 +253,13 @@ async function makeTestPng(width = 100, height = 100) {
   }).png().toBuffer();
 }
 
+async function makeTestWebp(width = 100, height = 100) {
+  const sharp = require('sharp');
+  return await sharp({
+    create: { width, height, channels: 3, background: { r: 128, g: 128, b: 128 } },
+  }).webp().toBuffer();
+}
+
 /** Helper: upload a buffer as multipart/form-data */
 function uploadFile(fileName, buffer, mime) {
   return new Promise((resolve, reject) => {
@@ -324,5 +331,41 @@ describe('POST /api/upload-image', () => {
     const { status, data } = await uploadFile('large.jpg', buf, 'image/jpeg');
     assert.equal(status, 200);
     assert.ok(data.url.startsWith('data:image/jpeg;base64,') || data.url.startsWith('data:image/png;base64,'));
+  });
+
+  it('should return data URL for small WebP', async () => {
+    const buf = await makeTestWebp(100, 100);
+    const { status, data } = await uploadFile('test.webp', buf, 'image/webp');
+    assert.equal(status, 200);
+    assert.ok(data.url.startsWith('data:image/webp;base64,'));
+  });
+
+  it('should return data URL for small BMP', async () => {
+    // Use raw bytes with BMP mime — server stores buffer as-is
+    const buf = Buffer.alloc(1024, 0xAB);
+    const { status, data } = await uploadFile('test.bmp', buf, 'image/bmp');
+    assert.equal(status, 200);
+    assert.ok(data.url.startsWith('data:image/bmp;base64,'));
+  });
+
+  it('size field matches actual buffer length', async () => {
+    const buf = await makeTestJpeg(200, 200);
+    const { status, data } = await uploadFile('sized.jpg', buf, 'image/jpeg');
+    assert.equal(status, 200);
+    assert.equal(data.size, buf.length);
+  });
+
+  it('exactly 12MB buffer returns base64 (not OSS)', { timeout: 30_000 }, async () => {
+    // 12 * 1024 * 1024 = 12582912 bytes, server uses <= threshold
+    const buf = Buffer.alloc(12 * 1024 * 1024, 0xFF);
+    const { status, data } = await uploadFile('exact12mb.jpg', buf, 'image/jpeg');
+    assert.equal(status, 200);
+    assert.ok(data.url.startsWith('data:image/jpeg;base64,'), 'should return base64 for exactly 12MB');
+  });
+
+  it('over 50MB returns 413', { timeout: 30_000 }, async () => {
+    const buf = Buffer.alloc(50 * 1024 * 1024 + 1, 0);
+    const { status } = await uploadFile('over50mb.jpg', buf, 'image/jpeg');
+    assert.equal(status, 413);
   });
 });

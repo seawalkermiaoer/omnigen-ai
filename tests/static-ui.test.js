@@ -32,6 +32,35 @@ describe('watermark UI defaults', () => {
   });
 });
 
+describe('prompt optimizer model labels', () => {
+  it('uses qwen3.7-plus for text prompt optimization labels', () => {
+    const html = read('public/index.html');
+    const appJs = read('public/js/app.js');
+
+    assert.match(html, /用 qwen3\.7-plus 润色 prompt/);
+    assert.match(appJs, /TEXT_OPTIMIZE:\s*['"]qwen3\.7-plus['"]/);
+    assert.doesNotMatch(html, /qwen3\.7-max/);
+    assert.doesNotMatch(appJs, /qwen3\.7-max/);
+  });
+});
+
+describe('HappyHorse model versions', () => {
+  it('uses HappyHorse 1.1 for R2V, I2V, and T2V model IDs', () => {
+    const files = [
+      read('public/index.html'),
+      read('public/js/r2v.js'),
+      read('public/js/i2v.js'),
+      read('server.js'),
+      read('README.md'),
+    ].join('\n');
+
+    assert.match(files, /happyhorse-1\.1-r2v/);
+    assert.match(files, /happyhorse-1\.1-i2v/);
+    assert.match(files, /happyhorse-1\.1-t2v/);
+    assert.doesNotMatch(files, /happyhorse-1\.0-(r2v|i2v|t2v)/);
+  });
+});
+
 describe('i2v image upload feedback', () => {
   it('shows visible feedback when an uploaded frame fails validation', () => {
     const html = read('public/index.html');
