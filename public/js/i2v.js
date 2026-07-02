@@ -253,7 +253,7 @@ $('submitBtn-i2v').addEventListener('click', () => {
   // OmniGen AI i2v
   if (!i2v.state.image) { alert('请先上传首帧图'); return; }
   submitTask(i2v, {
-    model: 'happyhorse-1.0-i2v',
+    model: 'happyhorse-1.1-i2v',
     input: {
       media: [{ type: 'first_frame', url: i2v.state.image.base64Url }],
       ...(prompt ? { prompt } : {}),

@@ -140,7 +140,7 @@ function runI2vUploader(js, imageSize) {
     'resetBtn-i2v', 'seed-i2v', 'videoOut-i2v', 'log-i2v', 'status-i2v',
   ];
   for (const id of ids) elements.set(id, createElement(id));
-  elements.get('model-i2v').value = 'happyhorse-1.0-i2v';
+  elements.get('model-i2v').value = 'happyhorse-1.1-i2v';
 
   const document = {
     querySelectorAll(selector) {

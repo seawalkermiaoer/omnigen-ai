@@ -179,7 +179,7 @@ $('submitBtn-r2v').addEventListener('click', () => {
   }
 
   const payload = {
-    model: wan ? 'wan2.7-r2v' : 'happyhorse-1.0-r2v',
+    model: wan ? 'wan2.7-r2v' : 'happyhorse-1.1-r2v',
     input,
     parameters: params,
   };
@@ -209,7 +209,7 @@ $('submitBtn-t2v').addEventListener('click', () => {
   const prompt = $('prompt-t2v').value.trim();
   if (!prompt) { alert('请填写 prompt'); return; }
   const payload = {
-    model: 'happyhorse-1.0-t2v',
+    model: 'happyhorse-1.1-t2v',
     input: { prompt },
     parameters: collectParams('t2v'),
   };

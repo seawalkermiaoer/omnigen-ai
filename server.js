@@ -332,7 +332,7 @@ app.post('/api/generate-image', async (req, res) => {
 });
 
 const SYSTEM_PROMPTS = {
-  r2v: `你是 OmniGen AI 参考生视频（happyhorse-1.0-r2v）的资深 prompt 工程师。
+  r2v: `你是 OmniGen AI 参考生视频（happyhorse-1.1-r2v）的资深 prompt 工程师。
 
 【任务】根据用户的草稿和多张参考图，输出一段电影感强、可直接调用模型的中文 prompt。
 
@@ -345,7 +345,7 @@ const SYSTEM_PROMPTS = {
 6. 仅输出最终 prompt 本身，不要前后加任何解释、标题、引号或 Markdown。
 7. 用户原 prompt 中已含的核心意图必须保留，仅做润色和扩展。`,
 
-  t2v: `你是 OmniGen AI 文生视频（happyhorse-1.0-t2v）的资深 prompt 工程师。
+  t2v: `你是 OmniGen AI 文生视频（happyhorse-1.1-t2v）的资深 prompt 工程师。
 
 【任务】根据用户的草稿，输出一段画面感与运动感俱佳的中文 prompt，用于纯文生视频。
 
@@ -395,7 +395,7 @@ const SYSTEM_PROMPTS = {
 7. 用户原 prompt 的核心意图必须保留，仅做润色与扩展。
 8. 若用户什么素材都没传，按一般运动镜头描述输出。`,
 
-  i2v: `你是 OmniGen AI 图生视频-首帧（happyhorse-1.0-i2v）的资深 prompt 工程师。
+  i2v: `你是 OmniGen AI 图生视频-首帧（happyhorse-1.1-i2v）的资深 prompt 工程师。
 
 【背景】用户上传了 1 张首帧图像，作为视频的第一帧；你看到的图就是该首帧。
 
