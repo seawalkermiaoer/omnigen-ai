@@ -113,9 +113,13 @@ const REGION_ENDPOINTS = {
 // Centralized model names — update here to change models globally.
 const MODELS = {
   /** Text-only prompt optimization (OpenAI-compatible) */
-  TEXT_OPTIMIZE: 'qwen3.7-max',
+  TEXT_OPTIMIZE: 'qwen3.7-plus',
+  /** Fallbacks for accounts that do not have access to the primary text optimizer */
+  TEXT_OPTIMIZE_FALLBACKS: ['qwen-plus'],
   /** Multimodal prompt optimization with reference images (DashScope native) */
   VISION_OPTIMIZE: 'qwen-vl-max-latest',
+  /** Fallbacks for accounts that do not have access to the primary vision optimizer */
+  VISION_OPTIMIZE_FALLBACKS: ['qwen-vl-plus'],
   /** Display label shown in UI (short form, no "-latest" suffix) */
   VISION_OPTIMIZE_LABEL: 'qwen-vl-max',
   /** Image generation models — all use DashScope native protocol (model names are lowercase) */
@@ -179,6 +183,12 @@ function resolveEndpoint(endpoint, region, workspaceId) {
     return endpoint.replace(/\/+$/, '');
   }
   return getEndpoint(region, workspaceId);
+}
+
+function isAccessDeniedResponse(data) {
+  const code = data?.code || data?.error?.code || '';
+  const message = data?.message || data?.error?.message || '';
+  return /AccessDenied/i.test(code) || /Access denied/i.test(message);
 }
 
 // ─── Image upload (compression + optional OSS storage) ─────────
@@ -332,7 +342,7 @@ app.post('/api/generate-image', async (req, res) => {
 });
 
 const SYSTEM_PROMPTS = {
-  r2v: `你是 OmniGen AI 参考生视频（happyhorse-1.0-r2v）的资深 prompt 工程师。
+  r2v: `你是 OmniGen AI 参考生视频（happyhorse-1.1-r2v）的资深 prompt 工程师。
 
 【任务】根据用户的草稿和多张参考图，输出一段电影感强、可直接调用模型的中文 prompt。
 
@@ -345,7 +355,7 @@ const SYSTEM_PROMPTS = {
 6. 仅输出最终 prompt 本身，不要前后加任何解释、标题、引号或 Markdown。
 7. 用户原 prompt 中已含的核心意图必须保留，仅做润色和扩展。`,
 
-  t2v: `你是 OmniGen AI 文生视频（happyhorse-1.0-t2v）的资深 prompt 工程师。
+  t2v: `你是 OmniGen AI 文生视频（happyhorse-1.1-t2v）的资深 prompt 工程师。
 
 【任务】根据用户的草稿，输出一段画面感与运动感俱佳的中文 prompt，用于纯文生视频。
 
@@ -395,7 +405,7 @@ const SYSTEM_PROMPTS = {
 7. 用户原 prompt 的核心意图必须保留，仅做润色与扩展。
 8. 若用户什么素材都没传，按一般运动镜头描述输出。`,
 
-  i2v: `你是 OmniGen AI 图生视频-首帧（happyhorse-1.0-i2v）的资深 prompt 工程师。
+  i2v: `你是 OmniGen AI 图生视频-首帧（happyhorse-1.1-i2v）的资深 prompt 工程师。
 
 【背景】用户上传了 1 张首帧图像，作为视频的第一帧；你看到的图就是该首帧。
 
@@ -466,40 +476,53 @@ app.post('/api/optimize-prompt', async (req, res) => {
           ? `${sourceDesc}\n\n用户没有提供草稿。请自由构思一段短视频的镜头描述。`
           : `用户没有提供草稿。请自由构思一段 5 秒视频的镜头描述。`);
 
-    let url, payload, model, isCompat = false;
-    if (hasImages) {
-      // 有参考图 → 多模态原生接口
-      model = MODELS.VISION_OPTIMIZE;
-      url = `${base}/api/v1/services/aigc/multimodal-generation/generation`;
-      const userContent = images.map(img => ({ image: img }));
-      userContent.push({ text: draftText });
-      payload = {
-        model,
-        input: {
-          messages: [
-            { role: 'system', content: [{ text: sysPrompt }] },
-            { role: 'user', content: userContent },
-          ],
-        },
-        parameters: { result_format: 'message' },
-      };
-    } else {
-      // 无图（文生视频，或 i2v 优化时还没传首帧）→ OpenAI 兼容
-      model = MODELS.TEXT_OPTIMIZE;
-      url = `${base}/compatible-mode/v1/chat/completions`;
-      isCompat = true;
-      payload = {
-        model,
-        messages: [
-          { role: 'system', content: sysPrompt },
-          { role: 'user', content: draftText },
-        ],
-      };
-    }
+    const isCompat = !hasImages;
+    const officialBase = getEndpoint(region, workspaceId);
+    const bases = base === officialBase ? [base] : [base, officialBase];
+    const models = hasImages
+      ? [MODELS.VISION_OPTIMIZE, ...MODELS.VISION_OPTIMIZE_FALLBACKS]
+      : [MODELS.TEXT_OPTIMIZE, ...MODELS.TEXT_OPTIMIZE_FALLBACKS];
+    const userContent = hasImages ? [...images.map(img => ({ image: img })), { text: draftText }] : null;
 
-    const r = await forwardJSON(url, 'POST', {
-      Authorization: `Bearer ${apiKey}`,
-    }, payload);
+    let r, model;
+    outer:
+    for (let modelIndex = 0; modelIndex < models.length; modelIndex++) {
+      model = models[modelIndex];
+      for (let baseIndex = 0; baseIndex < bases.length; baseIndex++) {
+        const url = hasImages
+          ? `${bases[baseIndex]}/api/v1/services/aigc/multimodal-generation/generation`
+          : `${bases[baseIndex]}/compatible-mode/v1/chat/completions`;
+        const payload = hasImages
+          ? {
+              model,
+              input: {
+                messages: [
+                  { role: 'system', content: [{ text: sysPrompt }] },
+                  { role: 'user', content: userContent },
+                ],
+              },
+              parameters: { result_format: 'message' },
+            }
+          : {
+              model,
+              messages: [
+                { role: 'system', content: sysPrompt },
+                { role: 'user', content: draftText },
+              ],
+            };
+
+        r = await forwardJSON(url, 'POST', {
+          Authorization: `Bearer ${apiKey}`,
+        }, payload);
+
+        const canRetry = baseIndex < bases.length - 1 || modelIndex < models.length - 1;
+        if (r.data && (r.data.code || r.data.error)
+            && isAccessDeniedResponse(r.data) && canRetry) {
+          continue;
+        }
+        break outer;
+      }
+    }
 
     // 错误响应：DashScope 原生用 r.data.code；OpenAI 兼容用 r.data.error
     if (r.data && (r.data.code || r.data.error)) {
@@ -573,5 +596,11 @@ if (require.main === module) {
     console.log(`OmniGen AI Web running at http://localhost:${PORT}`);
   });
 }
+
+// Exported for testing
+app._resolveEndpoint = resolveEndpoint;
+app._getEndpoint = getEndpoint;
+app._REGION_ENDPOINTS = REGION_ENDPOINTS;
+app._MODELS = MODELS;
 
 module.exports = app;

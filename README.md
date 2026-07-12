@@ -23,11 +23,12 @@
 | `qwen-image-edit` | 图片编辑 | DashScope 原生 |
 | `wan2.7-image-pro` | 万相 2.7 图像生成（文生图/编辑/组图） | DashScope 原生 |
 | `wan2.7-image` | 万相 2.7 图像生成（基础版） | DashScope 原生 |
-| `happyhorse-1.0-r2v` | 多图参考生视频 | DashScope 原生 |
-| `happyhorse-1.0-i2v` | 首帧图生视频 | DashScope 原生 |
+| `happyhorse-1.1-r2v` | 多图参考生视频 | DashScope 原生 |
+| `happyhorse-1.1-i2v` | 首帧图生视频 | DashScope 原生 |
+| `happyhorse-1.1-t2v` | 文生视频 | DashScope 原生 |
 | `wan2.7-r2v` | Wan 2.7 参考生视频（图+视频+音色） | DashScope 原生 |
 | `wan2.7-i2v-2026-04-25` | Wan 2.7 图生视频（首帧/首尾帧/续写） | DashScope 原生 |
-| `qwen3.7-max` | 文本 Prompt 优化 | OpenAI 兼容 ✅ |
+| `qwen3.7-plus` | 文本 Prompt 优化 | OpenAI 兼容 ✅ |
 | `qwen-vl-max-latest` | 多模态 Prompt 优化（看图润色） | DashScope 原生 |
 
 ## 技术栈
@@ -112,8 +113,9 @@ omnigen-ai/
 
 ### 视频生成 & Prompt 优化
 
-- **文本 Prompt 优化** (`qwen3.7-max`)：使用 OpenAI 兼容协议 (`/compatible-mode/v1/chat/completions`)
+- **文本 Prompt 优化** (`qwen3.7-plus`)：使用 OpenAI 兼容协议 (`/compatible-mode/v1/chat/completions`)
 - **多模态 Prompt 优化** (`qwen-vl-max-latest`)：使用 DashScope 原生协议 (`/api/v1/services/aigc/multimodal-generation/generation`)
+- **Prompt 优化降级**：若账号未开通主优化模型权限并返回 AccessDenied，文本优化会自动尝试 `qwen-plus`，看图优化会自动尝试 `qwen-vl-plus`
 - **视频生成任务**：使用 DashScope 原生协议 (`/api/v1/services/aigc/video-generation/video-synthesis`)
 - **任务状态查询**：使用 DashScope 原生协议 (`/api/v1/tasks/{taskId}`)
 

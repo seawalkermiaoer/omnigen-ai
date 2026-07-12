@@ -3,7 +3,7 @@
 const $ = (id) => document.getElementById(id);
 
 // Model names fetched from server; fallback values used before load completes.
-let MODEL_NAMES = { TEXT_OPTIMIZE: 'qwen3.7-max', VISION_OPTIMIZE_LABEL: 'qwen-vl-max' };
+let MODEL_NAMES = { TEXT_OPTIMIZE: 'qwen3.7-plus', VISION_OPTIMIZE_LABEL: 'qwen-vl-max' };
 
 (async function loadModelConfig() {
   try {

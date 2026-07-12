@@ -19,6 +19,8 @@ try {
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const https = require('node:https');
+const { EventEmitter } = require('node:events');
 
 const app = require('../server');
 
@@ -61,6 +63,39 @@ function request(method, path, body) {
   });
 }
 
+async function withMockedHttpsRequest(responders, run) {
+  const original = https.request;
+  const calls = [];
+
+  https.request = (options, callback) => {
+    const req = new EventEmitter();
+    let body = '';
+
+    req.write = (chunk) => { body += chunk; };
+    req.destroy = () => {};
+    req.end = () => {
+      const payload = body ? JSON.parse(body) : null;
+      calls.push({ options, payload });
+      const response = responders.shift()(options, payload);
+      const res = new EventEmitter();
+      res.statusCode = response.status;
+      process.nextTick(() => {
+        callback(res);
+        res.emit('data', Buffer.from(JSON.stringify(response.data)));
+        res.emit('end');
+      });
+    };
+
+    return req;
+  };
+
+  try {
+    await run(calls);
+  } finally {
+    https.request = original;
+  }
+}
+
 // ─── Setup / Teardown ───────────────────────────────────────────────
 before(async () => {
   server = app.listen(0); // random available port
@@ -79,7 +114,7 @@ describe('GET /api/config', () => {
     assert.equal(status, 200);
     assert.ok(data.models, 'should have models key');
     assert.ok(Array.isArray(data.models.IMAGE), 'IMAGE should be an array');
-    assert.ok(data.models.TEXT_OPTIMIZE, 'should have TEXT_OPTIMIZE');
+    assert.equal(data.models.TEXT_OPTIMIZE, 'qwen3.7-plus');
     assert.ok(data.models.VISION_OPTIMIZE, 'should have VISION_OPTIMIZE');
   });
 
@@ -174,6 +209,88 @@ describe('POST /api/optimize-prompt — input validation', () => {
     assert.equal(status, 400);
     assert.match(data.error, /API Key/i);
   });
+
+  it('falls back to qwen-plus when text optimizer access is denied', async () => {
+    await withMockedHttpsRequest([
+      (_options, payload) => {
+        assert.equal(payload.model, 'qwen3.7-plus');
+        return { status: 403, data: { error: { code: 'Model.AccessDenied', message: 'Access denied.' } } };
+      },
+      (_options, payload) => {
+        assert.equal(payload.model, 'qwen-plus');
+        return { status: 200, data: { choices: [{ message: { content: '优化后的文生视频 prompt' } }] } };
+      },
+    ], async (calls) => {
+      const { status, data } = await request('POST', '/api/optimize-prompt', {
+        apiKey: 'test-key',
+        region: REGION,
+        draft: '一只猫在草地上跑',
+        mode: 't2v',
+      });
+
+      assert.equal(status, 200);
+      assert.equal(data.model, 'qwen-plus');
+      assert.equal(data.prompt, '优化后的文生视频 prompt');
+      assert.equal(calls.length, 2);
+    });
+  });
+
+  it('retries qwen3.7-plus on the official endpoint when a custom endpoint denies access', async () => {
+    await withMockedHttpsRequest([
+      (options, payload) => {
+        assert.equal(options.hostname, 'proxy.example.com');
+        assert.equal(payload.model, 'qwen3.7-plus');
+        return { status: 403, data: { error: { code: 'Model.AccessDenied', message: 'Access denied.' } } };
+      },
+      (options, payload) => {
+        assert.equal(options.hostname, 'dashscope.aliyuncs.com');
+        assert.equal(payload.model, 'qwen3.7-plus');
+        return { status: 200, data: { choices: [{ message: { content: '官方端点优化成功' } }] } };
+      },
+    ], async (calls) => {
+      const { status, data } = await request('POST', '/api/optimize-prompt', {
+        apiKey: 'test-key',
+        region: 'cn-beijing',
+        endpoint: 'https://proxy.example.com',
+        draft: '一只猫在草地上跑',
+        mode: 't2v',
+      });
+
+      assert.equal(status, 200);
+      assert.equal(data.model, 'qwen3.7-plus');
+      assert.equal(data.prompt, '官方端点优化成功');
+      assert.equal(calls.length, 2);
+    });
+  });
+
+  it('falls back to qwen-vl-plus when vision optimizer access is denied', async () => {
+    await withMockedHttpsRequest([
+      (_options, payload) => {
+        assert.equal(payload.model, 'qwen-vl-max-latest');
+        return { status: 403, data: { code: 'Model.AccessDenied', message: 'Access denied.' } };
+      },
+      (_options, payload) => {
+        assert.equal(payload.model, 'qwen-vl-plus');
+        return {
+          status: 200,
+          data: { output: { choices: [{ message: { content: [{ text: '优化后的图生视频 prompt' }] } }] } },
+        };
+      },
+    ], async (calls) => {
+      const { status, data } = await request('POST', '/api/optimize-prompt', {
+        apiKey: 'test-key',
+        region: REGION,
+        draft: '让画面动起来',
+        images: ['data:image/png;base64,AAAA'],
+        mode: 'i2v',
+      });
+
+      assert.equal(status, 200);
+      assert.equal(data.model, 'qwen-vl-plus');
+      assert.equal(data.prompt, '优化后的图生视频 prompt');
+      assert.equal(calls.length, 2);
+    });
+  });
 });
 
 describe('POST /api/optimize-prompt — real call', { skip: !API_KEY && 'TOKEN not set' }, () => {
@@ -253,6 +370,13 @@ async function makeTestPng(width = 100, height = 100) {
   }).png().toBuffer();
 }
 
+async function makeTestWebp(width = 100, height = 100) {
+  const sharp = require('sharp');
+  return await sharp({
+    create: { width, height, channels: 3, background: { r: 128, g: 128, b: 128 } },
+  }).webp().toBuffer();
+}
+
 /** Helper: upload a buffer as multipart/form-data */
 function uploadFile(fileName, buffer, mime) {
   return new Promise((resolve, reject) => {
@@ -324,5 +448,41 @@ describe('POST /api/upload-image', () => {
     const { status, data } = await uploadFile('large.jpg', buf, 'image/jpeg');
     assert.equal(status, 200);
     assert.ok(data.url.startsWith('data:image/jpeg;base64,') || data.url.startsWith('data:image/png;base64,'));
+  });
+
+  it('should return data URL for small WebP', async () => {
+    const buf = await makeTestWebp(100, 100);
+    const { status, data } = await uploadFile('test.webp', buf, 'image/webp');
+    assert.equal(status, 200);
+    assert.ok(data.url.startsWith('data:image/webp;base64,'));
+  });
+
+  it('should return data URL for small BMP', async () => {
+    // Use raw bytes with BMP mime — server stores buffer as-is
+    const buf = Buffer.alloc(1024, 0xAB);
+    const { status, data } = await uploadFile('test.bmp', buf, 'image/bmp');
+    assert.equal(status, 200);
+    assert.ok(data.url.startsWith('data:image/bmp;base64,'));
+  });
+
+  it('size field matches actual buffer length', async () => {
+    const buf = await makeTestJpeg(200, 200);
+    const { status, data } = await uploadFile('sized.jpg', buf, 'image/jpeg');
+    assert.equal(status, 200);
+    assert.equal(data.size, buf.length);
+  });
+
+  it('exactly 12MB buffer returns base64 (not OSS)', { timeout: 30_000 }, async () => {
+    // 12 * 1024 * 1024 = 12582912 bytes, server uses <= threshold
+    const buf = Buffer.alloc(12 * 1024 * 1024, 0xFF);
+    const { status, data } = await uploadFile('exact12mb.jpg', buf, 'image/jpeg');
+    assert.equal(status, 200);
+    assert.ok(data.url.startsWith('data:image/jpeg;base64,'), 'should return base64 for exactly 12MB');
+  });
+
+  it('over 50MB returns 413', { timeout: 30_000 }, async () => {
+    const buf = Buffer.alloc(50 * 1024 * 1024 + 1, 0);
+    const { status } = await uploadFile('over50mb.jpg', buf, 'image/jpeg');
+    assert.equal(status, 413);
   });
 });
