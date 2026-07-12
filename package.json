@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "smoke:qwen37-plus": "node scripts/qwen37-plus-smoke.js"
   },
   "dependencies": {
     "@alicloud/sts20150401": "^1.2.0",

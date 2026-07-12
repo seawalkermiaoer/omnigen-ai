@@ -115,6 +115,7 @@ omnigen-ai/
 
 - **文本 Prompt 优化** (`qwen3.7-plus`)：使用 OpenAI 兼容协议 (`/compatible-mode/v1/chat/completions`)
 - **多模态 Prompt 优化** (`qwen-vl-max-latest`)：使用 DashScope 原生协议 (`/api/v1/services/aigc/multimodal-generation/generation`)
+- **Prompt 优化降级**：若账号未开通主优化模型权限并返回 AccessDenied，文本优化会自动尝试 `qwen-plus`，看图优化会自动尝试 `qwen-vl-plus`
 - **视频生成任务**：使用 DashScope 原生协议 (`/api/v1/services/aigc/video-generation/video-synthesis`)
 - **任务状态查询**：使用 DashScope 原生协议 (`/api/v1/tasks/{taskId}`)
 

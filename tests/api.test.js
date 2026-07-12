@@ -19,6 +19,8 @@ try {
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const https = require('node:https');
+const { EventEmitter } = require('node:events');
 
 const app = require('../server');
 
@@ -59,6 +61,39 @@ function request(method, path, body) {
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+async function withMockedHttpsRequest(responders, run) {
+  const original = https.request;
+  const calls = [];
+
+  https.request = (options, callback) => {
+    const req = new EventEmitter();
+    let body = '';
+
+    req.write = (chunk) => { body += chunk; };
+    req.destroy = () => {};
+    req.end = () => {
+      const payload = body ? JSON.parse(body) : null;
+      calls.push({ options, payload });
+      const response = responders.shift()(options, payload);
+      const res = new EventEmitter();
+      res.statusCode = response.status;
+      process.nextTick(() => {
+        callback(res);
+        res.emit('data', Buffer.from(JSON.stringify(response.data)));
+        res.emit('end');
+      });
+    };
+
+    return req;
+  };
+
+  try {
+    await run(calls);
+  } finally {
+    https.request = original;
+  }
 }
 
 // ─── Setup / Teardown ───────────────────────────────────────────────
@@ -173,6 +208,88 @@ describe('POST /api/optimize-prompt — input validation', () => {
     const { status, data } = await request('POST', '/api/optimize-prompt', { draft: 'cat' });
     assert.equal(status, 400);
     assert.match(data.error, /API Key/i);
+  });
+
+  it('falls back to qwen-plus when text optimizer access is denied', async () => {
+    await withMockedHttpsRequest([
+      (_options, payload) => {
+        assert.equal(payload.model, 'qwen3.7-plus');
+        return { status: 403, data: { error: { code: 'Model.AccessDenied', message: 'Access denied.' } } };
+      },
+      (_options, payload) => {
+        assert.equal(payload.model, 'qwen-plus');
+        return { status: 200, data: { choices: [{ message: { content: '优化后的文生视频 prompt' } }] } };
+      },
+    ], async (calls) => {
+      const { status, data } = await request('POST', '/api/optimize-prompt', {
+        apiKey: 'test-key',
+        region: REGION,
+        draft: '一只猫在草地上跑',
+        mode: 't2v',
+      });
+
+      assert.equal(status, 200);
+      assert.equal(data.model, 'qwen-plus');
+      assert.equal(data.prompt, '优化后的文生视频 prompt');
+      assert.equal(calls.length, 2);
+    });
+  });
+
+  it('retries qwen3.7-plus on the official endpoint when a custom endpoint denies access', async () => {
+    await withMockedHttpsRequest([
+      (options, payload) => {
+        assert.equal(options.hostname, 'proxy.example.com');
+        assert.equal(payload.model, 'qwen3.7-plus');
+        return { status: 403, data: { error: { code: 'Model.AccessDenied', message: 'Access denied.' } } };
+      },
+      (options, payload) => {
+        assert.equal(options.hostname, 'dashscope.aliyuncs.com');
+        assert.equal(payload.model, 'qwen3.7-plus');
+        return { status: 200, data: { choices: [{ message: { content: '官方端点优化成功' } }] } };
+      },
+    ], async (calls) => {
+      const { status, data } = await request('POST', '/api/optimize-prompt', {
+        apiKey: 'test-key',
+        region: 'cn-beijing',
+        endpoint: 'https://proxy.example.com',
+        draft: '一只猫在草地上跑',
+        mode: 't2v',
+      });
+
+      assert.equal(status, 200);
+      assert.equal(data.model, 'qwen3.7-plus');
+      assert.equal(data.prompt, '官方端点优化成功');
+      assert.equal(calls.length, 2);
+    });
+  });
+
+  it('falls back to qwen-vl-plus when vision optimizer access is denied', async () => {
+    await withMockedHttpsRequest([
+      (_options, payload) => {
+        assert.equal(payload.model, 'qwen-vl-max-latest');
+        return { status: 403, data: { code: 'Model.AccessDenied', message: 'Access denied.' } };
+      },
+      (_options, payload) => {
+        assert.equal(payload.model, 'qwen-vl-plus');
+        return {
+          status: 200,
+          data: { output: { choices: [{ message: { content: [{ text: '优化后的图生视频 prompt' }] } }] } },
+        };
+      },
+    ], async (calls) => {
+      const { status, data } = await request('POST', '/api/optimize-prompt', {
+        apiKey: 'test-key',
+        region: REGION,
+        draft: '让画面动起来',
+        images: ['data:image/png;base64,AAAA'],
+        mode: 'i2v',
+      });
+
+      assert.equal(status, 200);
+      assert.equal(data.model, 'qwen-vl-plus');
+      assert.equal(data.prompt, '优化后的图生视频 prompt');
+      assert.equal(calls.length, 2);
+    });
   });
 });
 
