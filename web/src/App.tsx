@@ -6,6 +6,7 @@ import ProtectedRoute from '@/components/ProtectedRoute'
 import AdminRoute from '@/components/AdminRoute'
 import LoginPage from '@/pages/LoginPage'
 import UsersPage from '@/pages/UsersPage'
+import SettingsPage from '@/pages/SettingsPage'
 import PlaceholderPage from '@/pages/PlaceholderPage'
 import ImageGenPage from '@/pages/generation/ImageGenPage'
 import ImageEditPage from '@/pages/generation/ImageEditPage'
@@ -38,6 +39,7 @@ export default function App() {
 
           <Route element={<AdminRoute />}>
             <Route path="/users" element={<UsersPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Route>
       </Route>

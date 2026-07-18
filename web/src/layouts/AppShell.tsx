@@ -2,7 +2,7 @@ import { useState, type CSSProperties, type ReactNode } from 'react'
 import { Avatar, Dropdown, Layout, Menu, Segmented, Tooltip, Typography } from 'antd'
 import {
   EditOutlined, HistoryOutlined, LogoutOutlined, MenuFoldOutlined,
-  MenuUnfoldOutlined, PictureOutlined, PlayCircleOutlined, TeamOutlined,
+  MenuUnfoldOutlined, PictureOutlined, PlayCircleOutlined, SettingOutlined, TeamOutlined,
   UserOutlined, VideoCameraOutlined,
 } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -35,6 +35,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'r2v', path: '/r2v', icon: <VideoCameraOutlined />, labelKey: 'nav.r2v' },
   { key: 'history', path: '/history', icon: <HistoryOutlined />, labelKey: 'nav.history' },
   { key: 'users', path: '/users', icon: <TeamOutlined />, labelKey: 'nav.users', adminOnly: true },
+  { key: 'settings', path: '/settings', icon: <SettingOutlined />, labelKey: 'nav.settings', adminOnly: true },
 ]
 
 // 注入给 AppShell.css 使用的主题色变量，全部来自 @/theme 的 colors。
