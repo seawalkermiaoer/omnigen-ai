@@ -67,4 +67,29 @@ var (
 	// ErrUpstreamTestFailed 表示凭证已配置但上游拒绝了这次探测请求
 	// （网络失败、非 2xx 响应等），502 反映"我们能连，但下游有问题"。
 	ErrUpstreamTestFailed = New("SETTING_TEST_FAILED", http.StatusBadGateway)
+
+	// ErrTaskNotFound 同时覆盖"任务真的不存在"和"任务属于别人"两种情况——
+	// GetByIDForUser 归属过滤后两者在数据库层面是同一个结果（零行），
+	// repository 也必须只返回这一个错误码，不能替调用方猜出 403，
+	// 否则 404/403 的区别本身就成了一个存在性 oracle。
+	ErrTaskNotFound = New("TASK_NOT_FOUND", http.StatusNotFound)
+
+	// ErrUploadFileMissing: 请求里没有找到名为 "file" 的表单字段
+	// （server.js:266 `if (!req.file)`）。
+	ErrUploadFileMissing = New("UPLOAD_FILE_MISSING", http.StatusBadRequest)
+	// ErrUploadUnsupportedType: MIME 不在白名单
+	// （image/jpeg、image/png、image/webp、image/bmp）内，与
+	// ErrUploadFileMissing 分开——旧系统把这两种情况混成同一个模糊提示
+	// （multer fileFilter 静默丢弃文件，此后 req.file 为空，走的是上面那条
+	// "缺文件"分支），新版给出可区分的错误码，前端能分别提示。
+	ErrUploadUnsupportedType = New("UPLOAD_UNSUPPORTED_TYPE", http.StatusBadRequest)
+	// ErrUploadTooLarge: 原始文件超过 50MB 硬上限
+	// （server.js:76 multer `limits.fileSize`）。
+	ErrUploadTooLarge = New("UPLOAD_TOO_LARGE", http.StatusRequestEntityTooLarge)
+	// ErrUploadOSSNotConfigured: 文件 > 12MB 阈值必须走 OSS，但 OSS 未配置
+	// （缺 access key / secret）。旧系统对这种情况也返回 413
+	// （server.js:287），不是 500——请求本身没错，是服务端配置不完整；
+	// 与 ErrUploadTooLarge 用同一个 HTTP 状态码但错误码不同，
+	// 前端可以分别提示"文件太大"和"服务未配置大文件上传"。
+	ErrUploadOSSNotConfigured = New("UPLOAD_OSS_NOT_CONFIGURED", http.StatusRequestEntityTooLarge)
 )
