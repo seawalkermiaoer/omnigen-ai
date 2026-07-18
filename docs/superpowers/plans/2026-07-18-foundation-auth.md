@@ -933,10 +933,10 @@ import (
 )
 
 func TestSentinels_HaveCodeAndStatus(t *testing.T) {
-	assert.Equal(t, "AUTH_INVALID_CREDENTIALS", apperr.ErrInvalidCredentials.Code)
-	assert.Equal(t, http.StatusUnauthorized, apperr.ErrInvalidCredentials.HTTPStatus)
-	assert.Equal(t, "USER_LAST_ADMIN", apperr.ErrLastAdmin.Code)
-	assert.Equal(t, http.StatusUnprocessableEntity, apperr.ErrLastAdmin.HTTPStatus)
+	assert.Equal(t, "AUTH_INVALID_CREDENTIALS", apperr.ErrInvalidCredentials.Code())
+	assert.Equal(t, http.StatusUnauthorized, apperr.ErrInvalidCredentials.HTTPStatus())
+	assert.Equal(t, "USER_LAST_ADMIN", apperr.ErrLastAdmin.Code())
+	assert.Equal(t, http.StatusUnprocessableEntity, apperr.ErrLastAdmin.HTTPStatus())
 }
 
 // Wrap 必须返回副本，否则并发下会互相覆盖 Internal 字段。
@@ -945,8 +945,8 @@ func TestWrap_DoesNotMutateSentinel(t *testing.T) {
 	wrapped := apperr.ErrInternal.Wrap(cause)
 
 	assert.Nil(t, apperr.ErrInternal.Internal, "哨兵不得被修改")
-	assert.Equal(t, cause, wrapped.Internal)
-	assert.Equal(t, apperr.ErrInternal.Code, wrapped.Code)
+	assert.Equal(t, cause, wrapped.Internal())
+	assert.Equal(t, apperr.ErrInternal.Code(), wrapped.Code())
 	assert.NotSame(t, apperr.ErrInternal, wrapped)
 }
 
@@ -955,7 +955,7 @@ func TestAs_ExtractsAppError(t *testing.T) {
 
 	var target *apperr.AppError
 	require.True(t, errors.As(err, &target))
-	assert.Equal(t, "USER_NOT_FOUND", target.Code)
+	assert.Equal(t, "USER_NOT_FOUND", target.Code())
 }
 
 func TestUnwrap_ReachesCause(t *testing.T) {
@@ -984,29 +984,43 @@ package apperr
 
 import "net/http"
 
+// 字段不导出：哨兵是包级共享指针，导出字段等于允许任意 goroutine
+// 改写 apperr.ErrUserNotFound.Code 污染全局。errors.As 只要求指针类型，
+// 不要求字段导出，所以访问器不损失任何能力。
 type AppError struct {
-	Code       string
-	HTTPStatus int
-	Internal   error
+	code       string
+	httpStatus int
+	internal   error
 }
+
+func (e *AppError) Code() string    { return e.code }
+func (e *AppError) HTTPStatus() int { return e.httpStatus }
+func (e *AppError) Internal() error { return e.internal }
 
 func (e *AppError) Error() string {
-	if e.Internal != nil {
-		return e.Code + ": " + e.Internal.Error()
+	if e.internal != nil {
+		return e.code + ": " + e.internal.Error()
 	}
-	return e.Code
+	return e.code
 }
 
-func (e *AppError) Unwrap() error { return e.Internal }
+func (e *AppError) Unwrap() error { return e.internal }
+
+// Is 让 errors.Is 按错误码而非指针身份匹配，
+// 否则 Wrap 出来的副本匹配不上它自己的哨兵——这是个很容易踩的坑。
+func (e *AppError) Is(target error) bool {
+	t, ok := target.(*AppError)
+	return ok && t.code == e.code
+}
 
 // Wrap 返回携带底层原因的副本。刻意不修改接收者，
 // 否则包级哨兵会被并发请求互相覆盖。
 func (e *AppError) Wrap(cause error) *AppError {
-	return &AppError{Code: e.Code, HTTPStatus: e.HTTPStatus, Internal: cause}
+	return &AppError{code: e.code, httpStatus: e.httpStatus, internal: cause}
 }
 
 func New(code string, status int) *AppError {
-	return &AppError{Code: code, HTTPStatus: status}
+	return &AppError{code: code, httpStatus: status}
 }
 
 var (
@@ -1016,10 +1030,11 @@ var (
 	ErrForbidden          = New("AUTH_FORBIDDEN", http.StatusForbidden)
 	ErrWrongOldPassword   = New("AUTH_WRONG_OLD_PASSWORD", http.StatusUnprocessableEntity)
 
-	ErrUserNotFound  = New("USER_NOT_FOUND", http.StatusNotFound)
-	ErrUsernameTaken = New("USER_USERNAME_TAKEN", http.StatusConflict)
-	ErrModifySelf    = New("USER_CANNOT_MODIFY_SELF", http.StatusUnprocessableEntity)
-	ErrLastAdmin     = New("USER_LAST_ADMIN", http.StatusUnprocessableEntity)
+	ErrUserNotFound    = New("USER_NOT_FOUND", http.StatusNotFound)
+	ErrUsernameTaken   = New("USER_USERNAME_TAKEN", http.StatusConflict)
+	ErrModifySelf      = New("USER_CANNOT_MODIFY_SELF", http.StatusUnprocessableEntity)
+	ErrLastAdmin       = New("USER_LAST_ADMIN", http.StatusUnprocessableEntity)
+	ErrPasswordTooLong = New("USER_PASSWORD_TOO_LONG", http.StatusUnprocessableEntity)
 
 	ErrValidation = New("VALIDATION_FAILED", http.StatusUnprocessableEntity)
 	ErrInternal   = New("INTERNAL_ERROR", http.StatusInternalServerError)
@@ -1168,7 +1183,7 @@ func newManager(t *testing.T, ttl time.Duration) *jwtx.Manager {
 func TestGenerateThenParse(t *testing.T) {
 	m := newManager(t, time.Hour)
 
-	token, err := m.Generate(42, "admin")
+	token, err := m.Generate(42, usermodel.RoleAdmin)
 	require.NoError(t, err)
 	require.NotEmpty(t, token)
 
@@ -1176,7 +1191,7 @@ func TestGenerateThenParse(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "42", claims.Subject)
-	assert.Equal(t, "admin", claims.Role)
+	assert.Equal(t, usermodel.RoleAdmin, claims.Role)
 
 	uid, err := jwtx.UserID(claims)
 	require.NoError(t, err)
@@ -1186,7 +1201,7 @@ func TestGenerateThenParse(t *testing.T) {
 func TestParse_RejectsExpiredToken(t *testing.T) {
 	m := newManager(t, -time.Minute) // 签发即过期
 
-	token, err := m.Generate(1, "user")
+	token, err := m.Generate(1, usermodel.RoleUser)
 	require.NoError(t, err)
 
 	_, err = m.Parse(token)
@@ -1197,7 +1212,7 @@ func TestParse_RejectsWrongSecret(t *testing.T) {
 	issuer := jwtx.NewManager("secret-a", time.Hour)
 	verifier := jwtx.NewManager("secret-b", time.Hour)
 
-	token, err := issuer.Generate(1, "user")
+	token, err := issuer.Generate(1, usermodel.RoleUser)
 	require.NoError(t, err)
 
 	_, err = verifier.Parse(token)
@@ -1256,7 +1271,7 @@ func NewManager(secret string, ttl time.Duration) *Manager {
 	return &Manager{secret: []byte(secret), ttl: ttl}
 }
 
-func (m *Manager) Generate(userID int64, role string) (string, error) {
+func (m *Manager) Generate(userID int64, role usermodel.Role) (string, error) {
 	now := time.Now()
 	claims := authmodel.Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -1431,12 +1446,12 @@ func TestUserRepo_NotFoundReturnsAppError(t *testing.T) {
 		require.Error(t, err)
 		var appErr *apperr.AppError
 		require.True(t, errors.As(err, &appErr))
-		assert.Equal(t, "USER_NOT_FOUND", appErr.Code)
+		assert.Equal(t, "USER_NOT_FOUND", appErr.Code())
 
 		_, err = repo.GetByUsername(ctx, "ghost")
 		require.Error(t, err)
 		require.True(t, errors.As(err, &appErr))
-		assert.Equal(t, "USER_NOT_FOUND", appErr.Code)
+		assert.Equal(t, "USER_NOT_FOUND", appErr.Code())
 	})
 }
 
@@ -1449,7 +1464,7 @@ func TestUserRepo_DuplicateUsernameReturnsTaken(t *testing.T) {
 		require.Error(t, err)
 		var appErr *apperr.AppError
 		require.True(t, errors.As(err, &appErr))
-		assert.Equal(t, "USER_USERNAME_TAKEN", appErr.Code)
+		assert.Equal(t, "USER_USERNAME_TAKEN", appErr.Code())
 	})
 }
 
@@ -1488,7 +1503,7 @@ func TestUserRepo_Delete(t *testing.T) {
 		err = repo.Delete(ctx, u.ID)
 		var appErr *apperr.AppError
 		require.True(t, errors.As(err, &appErr))
-		assert.Equal(t, "USER_NOT_FOUND", appErr.Code)
+		assert.Equal(t, "USER_NOT_FOUND", appErr.Code())
 	})
 }
 
@@ -1898,7 +1913,7 @@ func assertCode(t *testing.T, err error, code string) {
 	require.Error(t, err)
 	var appErr *apperr.AppError
 	require.True(t, errors.As(err, &appErr), "期望 *apperr.AppError，实际 %T", err)
-	assert.Equal(t, code, appErr.Code)
+	assert.Equal(t, code, appErr.Code())
 }
 
 func TestLogin_Succeeds(t *testing.T) {
@@ -2033,7 +2048,7 @@ func (s *AuthService) Login(ctx context.Context, req authmodel.LoginRequest) (*a
 	u, err := s.users.GetByUsername(ctx, req.Username)
 	if err != nil {
 		var appErr *apperr.AppError
-		if errors.As(err, &appErr) && appErr.Code == apperr.ErrUserNotFound.Code {
+		if errors.As(err, &appErr) && appErr.Code() == apperr.ErrUserNotFound.Code() {
 			return nil, apperr.ErrInvalidCredentials
 		}
 		return nil, err
@@ -2046,7 +2061,7 @@ func (s *AuthService) Login(ctx context.Context, req authmodel.LoginRequest) (*a
 		return nil, apperr.ErrUserDisabled
 	}
 
-	token, err := s.jwt.Generate(u.ID, string(u.Role))
+	token, err := s.jwt.Generate(u.ID, u.Role)
 	if err != nil {
 		return nil, apperr.ErrInternal.Wrap(err)
 	}
@@ -2574,7 +2589,7 @@ func TestAuth_ValidTokenPasses(t *testing.T) {
 	users := map[int64]*usermodel.User{7: activeUser(7, usermodel.RoleUser)}
 	r, jwtMgr := setup(t, users)
 
-	token, err := jwtMgr.Generate(7, "user")
+	token, err := jwtMgr.Generate(7, usermodel.RoleUser)
 	require.NoError(t, err)
 
 	w := do(r, "/whoami", token)
@@ -2589,7 +2604,7 @@ func TestAuth_DisabledUserRejectedImmediately(t *testing.T) {
 	users := map[int64]*usermodel.User{7: u}
 	r, jwtMgr := setup(t, users)
 
-	token, err := jwtMgr.Generate(7, "user")
+	token, err := jwtMgr.Generate(7, usermodel.RoleUser)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, do(r, "/whoami", token).Code)
 
@@ -2605,7 +2620,7 @@ func TestAuth_DeletedUserRejected(t *testing.T) {
 	users := map[int64]*usermodel.User{7: activeUser(7, usermodel.RoleUser)}
 	r, jwtMgr := setup(t, users)
 
-	token, err := jwtMgr.Generate(7, "user")
+	token, err := jwtMgr.Generate(7, usermodel.RoleUser)
 	require.NoError(t, err)
 	delete(users, 7)
 
@@ -2617,7 +2632,7 @@ func TestRequireAdmin_RejectsPlainUser(t *testing.T) {
 	users := map[int64]*usermodel.User{7: activeUser(7, usermodel.RoleUser)}
 	r, jwtMgr := setup(t, users)
 
-	token, err := jwtMgr.Generate(7, "user")
+	token, err := jwtMgr.Generate(7, usermodel.RoleUser)
 	require.NoError(t, err)
 
 	w := do(r, "/admin-only", token)
@@ -2631,7 +2646,7 @@ func TestRequireAdmin_TrustsDatabaseNotToken(t *testing.T) {
 	users := map[int64]*usermodel.User{7: activeUser(7, usermodel.RoleUser)}
 	r, jwtMgr := setup(t, users)
 
-	forged, err := jwtMgr.Generate(7, "admin")
+	forged, err := jwtMgr.Generate(7, usermodel.RoleAdmin)
 	require.NoError(t, err)
 
 	w := do(r, "/admin-only", forged)
@@ -2642,7 +2657,7 @@ func TestRequireAdmin_AllowsAdmin(t *testing.T) {
 	users := map[int64]*usermodel.User{9: activeUser(9, usermodel.RoleAdmin)}
 	r, jwtMgr := setup(t, users)
 
-	token, err := jwtMgr.Generate(9, "admin")
+	token, err := jwtMgr.Generate(9, usermodel.RoleAdmin)
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusOK, do(r, "/admin-only", token).Code)
@@ -2733,16 +2748,16 @@ func ErrorHandler() gin.HandlerFunc {
 			appErr = apperr.ErrInternal.Wrap(err)
 		}
 
-		if appErr.HTTPStatus >= http.StatusInternalServerError {
+		if appErr.HTTPStatus() >= http.StatusInternalServerError {
 			slog.Error("请求处理失败",
-				"code", appErr.Code, "path", c.Request.URL.Path,
-				"method", c.Request.Method, "internal", appErr.Internal)
+				"code", appErr.Code(), "path", c.Request.URL.Path,
+				"method", c.Request.Method, "internal", appErr.Internal())
 		} else {
 			slog.Info("请求被拒绝",
-				"code", appErr.Code, "path", c.Request.URL.Path, "method", c.Request.Method)
+				"code", appErr.Code(), "path", c.Request.URL.Path, "method", c.Request.Method)
 		}
 
-		c.JSON(appErr.HTTPStatus, common.Response{Code: appErr.Code})
+		c.JSON(appErr.HTTPStatus(), common.Response{Code: appErr.Code()})
 	}
 }
 
@@ -2751,7 +2766,7 @@ func Recovery() gin.HandlerFunc {
 	return gin.CustomRecovery(func(c *gin.Context, recovered any) {
 		slog.Error("panic 恢复", "path", c.Request.URL.Path, "recovered", recovered)
 		c.AbortWithStatusJSON(http.StatusInternalServerError,
-			common.Response{Code: apperr.ErrInternal.Code})
+			common.Response{Code: apperr.ErrInternal.Code()})
 	})
 }
 ```
@@ -4064,6 +4079,7 @@ git add web/ && git commit -m "feat(web): Vite + React + antd 脚手架与深色
     "USER_USERNAME_TAKEN": "该用户名已被占用",
     "USER_CANNOT_MODIFY_SELF": "不能对自己执行该操作",
     "USER_LAST_ADMIN": "系统必须保留至少一个可用的管理员",
+    "USER_PASSWORD_TOO_LONG": "密码过长（上限 72 字节，一个中文字符占 3 字节）",
     "VALIDATION_FAILED": "提交的内容不合法，请检查后重试",
     "HEALTH_DB_UNREACHABLE": "数据库连接异常",
     "INTERNAL_ERROR": "服务器出错了，请稍后重试",
@@ -4176,6 +4192,7 @@ git add web/ && git commit -m "feat(web): Vite + React + antd 脚手架与深色
     "USER_USERNAME_TAKEN": "That username is already taken",
     "USER_CANNOT_MODIFY_SELF": "You cannot perform this action on yourself",
     "USER_LAST_ADMIN": "The system must keep at least one usable administrator",
+    "USER_PASSWORD_TOO_LONG": "Password is too long (max 72 bytes; each Chinese character uses 3)",
     "VALIDATION_FAILED": "The submitted data is invalid, please check and retry",
     "HEALTH_DB_UNREACHABLE": "Database is unreachable",
     "INTERNAL_ERROR": "Something went wrong, please try again later",
@@ -4232,6 +4249,7 @@ describe('语言文件', () => {
       'AUTH_INVALID_CREDENTIALS', 'AUTH_UNAUTHORIZED', 'AUTH_USER_DISABLED',
       'AUTH_FORBIDDEN', 'AUTH_WRONG_OLD_PASSWORD', 'USER_NOT_FOUND',
       'USER_USERNAME_TAKEN', 'USER_CANNOT_MODIFY_SELF', 'USER_LAST_ADMIN',
+      'USER_PASSWORD_TOO_LONG',
       'VALIDATION_FAILED', 'INTERNAL_ERROR', 'UNKNOWN',
     ]
     required.forEach((code) => {
