@@ -1,7 +1,25 @@
-## 新版（改造中）
+## 新版
 
 新版前后端位于 `server/`（Go + Gin + wire + Postgres）与 `web/`（React + Vite + antd）。
-旧版 `server.js` + `public/` 仍可独立运行，改造全部完成后移除。
+旧版 `server.js` + `public/` 仍可独立运行（见下方「AIGC 图片生成，视频生成」章节），
+两套系统各自监听不同端口，互不干扰。
+
+### 功能
+
+- **账号体系**：JWT 登录、管理员 / 普通用户两种角色、用户管理（新建、改密、禁用）
+- **配置与凭证**：DashScope / t8star API Key、地域、接入点、OSS 凭证等全部落库，
+  AES-256-GCM 加密存储，仅管理员可写，接口只回传脱敏值——**API Key 不再经过浏览器**，
+  这是相对旧版最核心的安全变化
+- **模型目录**：单一后端目录驱动前端的模型下拉与参数面板，新增/调整模型不需要改前端代码
+- **图片生成 / 图片编辑**：Qwen 与 wan2.7 系列、`gpt-image-2`（t8star 协议），参数面板按所选模型自动增减
+- **三种视频生成**：文生视频、图生视频（首帧 / 首尾帧 / 续写三种任务类型，因模型而异）、参考生视频，
+  服务端持久化任务并轮询上游到终态，前端不再自己戳接口
+- **上传与 OSS**：≤12MB 走 base64 内嵌，超出走阿里云 OSS 直传（24 小时签名 URL），
+  STS 凭证用 `singleflight` 防并发重复获取
+- **Prompt 智能优化**：文本 / 看图两种模式，命中 AccessDenied 时自动降级重试
+- **任务下载**：`GET /api/download/:taskId/:index` 登录且仅本人，服务端持有真实上游 URL 并做重定向跳数与域名白名单限制
+- **国际化**：中文 / English 双语，界面文案与后端错误码翻译均覆盖
+- **历史记录**：按用户分页查询任务列表与状态
 
 ### 启动新版
 
@@ -10,17 +28,33 @@
 # 注意：若本机 brew postgresql 在运行会遮蔽该端口，需先 brew services stop postgresql@14
 
 cd server
-cp .env.example .env   # 填入 JWT_SECRET 与 BOOTSTRAP_ADMIN_PASSWORD
+cp .env.example .env   # 填入 JWT_SECRET、BOOTSTRAP_ADMIN_PASSWORD、APP_ENCRYPTION_KEY
 make migrate-up
 make run               # :8080
 
 cd ../web
 npm install
-npm run dev            # :5173
+npm run dev            # :5173（端口被占用时 Vite 会自动顺延到 5174~5177，CORS 已放行这个区间）
 ```
 
-改造分四个阶段推进，当前已完成阶段 1「地基与登录」：
-详见 `docs/superpowers/specs/2026-07-18-rewrite-foundation-auth-design.md`。
+### 新增环境变量
+
+除旧版沿用的数据库连接信息外，新版 `server/.env` 还需要：
+
+| 变量 | 说明 |
+|------|------|
+| `JWT_SECRET` | 必填，缺失则拒绝启动。生成方式：`openssl rand -base64 32` |
+| `JWT_TTL` | 登录态有效期，默认 `168h` |
+| `BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD` | 首次启动且系统内无活跃管理员时，用于自举创建管理员账号 |
+| `APP_ENCRYPTION_KEY` | **必填**，缺失或解码后不是 32 字节则拒绝启动。用于加密 `app_settings` 表中的上游 API Key（AES-256-GCM）。生成方式：`openssl rand -base64 32`。**不要随意更换**——更换后已加密存储的旧密钥将无法再解密，需要清空 `app_settings` 表重新配置 |
+| `HTTP_PORT` | 后端监听端口，默认 `8080` |
+| `CORS_ORIGINS` | 允许跨域的前端 origin，逗号分隔；默认放行 `http://localhost:5173`~`5177` |
+
+> 注意：图片上传目前**不做服务端压缩**——旧版 README 曾提到 `sharp` 压缩，但旧代码里
+> `sharp` 只是被引入、从未被调用；新版 Go 后端同样没有实现压缩，上传即原图（≤12MB 走
+> base64 内嵌，超出走 OSS 直传）。
+
+详见 `docs/superpowers/specs/2026-07-19-generation-core-design.md`。
 
 ---
 
