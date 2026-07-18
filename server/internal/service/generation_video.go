@@ -71,17 +71,36 @@ type R2VMediaVideo struct {
 	ReferenceVoice string
 }
 
-// VideoParams is the subset of optional video parameters the catalog
-// recognizes (catalog.ParamNegativePrompt/ParamPromptExtend/ParamSeed/
-// ParamWatermark — see happyhorseVideoParams/wanVideoParams in catalog.go).
-// Pointer fields use the same "nil means not provided" convention as
-// provider.ImageParams and for the same reason: watermark=false and seed=0
-// are meaningful explicit values, not absence.
+// VideoParams is the full set of parameters task.js's collectParams(kind)
+// builds for every video request (task.js:304-315) plus the wan-only
+// negative_prompt/prompt_extend this service also has to carry. Two
+// different conventions live side by side here, matching the old code
+// exactly:
+//
+//   - Resolution/Duration/Watermark are mandatory-with-a-default, never
+//     optional: the old UI's <select>/<input> controls always have a
+//     value (task.js:306-308 reads them unconditionally, and
+//     collectWatermarkParams always returns `{watermark: enabled}` — a
+//     checkbox is never "unset"). A caller that sends the zero value
+//     (Resolution="", Duration=0, Watermark=false) gets exactly what the
+//     old UI's defaults would have produced, not an omitted field.
+//   - Seed/PromptExtend/NegativePrompt are genuinely optional — nil/""
+//     means "the caller didn't provide this", and provider.ImageParams's
+//     "nil means not provided" convention applies: seed=0 is a meaningful
+//     explicit value once set, not absence.
+//   - Ratio is optional-and-mode-gated: r2v/t2v default it to "16:9" when
+//     empty (mirroring the <select id="ratio-r2v/t2v"> always having a
+//     selected option); i2v must never receive one at all — see
+//     normalizeVideoParams for why that's deliberate, not an oversight.
 type VideoParams struct {
 	NegativePrompt string
 	PromptExtend   *bool
 	Seed           *int64
-	Watermark      *bool
+
+	Resolution string
+	Duration   int
+	Ratio      string
+	Watermark  bool
 }
 
 // CreateVideoTaskRequest is the service-level input for
@@ -162,7 +181,12 @@ func (s *VideoGenerationService) CreateVideoTask(ctx context.Context, userID int
 	if err != nil {
 		return nil, err
 	}
-	if err := validateVideoParams(model, req.Params); err != nil {
+
+	params, err := normalizeVideoParams(mode, req.Params)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateOptionalVideoParams(model, params); err != nil {
 		return nil, err
 	}
 
@@ -190,7 +214,7 @@ func (s *VideoGenerationService) CreateVideoTask(ctx context.Context, userID int
 		return nil, err
 	}
 
-	payload := buildVideoPayload(model, mode, req, media)
+	payload := buildVideoPayload(model, mode, req, media, params)
 
 	p := s.factory(apiKey, region, workspaceID, endpoint)
 	upstreamID, callErr := p.CreateVideoTask(ctx, provider.VideoRequest{Payload: payload})
@@ -200,7 +224,7 @@ func (s *VideoGenerationService) CreateVideoTask(ctx context.Context, userID int
 		Mode:      mode,
 		Model:     req.Model,
 		Prompt:    req.Prompt,
-		Params:    videoParamsToStorageMap(req.Params),
+		Params:    videoParamsToStorageMap(params),
 		InputURLs: mediaURLs(media),
 	}
 
@@ -401,10 +425,109 @@ func buildI2VMedia(taskType I2VTaskType, firstFrame, lastFrame, firstClip, drivi
 	return media
 }
 
-// validateVideoParams rejects any optional parameter the model's catalog
-// entry doesn't list in Supports — mirrors validateImageRequest's
-// `unsupported` loop in generation_image.go.
-func validateVideoParams(model catalog.Model, p VideoParams) error {
+// videoResolutions / videoDefaultResolution, videoDurationMin/Max /
+// videoDefaultDuration, and videoRatios / videoDefaultRatio are the allowed
+// values for resolution/duration/ratio, ported from the <select>/<input>
+// controls in public/index.html (resolution-r2v/i2v/t2v, duration-*,
+// ratio-r2v/t2v — see index.html:91-110,240-247,329-348).
+//
+// These live here as package-level constants, not as fields on
+// catalog.Model, because they are not model-specific: every video model in
+// the catalog (happyhorse and wan alike) takes the same resolution set, the
+// same duration range, and — for the modes that accept a ratio at all — the
+// same ratio set. r2v.js and t2v.js's <select id="ratio-*"> list the same
+// seven values in a different on-screen order, but the allowed *set* is
+// identical, so one shared slice covers both. Bolting mode-invariant
+// constants onto every catalog.Model entry would just be denormalization;
+// catalog.go stays untouched, matching Task 12's file list.
+var videoResolutions = []string{"720P", "1080P"}
+
+const videoDefaultResolution = "720P"
+
+const (
+	videoDurationMin     = 3
+	videoDurationMax     = 15
+	videoDefaultDuration = 5
+)
+
+// videoRatios is the shared allowed set for r2v/t2v's ratio dropdown
+// (index.html:98-106 for r2v, :336-344 for t2v — same seven values, listed
+// in a different order in the HTML, which is why this is a set, not
+// something that needs to preserve either page's on-screen ordering).
+var videoRatios = []string{"16:9", "9:16", "3:4", "4:3", "4:5", "5:4", "1:1"}
+
+const videoDefaultRatio = "16:9"
+
+// normalizeVideoParams applies task.js:304-315's defaulting rules and
+// rejects anything outside the allowed value sets. It must run before
+// validateOptionalVideoParams/buildVideoPayload — both downstream consumers
+// assume Resolution/Duration are already valid and defaulted, and that
+// Ratio is empty if and only if mode is i2v.
+//
+// resolution/duration/watermark are mandatory-with-a-default: the old UI's
+// controls always have a value, so a caller that omits them gets the same
+// default the old UI would have produced (720P / 5s), not an error.
+// Watermark has no validation branch at all — every bool value is valid,
+// so "not set" (false) and "explicitly false" are indistinguishable and
+// that's fine, matching collectWatermarkParams' unconditional
+// `{watermark: enabled}`.
+//
+// ratio is where old and new behavior are the same on purpose but for
+// different reasons. In task.js, ratio is only collected `if (ratioEl)`
+// (task.js:310-311) — the element lookup itself is what gates it, and for
+// i2v that lookup fails because the i2v panel never had a `#ratio-i2v`
+// element to begin with (index.html has `#autoRatio-i2v`, a disabled input
+// labeled "自动跟随首帧" / "follows the first frame automatically" —
+// index.html:251). So the old system's ratio omission for i2v was an
+// accident of DOM lookup, not a deliberate design decision documented
+// anywhere. The resulting behavior — i2v derives its aspect ratio from the
+// first frame and never gets a ratio parameter — is nonetheless correct,
+// so this function makes it deliberate: i2v requests that set Ratio at all
+// are rejected outright (silently dropping a caller-supplied parameter is
+// how you get a bug report when someone "fixes" the missing UI field six
+// months from now), and r2v/t2v default an empty Ratio to "16:9" instead of
+// leaving it unset — mirroring the <select> always having a selected
+// option, which is the actual reason r2v/t2v always send one.
+func normalizeVideoParams(mode generationmodel.TaskMode, p VideoParams) (VideoParams, error) {
+	out := p
+
+	switch {
+	case out.Resolution == "":
+		out.Resolution = videoDefaultResolution
+	case !containsString(videoResolutions, out.Resolution):
+		return VideoParams{}, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 不支持的 resolution %q", out.Resolution))
+	}
+
+	switch {
+	case out.Duration == 0:
+		out.Duration = videoDefaultDuration
+	case out.Duration < videoDurationMin || out.Duration > videoDurationMax:
+		return VideoParams{}, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: duration=%d 超出允许范围 [%d,%d]", out.Duration, videoDurationMin, videoDurationMax))
+	}
+
+	if mode == generationmodel.TaskModeI2V {
+		if out.Ratio != "" {
+			return VideoParams{}, apperr.ErrValidation.Wrap(errors.New("generation_video: i2v 不接受 ratio，宽高比由首帧决定"))
+		}
+		return out, nil
+	}
+
+	switch {
+	case out.Ratio == "":
+		out.Ratio = videoDefaultRatio
+	case !containsString(videoRatios, out.Ratio):
+		return VideoParams{}, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 不支持的 ratio %q", out.Ratio))
+	}
+	return out, nil
+}
+
+// validateOptionalVideoParams rejects any genuinely-optional parameter the
+// model's catalog entry doesn't list in Supports — mirrors
+// validateImageRequest's `unsupported` loop in generation_image.go.
+// Resolution/Duration/Ratio/Watermark are not in scope here: they're not
+// catalog-gated (see normalizeVideoParams's package doc above), they're
+// mode-gated (Ratio) or always allowed (the rest).
+func validateOptionalVideoParams(model catalog.Model, p VideoParams) error {
 	checks := []struct {
 		set   bool
 		param string
@@ -412,7 +535,6 @@ func validateVideoParams(model catalog.Model, p VideoParams) error {
 		{p.NegativePrompt != "", catalog.ParamNegativePrompt},
 		{p.PromptExtend != nil, catalog.ParamPromptExtend},
 		{p.Seed != nil, catalog.ParamSeed},
-		{p.Watermark != nil, catalog.ParamWatermark},
 	}
 	for _, chk := range checks {
 		if chk.set && !model.SupportsParam(chk.param) {
@@ -422,7 +544,10 @@ func validateVideoParams(model catalog.Model, p VideoParams) error {
 	return nil
 }
 
-// buildVideoPayload assembles the full video-synthesis request body.
+// buildVideoPayload assembles the full video-synthesis request body. params
+// must already be normalized (normalizeVideoParams) — Resolution/Duration
+// are assumed valid-and-defaulted, and Ratio is assumed empty exactly when
+// it shouldn't be sent (i2v).
 //
 // negative_prompt is placed on `input`, not `parameters` — r2v.js:178
 // (`input.negative_prompt = negative`) and i2v.js:244 do this identically;
@@ -433,7 +558,15 @@ func validateVideoParams(model catalog.Model, p VideoParams) error {
 // `input = { prompt, media }`, unconditional even though prompt is
 // required and thus never empty in practice); i2v/t2v only include it when
 // non-empty (i2v.js:242 `if (prompt) input.prompt = prompt`).
-func buildVideoPayload(model catalog.Model, mode generationmodel.TaskMode, req CreateVideoTaskRequest, media []map[string]any) map[string]any {
+//
+// resolution/duration/watermark are always present in `parameters` — never
+// omitted, matching task.js:304-315's unconditional emission (this is also
+// why watermark=false must never be dropped: task.js sends it exactly as
+// often as it sends true). ratio is only present when params.Ratio is
+// non-empty, which after normalizeVideoParams means "r2v/t2v" — i2v's Ratio
+// is guaranteed empty at this point, so the `if` below is what actually
+// keeps ratio off the wire for i2v, not a mode check duplicated here.
+func buildVideoPayload(model catalog.Model, mode generationmodel.TaskMode, req CreateVideoTaskRequest, media []map[string]any, params VideoParams) map[string]any {
 	input := map[string]any{}
 	if len(media) > 0 {
 		input["media"] = media
@@ -443,26 +576,30 @@ func buildVideoPayload(model catalog.Model, mode generationmodel.TaskMode, req C
 	} else if req.Prompt != "" {
 		input["prompt"] = req.Prompt
 	}
-	if req.Params.NegativePrompt != "" {
-		input["negative_prompt"] = req.Params.NegativePrompt
+	if params.NegativePrompt != "" {
+		input["negative_prompt"] = params.NegativePrompt
 	}
 
-	parameters := map[string]any{}
-	if req.Params.PromptExtend != nil {
-		parameters["prompt_extend"] = *req.Params.PromptExtend
+	parameters := map[string]any{
+		"resolution": params.Resolution,
+		"duration":   params.Duration,
+		"watermark":  params.Watermark,
 	}
-	if req.Params.Seed != nil {
-		parameters["seed"] = *req.Params.Seed
+	if params.Ratio != "" {
+		parameters["ratio"] = params.Ratio
 	}
-	if req.Params.Watermark != nil {
-		parameters["watermark"] = *req.Params.Watermark
+	if params.PromptExtend != nil {
+		parameters["prompt_extend"] = *params.PromptExtend
+	}
+	if params.Seed != nil {
+		parameters["seed"] = *params.Seed
 	}
 
-	payload := map[string]any{"model": model.ID, "input": input}
-	if len(parameters) > 0 {
-		payload["parameters"] = parameters
+	return map[string]any{
+		"model":      model.ID,
+		"input":      input,
+		"parameters": parameters,
 	}
-	return payload
 }
 
 // mediaURLs extracts just the URLs (in payload order) for InputURLs —
@@ -478,10 +615,20 @@ func mediaURLs(media []map[string]any) []string {
 	return urls
 }
 
-// videoParamsToStorageMap mirrors paramsToStorageMap in generation_image.go:
-// only fields the caller actually set are recorded.
+// videoParamsToStorageMap mirrors paramsToStorageMap in generation_image.go
+// for the genuinely-optional fields (only recorded when the caller set
+// them); resolution/duration/watermark are always recorded since — after
+// normalizeVideoParams — they always hold a real, defaulted value, not an
+// absence.
 func videoParamsToStorageMap(p VideoParams) map[string]any {
-	m := map[string]any{}
+	m := map[string]any{
+		"resolution": p.Resolution,
+		"duration":   p.Duration,
+		"watermark":  p.Watermark,
+	}
+	if p.Ratio != "" {
+		m["ratio"] = p.Ratio
+	}
 	if p.NegativePrompt != "" {
 		m["negativePrompt"] = p.NegativePrompt
 	}
@@ -490,9 +637,6 @@ func videoParamsToStorageMap(p VideoParams) map[string]any {
 	}
 	if p.Seed != nil {
 		m["seed"] = *p.Seed
-	}
-	if p.Watermark != nil {
-		m["watermark"] = *p.Watermark
 	}
 	return m
 }

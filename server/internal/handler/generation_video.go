@@ -46,7 +46,18 @@ type createVideoTaskRequestBody struct {
 	NegativePrompt string `json:"negativePrompt"`
 	PromptExtend   *bool  `json:"promptExtend"`
 	Seed           *int64 `json:"seed"`
-	Watermark      *bool  `json:"watermark"`
+
+	// Resolution/Duration/Watermark are never optional on the wire either —
+	// an omitted field decodes to its Go zero value ("", 0, false), and
+	// service.normalizeVideoParams treats "" / 0 as "use the old UI's
+	// default" (720P / 5s) exactly the way an untouched <select>/<input>
+	// would have. Ratio is optional-and-mode-gated: sending it on an i2v
+	// request is a validation error, not silently ignored — see
+	// service.normalizeVideoParams's doc for why.
+	Resolution string `json:"resolution"`
+	Duration   int    `json:"duration"`
+	Ratio      string `json:"ratio"`
+	Watermark  bool   `json:"watermark"`
 }
 
 func (b createVideoTaskRequestBody) toServiceRequest() service.CreateVideoTaskRequest {
@@ -76,6 +87,9 @@ func (b createVideoTaskRequestBody) toServiceRequest() service.CreateVideoTaskRe
 			NegativePrompt: b.NegativePrompt,
 			PromptExtend:   b.PromptExtend,
 			Seed:           b.Seed,
+			Resolution:     b.Resolution,
+			Duration:       b.Duration,
+			Ratio:          b.Ratio,
 			Watermark:      b.Watermark,
 		},
 	}

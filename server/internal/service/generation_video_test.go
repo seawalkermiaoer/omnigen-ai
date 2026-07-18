@@ -30,6 +30,13 @@ func mediaOf(t *testing.T, factory *recordingVideoFactory) []map[string]any {
 	return media
 }
 
+func parametersOf(t *testing.T, factory *recordingVideoFactory) map[string]any {
+	t.Helper()
+	parameters, ok := factory.lastReq.Payload["parameters"].(map[string]any)
+	require.True(t, ok, "payload 必须有 parameters 字段: %#v", factory.lastReq.Payload)
+	return parameters
+}
+
 // ── Create 返回本地 id，不是上游 id ─────────────────────────────────
 
 func TestCreateVideoTask_ReturnsLocalID_DistinctFromUpstreamID(t *testing.T) {
@@ -326,4 +333,199 @@ func TestCreateVideoTask_UpstreamFailure_PersistsFailedRow(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, generationmodel.StatusFailed, rows[0].Status)
 	require.NotNil(t, rows[0].ErrorCode)
+}
+
+// ── resolution/duration/watermark/ratio ──────────────────────────────
+
+// Every video mode must emit resolution/duration/watermark unconditionally
+// — task.js:304-315 never omits them for any of r2v/i2v/t2v.
+func TestCreateVideoTask_AllModes_AlwaysEmitResolutionDurationWatermark(t *testing.T) {
+	cases := []struct {
+		name string
+		req  service.CreateVideoTaskRequest
+	}{
+		{
+			name: "t2v",
+			req: service.CreateVideoTaskRequest{
+				Model:  "happyhorse-1.1-t2v",
+				Prompt: "x",
+			},
+		},
+		{
+			name: "r2v",
+			req: service.CreateVideoTaskRequest{
+				Model:  "wan2.7-r2v",
+				Prompt: "x",
+				Images: []service.R2VMediaImage{{URL: "img1"}},
+			},
+		},
+		{
+			name: "i2v",
+			req: service.CreateVideoTaskRequest{
+				Model:      "wan2.7-i2v-2026-04-25",
+				Prompt:     "x",
+				TaskType:   service.I2VTaskFirstFrame,
+				FirstFrame: "first.png",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := dashscopeSettings(nil)
+			factory := &recordingVideoFactory{taskID: "t-1"}
+			svc, _ := newVideoService(t, settings, factory)
+
+			_, err := svc.CreateVideoTask(context.Background(), 1, tc.req)
+			require.NoError(t, err)
+
+			params := parametersOf(t, factory)
+			assert.Equal(t, "720P", params["resolution"], "未指定时必须默认 720P")
+			assert.Equal(t, 5, params["duration"], "未指定时必须默认 5 秒")
+			assert.Equal(t, false, params["watermark"], "watermark 必须始终发送，即便是 false")
+		})
+	}
+}
+
+// watermark:false 和 seed:0 都是有意义的显式值，不能被判空逻辑丢弃。
+func TestCreateVideoTask_WatermarkFalse_And_SeedZero_AreSent_NotDropped(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingVideoFactory{taskID: "t-1"}
+	svc, _ := newVideoService(t, settings, factory)
+
+	zero := int64(0)
+	_, err := svc.CreateVideoTask(context.Background(), 1, service.CreateVideoTaskRequest{
+		Model:  "happyhorse-1.1-t2v",
+		Prompt: "x",
+		Params: service.VideoParams{Watermark: false, Seed: &zero},
+	})
+	require.NoError(t, err)
+
+	params := parametersOf(t, factory)
+	require.Contains(t, params, "watermark")
+	assert.Equal(t, false, params["watermark"])
+	require.Contains(t, params, "seed")
+	assert.Equal(t, int64(0), params["seed"])
+}
+
+// r2v 与 t2v 必须发送 ratio；i2v 必须完全不发送（宽高比由首帧决定）。
+func TestCreateVideoTask_Ratio_SentForR2VAndT2V_OmittedForI2V(t *testing.T) {
+	settings := dashscopeSettings(nil)
+
+	r2vFactory := &recordingVideoFactory{taskID: "t-r2v"}
+	r2vSvc, _ := newVideoService(t, settings, r2vFactory)
+	_, err := r2vSvc.CreateVideoTask(context.Background(), 1, service.CreateVideoTaskRequest{
+		Model:  "wan2.7-r2v",
+		Prompt: "x",
+		Images: []service.R2VMediaImage{{URL: "img1"}},
+	})
+	require.NoError(t, err)
+	r2vParams := parametersOf(t, r2vFactory)
+	assert.Equal(t, "16:9", r2vParams["ratio"], "r2v 未指定 ratio 时必须默认 16:9")
+
+	t2vFactory := &recordingVideoFactory{taskID: "t-t2v"}
+	t2vSvc, _ := newVideoService(t, settings, t2vFactory)
+	_, err = t2vSvc.CreateVideoTask(context.Background(), 1, service.CreateVideoTaskRequest{
+		Model:  "happyhorse-1.1-t2v",
+		Prompt: "x",
+		Params: service.VideoParams{Ratio: "9:16"},
+	})
+	require.NoError(t, err)
+	t2vParams := parametersOf(t, t2vFactory)
+	assert.Equal(t, "9:16", t2vParams["ratio"])
+
+	i2vFactory := &recordingVideoFactory{taskID: "t-i2v"}
+	i2vSvc, _ := newVideoService(t, settings, i2vFactory)
+	_, err = i2vSvc.CreateVideoTask(context.Background(), 1, service.CreateVideoTaskRequest{
+		Model:      "wan2.7-i2v-2026-04-25",
+		Prompt:     "x",
+		TaskType:   service.I2VTaskFirstFrame,
+		FirstFrame: "first.png",
+	})
+	require.NoError(t, err)
+	i2vParams := parametersOf(t, i2vFactory)
+	assert.NotContains(t, i2vParams, "ratio", "i2v 的宽高比由首帧决定，绝不应该出现在 parameters 里")
+}
+
+// 显式在 i2v 请求上设置 ratio 必须被拒绝——静默丢弃调用方明确设置的参数，
+// 是六个月后一个诡异 bug 报告的来源。
+func TestCreateVideoTask_I2V_ExplicitRatio_Rejected(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingVideoFactory{taskID: "t-i2v"}
+	svc, _ := newVideoService(t, settings, factory)
+
+	_, err := svc.CreateVideoTask(context.Background(), 1, service.CreateVideoTaskRequest{
+		Model:      "wan2.7-i2v-2026-04-25",
+		Prompt:     "x",
+		TaskType:   service.I2VTaskFirstFrame,
+		FirstFrame: "first.png",
+		Params:     service.VideoParams{Ratio: "16:9"},
+	})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, apperr.ErrValidation))
+	assert.Equal(t, 0, factory.calls, "校验失败不应该打任何上游请求")
+}
+
+// duration 超出 [3,15] 拒绝；边界值 3 和 15 接受。
+func TestCreateVideoTask_Duration_OutOfRangeRejected_BoundariesAccepted(t *testing.T) {
+	settings := dashscopeSettings(nil)
+
+	for _, d := range []int{2, 16} {
+		factory := &recordingVideoFactory{taskID: "t-1"}
+		svc, _ := newVideoService(t, settings, factory)
+		_, err := svc.CreateVideoTask(context.Background(), 1, service.CreateVideoTaskRequest{
+			Model:  "happyhorse-1.1-t2v",
+			Prompt: "x",
+			Params: service.VideoParams{Duration: d},
+		})
+		require.Error(t, err, "duration=%d 应该被拒绝", d)
+		assert.True(t, errors.Is(err, apperr.ErrValidation))
+		assert.Equal(t, 0, factory.calls)
+	}
+
+	for _, d := range []int{3, 15} {
+		factory := &recordingVideoFactory{taskID: "t-1"}
+		svc, _ := newVideoService(t, settings, factory)
+		_, err := svc.CreateVideoTask(context.Background(), 1, service.CreateVideoTaskRequest{
+			Model:  "happyhorse-1.1-t2v",
+			Prompt: "x",
+			Params: service.VideoParams{Duration: d},
+		})
+		require.NoError(t, err, "duration=%d 应该被接受", d)
+		params := parametersOf(t, factory)
+		assert.Equal(t, d, params["duration"])
+	}
+}
+
+// 非法 resolution 拒绝。
+func TestCreateVideoTask_InvalidResolution_Rejected(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingVideoFactory{taskID: "t-1"}
+	svc, _ := newVideoService(t, settings, factory)
+
+	_, err := svc.CreateVideoTask(context.Background(), 1, service.CreateVideoTaskRequest{
+		Model:  "happyhorse-1.1-t2v",
+		Prompt: "x",
+		Params: service.VideoParams{Resolution: "4K"},
+	})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, apperr.ErrValidation))
+	assert.Equal(t, 0, factory.calls)
+}
+
+// r2v 上非法 ratio 拒绝。
+func TestCreateVideoTask_R2V_InvalidRatio_Rejected(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingVideoFactory{taskID: "t-1"}
+	svc, _ := newVideoService(t, settings, factory)
+
+	_, err := svc.CreateVideoTask(context.Background(), 1, service.CreateVideoTaskRequest{
+		Model:  "wan2.7-r2v",
+		Prompt: "x",
+		Images: []service.R2VMediaImage{{URL: "img1"}},
+		Params: service.VideoParams{Ratio: "21:9"},
+	})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, apperr.ErrValidation))
+	assert.Equal(t, 0, factory.calls)
 }
