@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -57,7 +58,13 @@ func Auth(jwtMgr *jwtx.Manager, users UserLoader) gin.HandlerFunc {
 		// 改密后签发时间早于改密时间的旧 token 一律作废。
 		// 只查 status 不足以兑现「改密立即生效」——被窃取的 token
 		// 会在改密后继续有效到过期为止。
-		if claims.IssuedAt != nil && claims.IssuedAt.Time.Before(u.PasswordChangedAt) {
+		//
+		// jwt.NewNumericDate 会把 IssuedAt 截断到整秒，而 PasswordChangedAt 是
+		// 纳秒精度。直接比较会让「改密同一秒内签发的新 token」被误判为过期——
+		// 用户改完密码重新登录，下一个请求就随机 401。
+		// 两边统一截断到秒再比。
+		if claims.IssuedAt != nil &&
+			claims.IssuedAt.Time.Before(u.PasswordChangedAt.Truncate(time.Second)) {
 			Fail(c, apperr.ErrUnauthorized)
 			return
 		}

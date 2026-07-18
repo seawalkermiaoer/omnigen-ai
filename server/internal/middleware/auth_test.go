@@ -118,6 +118,25 @@ func TestAuth_TokenIssuedBeforePasswordChangeRejected(t *testing.T) {
 	assert.Equal(t, "AUTH_UNAUTHORIZED", codeOf(t, w))
 }
 
+// 改密与签发落在同一秒内时，新 token 必须仍然有效。
+// jwt 把 IssuedAt 截断到整秒，若不做同精度处理，
+// 刚签发的 token 会被误判为改密前的旧 token。
+func TestAuth_TokenIssuedSameSecondAsPasswordChangeAccepted(t *testing.T) {
+	now := time.Now()
+	u := activeUser(7, usermodel.RoleUser)
+	// 模拟「刚刚改完密码」：亚秒精度，且与下面签发的 token 同一秒
+	u.PasswordChangedAt = now.Truncate(time.Second).Add(500 * time.Millisecond)
+	users := map[int64]*usermodel.User{7: u}
+	r, jwtMgr := setup(t, users)
+
+	token, err := jwtMgr.Generate(7, usermodel.RoleUser)
+	require.NoError(t, err)
+
+	w := do(r, "/whoami", token)
+	assert.Equal(t, http.StatusOK, w.Code,
+		"改密同一秒内签发的 token 不应被判为过期")
+}
+
 func TestAuth_DisabledUserRejectedImmediately(t *testing.T) {
 	u := activeUser(7, usermodel.RoleUser)
 	users := map[int64]*usermodel.User{7: u}
