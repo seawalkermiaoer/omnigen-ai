@@ -11,11 +11,15 @@ import (
 )
 
 type Handlers struct {
-	Auth    *handler.AuthHandler
-	User    *handler.UserHandler
-	Health  *handler.HealthHandler
-	Setting *handler.SettingHandler
-	Catalog *handler.CatalogHandler
+	Auth            *handler.AuthHandler
+	User            *handler.UserHandler
+	Health          *handler.HealthHandler
+	Setting         *handler.SettingHandler
+	Catalog         *handler.CatalogHandler
+	Upload          *handler.UploadHandler
+	ImageGeneration *handler.ImageGenerationHandler
+	VideoGeneration *handler.VideoGenerationHandler
+	Download        *handler.DownloadHandler
 }
 
 func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, corsOrigins []string) *gin.Engine {
@@ -42,6 +46,12 @@ func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, cors
 	authed.PUT("/auth/password", h.Auth.ChangePassword)
 	authed.GET("/settings", h.Setting.Get)
 	authed.GET("/catalog", h.Catalog.Get)
+	authed.POST("/upload", h.Upload.Upload)
+	authed.POST("/generate/image", h.ImageGeneration.Generate)
+	authed.POST("/generate/video", h.VideoGeneration.Generate)
+	authed.GET("/tasks", h.VideoGeneration.List)
+	authed.GET("/tasks/:id", h.VideoGeneration.Get)
+	authed.GET("/download/:taskId/:index", h.Download.Download)
 
 	admin := authed.Group("", middleware.RequireAdmin())
 	admin.GET("/users", h.User.List)

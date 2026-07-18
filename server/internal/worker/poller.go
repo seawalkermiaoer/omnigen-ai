@@ -147,6 +147,10 @@ func (p *Poller) PollOnce(ctx context.Context) {
 		slog.Error("worker: 拉取待轮询任务失败", "err", err)
 		return
 	}
+	// 每轮 tick 都留一条 INFO 日志，即便本轮没有任何在飞任务——这是运维
+	// 观测"轮询 worker 确实还活着、按 interval 在跑"的唯一信号，其余日志
+	// 全部只在出错路径打印。日志本身对状态机没有任何影响。
+	slog.Info("worker: 轮询周期完成", "claimed", len(tasks))
 	if len(tasks) == 0 {
 		return
 	}

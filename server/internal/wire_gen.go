@@ -14,6 +14,7 @@ import (
 	"github.com/chenhao/omnigen-ai/server/internal/repository"
 	"github.com/chenhao/omnigen-ai/server/internal/router"
 	"github.com/chenhao/omnigen-ai/server/internal/service"
+	"github.com/chenhao/omnigen-ai/server/internal/worker"
 	"github.com/gin-gonic/gin"
 	"github.com/google/wire"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,10 +36,25 @@ func InitApp(ctx context.Context, cfg *config.Config) (*App, error) {
 	userHandler := handler.NewUserHandler(userService)
 	pinger := providePinger(pool)
 	healthHandler := handler.NewHealthHandler(pinger)
-	handlers := provideHandlers(authHandler, userHandler, healthHandler)
+	settingRepository := repository.NewSettingRepository(db)
+	settingService := service.NewSettingService(settingRepository)
+	settingHandler := handler.NewSettingHandler(settingService)
+	catalogHandler := handler.NewCatalogHandler()
+	settingReader := provideSettingReader(settingService)
+	uploadService := service.NewUploadService(settingReader)
+	uploadHandler := handler.NewUploadHandler(uploadService)
+	taskRepository := repository.NewTaskRepository(db)
+	imageGenerationService := service.NewImageGenerationService(settingReader, taskRepository)
+	imageGenerationHandler := handler.NewImageGenerationHandler(imageGenerationService)
+	videoGenerationService := service.NewVideoGenerationService(settingReader, taskRepository)
+	videoGenerationHandler := handler.NewVideoGenerationHandler(videoGenerationService)
+	downloadHandler := handler.NewDownloadHandler(taskRepository)
+	handlers := provideHandlers(authHandler, userHandler, healthHandler, settingHandler, catalogHandler, uploadHandler, imageGenerationHandler, videoGenerationHandler, downloadHandler)
 	v := provideCORSOrigins(cfg)
 	engine := router.New(handlers, manager, userRepository, v)
-	app := provideApp(engine, pool, userService, cfg)
+	videoProviderFactory := provideVideoProviderFactory()
+	poller := provideWorker(taskRepository, settingReader, videoProviderFactory)
+	app := provideApp(engine, pool, userService, cfg, poller)
 	return app, nil
 }
 
@@ -50,6 +66,11 @@ type App struct {
 	Pool   *pgxpool.Pool
 	Users  *service.UserService
 	Config *config.Config
+	// Worker 是后台轮询任务的 Poller，main.go 负责在装配完成、开始对外
+	// 服务之前 go Worker.Run(ctx)，并在优雅停机时先取消它的 ctx、等它
+	// 退出，再关 HTTP server——这样一次正在进行中的轮询不会被进程退出
+	// 腰斩。
+	Worker *worker.Poller
 }
 
 func provideJWT(cfg *config.Config) *jwtx.Manager {
@@ -66,16 +87,68 @@ func provideDB(pool *pgxpool.Pool) repository.DB { return pool }
 
 func providePinger(pool *pgxpool.Pool) handler.Pinger { return pool }
 
-func provideHandlers(a *handler.AuthHandler, u *handler.UserHandler, h *handler.HealthHandler) router.Handlers {
-	return router.Handlers{Auth: a, User: u, Health: h}
+// provideSettingReader 把 *service.SettingService 收窄成
+// service.SettingReader 接口——供图片/视频生成 service、上传 service、
+// worker.Poller 依赖，它们只需要 GetDecrypted，不需要 SettingService 完整
+// 的加解密/脱敏/连通性测试能力。与 provideDB 把 *pgxpool.Pool 收窄成
+// repository.DB 是同一种 wire 手法。
+func provideSettingReader(s *service.SettingService) service.SettingReader { return s }
+
+// provideVideoProviderFactory 把生产环境的视频 provider 工厂交给 wire，
+// 供 worker.Poller 使用。之所以是工厂而不是预先构造好的 provider 实例，
+// 是因为 API Key/endpoint 来自 app_settings，管理员可能在不重启进程的
+// 情况下修改它们——worker 每一轮轮询都用当时的配置重新构造 provider，
+// 这条约束在 worker.New 的签名里已经体现，这里只是把生产实现接进 wire。
+//
+// image 侧没有对应的 provideImageProviderFactory：
+// service.NewImageGenerationService（2 参数构造器）内部已经直接绑定生产
+// 工厂 NewDashScopeT8starImageProviderFactory，wire 只需要 settings/tasks
+// 两个依赖就能满足它，额外声明一个从未被图里任何构造器实际消费的工厂
+// provider 只会是死代码——wire 不会报错（未使用的 provider 不算错误），
+// 但会让人误以为这个工厂真的被注入了。VideoGenerationService 同理也用
+// 自己内部的默认工厂，不经过这里；这里的工厂只服务于 worker 一处。
+func provideVideoProviderFactory() service.VideoProviderFactory {
+	return service.NewDashScopeVideoProviderFactory()
+}
+
+// provideWorker 包一层 worker.New：wire 无法直接给一个末尾是 `...Option`
+// 变参的构造函数做静态分析（它不知道要传几个、传什么 Option），所以这里
+// 用一个不带变参的薄包装把生产环境"零个 Option、用全部默认值"这个决定
+// 显式表达出来。
+func provideWorker(tasks repository.TaskRepository, settings service.SettingReader, factory service.VideoProviderFactory) *worker.Poller {
+	return worker.New(tasks, settings, factory)
+}
+
+func provideHandlers(
+	a *handler.AuthHandler,
+	u *handler.UserHandler,
+	h *handler.HealthHandler,
+	s *handler.SettingHandler,
+	cat *handler.CatalogHandler,
+	up *handler.UploadHandler,
+	img *handler.ImageGenerationHandler,
+	vid *handler.VideoGenerationHandler,
+	dl *handler.DownloadHandler,
+) router.Handlers {
+	return router.Handlers{
+		Auth:            a,
+		User:            u,
+		Health:          h,
+		Setting:         s,
+		Catalog:         cat,
+		Upload:          up,
+		ImageGeneration: img,
+		VideoGeneration: vid,
+		Download:        dl,
+	}
 }
 
 func provideCORSOrigins(cfg *config.Config) []string {
 	return cfg.CORSOrigins
 }
 
-func provideApp(e *gin.Engine, p *pgxpool.Pool, u *service.UserService, cfg *config.Config) *App {
-	return &App{Engine: e, Pool: p, Users: u, Config: cfg}
+func provideApp(e *gin.Engine, p *pgxpool.Pool, u *service.UserService, cfg *config.Config, w *worker.Poller) *App {
+	return &App{Engine: e, Pool: p, Users: u, Config: cfg, Worker: w}
 }
 
 var providerSet = wire.NewSet(
@@ -83,5 +156,8 @@ var providerSet = wire.NewSet(
 	provideDB,
 	providePinger,
 	provideJWT,
-	provideCORSOrigins, repository.NewUserRepository, service.NewAuthService, service.NewUserService, handler.NewAuthHandler, handler.NewUserHandler, handler.NewHealthHandler, provideHandlers, router.New, provideApp,
+	provideCORSOrigins,
+	provideSettingReader,
+	provideVideoProviderFactory, repository.NewUserRepository, repository.NewSettingRepository, repository.NewTaskRepository, service.NewAuthService, service.NewUserService, service.NewSettingService, service.NewUploadService, service.NewImageGenerationService, service.NewVideoGenerationService, handler.NewAuthHandler, handler.NewUserHandler, handler.NewHealthHandler, handler.NewSettingHandler, handler.NewCatalogHandler, handler.NewUploadHandler, handler.NewImageGenerationHandler, handler.NewVideoGenerationHandler, handler.NewDownloadHandler, provideHandlers,
+	provideWorker, router.New, provideApp,
 )

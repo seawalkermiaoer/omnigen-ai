@@ -1,18 +1,15 @@
 package service
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"strings"
 	"time"
 
 	settingmodel "github.com/chenhao/omnigen-ai/server/internal/model/setting"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/apperr"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/crypto"
+	"github.com/chenhao/omnigen-ai/server/internal/provider"
 	"github.com/chenhao/omnigen-ai/server/internal/repository"
 )
 
@@ -47,10 +44,10 @@ type SettingService struct {
 	tester   ConnectionTester
 }
 
-// NewSettingService 构造生产用的 SettingService，TestConnection 走默认的
-// DashScope compatible-mode 探测实现。
+// NewSettingService 构造生产用的 SettingService，TestConnection 走真正的
+// dashscope.Client（见 dashscopeConnectionTester）。
 func NewSettingService(settings repository.SettingRepository) *SettingService {
-	return NewSettingServiceWithTester(settings, defaultConnectionTester{})
+	return NewSettingServiceWithTester(settings, newDashscopeConnectionTester())
 }
 
 // NewSettingServiceWithTester 允许调用方（生产环境接入真正的 provider 客户端、
@@ -213,78 +210,46 @@ func (s *SettingService) TestConnection(ctx context.Context) error {
 	})
 }
 
-// ── 默认 ConnectionTester 实现：直接打 DashScope compatible-mode ──────────
+// ── 默认 ConnectionTester 实现：走真正的 dashscope.Client ────────────────
 //
-// 逻辑照抄 server.js 的 REGION_ENDPOINTS / getEndpoint / resolveEndpoint：
-// 有自定义 endpoint（http 开头）优先用它；否则按 region 查表；
-// eu-central-1 是模板化域名且强制要求 workspaceId；表里查不到的 region
-// 兜底落回 cn-beijing——这三条规则与旧系统逐一对应，不是新发明的。
+// Task 4 写下 defaultConnectionTester 时，internal/provider 还不存在，只能
+// 手撸一份 REGION_ENDPOINTS/getEndpoint/resolveEndpoint 的照抄实现直接打
+// DashScope compatible-mode。Task 6/8 之后 provider 层（含 dashscope.Client
+// 的 baseURL() region 推导、eu-central-1 workspaceId 校验）已经落地，且
+// OptimizeService 已经在用同一个 dashscope.Client 打同一条
+// compatible-mode/chat-completions 路径——这里直接复用它，不再维护第二份
+// region->endpoint 映射表。
+//
+// connectionTestTimeout 比正常生成请求短得多：探测只发一个最小 ping 请求，
+// 用来确认凭证有效，不是要等一次完整生成/优化。
 
-var dashScopeRegionEndpoints = map[string]string{
-	"cn-beijing":     "https://dashscope.aliyuncs.com",
-	"ap-southeast-1": "https://dashscope-intl.aliyuncs.com",
-	"us-east-1":      "https://dashscope-us.aliyuncs.com",
-}
-
-func resolveDashScopeBaseURL(region, endpoint, workspaceID string) (string, error) {
-	if strings.HasPrefix(endpoint, "http") {
-		return strings.TrimRight(endpoint, "/"), nil
-	}
-	if region == "eu-central-1" {
-		if workspaceID == "" {
-			return "", errors.New("region 为 eu-central-1 时必须配置 workspace_id")
-		}
-		return fmt.Sprintf("https://%s.eu-central-1.maas.aliyuncs.com", workspaceID), nil
-	}
-	if base, ok := dashScopeRegionEndpoints[region]; ok {
-		return base, nil
-	}
-	return dashScopeRegionEndpoints["cn-beijing"], nil
-}
-
-// connectionTestTimeout 探测请求的超时时间：比正常生成请求短得多，
-// 因为探测只发一个 max_tokens=1 的最小请求，用来确认凭证有效，不是真的
-// 要等一次完整生成。
 const connectionTestTimeout = 15 * time.Second
 
-type defaultConnectionTester struct{}
+// dashscopeConnectionTester 用 ProviderFactory（optimize.go 定义，与
+// OptimizeService 共用同一个生产实现 NewDashScopeOptimizeProviderFactory）
+// 构造一个 dashscope.Client，通过它的 Optimize 方法探测凭证——Optimize 打的
+// 正是 defaultConnectionTester 原来手写的那条 compatible-mode/chat
+// completions 路径，且顺带验证了 region/endpoint/workspaceId 解析、鉴权头、
+// 超时都是同一套代码在管，不会因为两份实现而漂移。
+type dashscopeConnectionTester struct {
+	factory ProviderFactory
+}
 
-func (defaultConnectionTester) Test(ctx context.Context, creds UpstreamCredentials) error {
-	base, err := resolveDashScopeBaseURL(creds.Region, creds.Endpoint, creds.WorkspaceID)
-	if err != nil {
-		return apperr.ErrSettingIncomplete.Wrap(err)
-	}
+func newDashscopeConnectionTester() dashscopeConnectionTester {
+	return dashscopeConnectionTester{factory: NewDashScopeOptimizeProviderFactory()}
+}
 
-	payload := map[string]any{
-		"model":      "qwen-plus",
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 1,
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return apperr.ErrInternal.Wrap(err)
-	}
-
+func (t dashscopeConnectionTester) Test(ctx context.Context, creds UpstreamCredentials) error {
 	reqCtx, cancel := context.WithTimeout(ctx, connectionTestTimeout)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
-		base+"/compatible-mode/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return apperr.ErrInternal.Wrap(err)
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+creds.APIKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: connectionTestTimeout}
-	resp, err := client.Do(httpReq)
-	if err != nil {
+	p := t.factory(creds.APIKey, creds.Region, creds.WorkspaceID, creds.Endpoint)
+	if _, _, err := p.Optimize(reqCtx, provider.OptimizeRequest{
+		Model:        "qwen-plus",
+		SystemPrompt: "connection test",
+		UserText:     "ping",
+	}); err != nil {
 		return apperr.ErrUpstreamTestFailed.Wrap(err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
-		return nil
-	}
-	return apperr.ErrUpstreamTestFailed.Wrap(fmt.Errorf("上游返回状态码 %d", resp.StatusCode))
+	return nil
 }
