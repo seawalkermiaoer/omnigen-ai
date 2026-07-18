@@ -275,3 +275,86 @@ func TestPoller_NetworkFailure_CountsTowardSameThreshold(t *testing.T) {
 	require.NotNil(t, got.ErrorCode)
 	assert.Equal(t, apperr.ErrTaskPollFailed.Code(), *got.ErrorCode)
 }
+
+// ── 任务在轮询过程中被用户删除 ─────────────────────────────────────────
+//
+// Design decision (see service.VideoGenerationService.DeleteTask's doc):
+// deleting a task is allowed regardless of status, including PENDING/
+// RUNNING ones the poller may be mid-flight on. This test simulates the
+// worst-case ordering — the row vanishes between ClaimPending returning it
+// and pollTask writing its result back — by having the scripted provider
+// delete the row as a side effect of the upstream PollTask call itself.
+// TaskRepository.UpdateResult/UpdateStatus both return apperr.ErrTaskNotFound
+// when zero rows match (task.go); the assertion here is that PollOnce
+// neither panics on that nor resurrects the row.
+
+// deleteOnPollProvider deletes a task out from under the poller the moment
+// PollTask is called for it, then answers as scripted — modeling "the user
+// clicked delete while this exact upstream round trip was in flight".
+type deleteOnPollProvider struct {
+	repo   *fakeTaskRepo
+	id     int64
+	result *provider.TaskResult
+}
+
+func (p *deleteOnPollProvider) CreateVideoTask(context.Context, provider.VideoRequest) (string, error) {
+	panic("deleteOnPollProvider: CreateVideoTask should never be called by the poller")
+}
+
+func (p *deleteOnPollProvider) PollTask(_ context.Context, _ string) (*provider.TaskResult, error) {
+	p.repo.delete(p.id)
+	return p.result, nil
+}
+
+var _ provider.VideoProvider = (*deleteOnPollProvider)(nil)
+
+func TestPoller_TaskDeletedMidPoll_SucceededResponse_DoesNotCrash_DoesNotResurrectRow(t *testing.T) {
+	repo := newFakeTaskRepo()
+	id := seedPendingTask(repo, "up-1", time.Now())
+
+	pv := &deleteOnPollProvider{repo: repo, id: id, result: &provider.TaskResult{
+		Status: string(generationmodel.StatusSucceeded),
+		Raw: map[string]any{
+			"output": map[string]any{"task_status": "SUCCEEDED", "video_url": "https://cdn.example.com/v.mp4"},
+		},
+	}}
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	assert.NotPanics(t, func() {
+		p.PollOnce(context.Background())
+	})
+
+	repo.mu.Lock()
+	_, exists := repo.tasks[id]
+	repo.mu.Unlock()
+	assert.False(t, exists, "worker 不应该把已删除的任务重新插入回去")
+
+	// 下一轮 ClaimPending 也不应该再看到这个 id——它已经不在表里了。
+	claimed, err := repo.ClaimPending(context.Background(), 10)
+	require.NoError(t, err)
+	for _, ct := range claimed {
+		assert.NotEqual(t, id, ct.ID)
+	}
+}
+
+// 同一场景在"仍是 RUNNING"（非终态）响应下必须一样安全——default 分支里
+// 那次可能触发的 UpdateStatus 同样要能吞下 ErrTaskNotFound。
+func TestPoller_TaskDeletedMidPoll_RunningResponse_DoesNotCrash(t *testing.T) {
+	repo := newFakeTaskRepo()
+	id := seedPendingTask(repo, "up-1", time.Now())
+
+	pv := &deleteOnPollProvider{repo: repo, id: id, result: &provider.TaskResult{
+		Status: "RUNNING",
+		Raw:    map[string]any{"output": map[string]any{"task_status": "RUNNING"}},
+	}}
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	assert.NotPanics(t, func() {
+		p.PollOnce(context.Background())
+	})
+
+	repo.mu.Lock()
+	_, exists := repo.tasks[id]
+	repo.mu.Unlock()
+	assert.False(t, exists)
+}

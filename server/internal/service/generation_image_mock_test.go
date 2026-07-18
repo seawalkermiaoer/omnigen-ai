@@ -165,6 +165,30 @@ func (f *fakeTaskRepo) ClaimPending(_ context.Context, limit int) ([]generationm
 	return out, nil
 }
 
+func (f *fakeTaskRepo) DeleteForUser(_ context.Context, id, userID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok || t.UserID != userID {
+		return apperr.ErrTaskNotFound
+	}
+	delete(f.tasks, id)
+	return nil
+}
+
+func (f *fakeTaskRepo) DeleteAllForUser(_ context.Context, userID int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for id, t := range f.tasks {
+		if t.UserID == userID {
+			delete(f.tasks, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
 // get is a test-only accessor for a single task's current in-memory state
 // (worker tests poll this after each cycle instead of round-tripping
 // through GetByIDForUser, which requires knowing the owning userID).

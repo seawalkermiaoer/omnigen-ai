@@ -38,6 +38,15 @@ type TaskRepository interface {
 	// LOCKED 做跨进程的互斥抢占——如果以后要跑多个 worker 实例，这里需要
 	// 补上真正的行锁，否则同一个任务会被两个 worker 同时轮询。
 	ClaimPending(ctx context.Context, limit int) ([]generationmodel.Task, error)
+	// DeleteForUser 按 id + user_id 一起过滤删除，与 GetByIDForUser 同一个
+	// 归属规则：id 不存在、或存在但属于别的用户，一律返回
+	// apperr.ErrTaskNotFound，绝不通过"能不能删"向调用方泄露"这个 id 是否
+	// 存在"。删除不区分任务当前状态——PENDING/RUNNING 的任务也能删，见
+	// service/generation_video.go DeleteTask 的doc 对这个决定的说明。
+	DeleteForUser(ctx context.Context, id, userID int64) error
+	// DeleteAllForUser 清空某用户名下的全部任务，返回实际删除的行数。
+	// 该用户没有任何任务时返回 (0, nil)，不是错误。
+	DeleteAllForUser(ctx context.Context, userID int64) (int64, error)
 }
 
 type taskRepository struct{ db DB }
@@ -294,6 +303,25 @@ func (r *taskRepository) UpdateResult(ctx context.Context, id int64, urls []stri
 		return apperr.ErrTaskNotFound
 	}
 	return nil
+}
+
+func (r *taskRepository) DeleteForUser(ctx context.Context, id, userID int64) error {
+	tag, err := r.db.Exec(ctx, `DELETE FROM generation_tasks WHERE id = $1 AND user_id = $2`, id, userID)
+	if err != nil {
+		return apperr.ErrInternal.Wrap(fmt.Errorf("删除生成任务失败: %w", err))
+	}
+	if tag.RowsAffected() == 0 {
+		return apperr.ErrTaskNotFound
+	}
+	return nil
+}
+
+func (r *taskRepository) DeleteAllForUser(ctx context.Context, userID int64) (int64, error) {
+	tag, err := r.db.Exec(ctx, `DELETE FROM generation_tasks WHERE user_id = $1`, userID)
+	if err != nil {
+		return 0, apperr.ErrInternal.Wrap(fmt.Errorf("清空生成任务失败: %w", err))
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (r *taskRepository) ClaimPending(ctx context.Context, limit int) ([]generationmodel.Task, error) {

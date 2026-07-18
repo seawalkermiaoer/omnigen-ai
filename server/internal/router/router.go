@@ -53,6 +53,8 @@ func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, cors
 	authed.POST("/optimize-prompt", h.Optimize.Optimize)
 	authed.GET("/tasks", h.VideoGeneration.List)
 	authed.GET("/tasks/:id", h.VideoGeneration.Get)
+	authed.DELETE("/tasks/:id", h.VideoGeneration.Delete)
+	authed.DELETE("/tasks", h.VideoGeneration.DeleteAll)
 	authed.GET("/download/:taskId/:index", h.Download.Download)
 
 	admin := authed.Group("", middleware.RequireAdmin())

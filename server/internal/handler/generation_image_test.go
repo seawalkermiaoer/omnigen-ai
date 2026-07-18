@@ -75,6 +75,10 @@ func (f *fakeImageTaskRepo) UpdateResult(context.Context, int64, []string, map[s
 func (f *fakeImageTaskRepo) ClaimPending(context.Context, int) ([]generationmodel.Task, error) {
 	return nil, nil
 }
+func (f *fakeImageTaskRepo) DeleteForUser(context.Context, int64, int64) error { return nil }
+func (f *fakeImageTaskRepo) DeleteAllForUser(context.Context, int64) (int64, error) {
+	return 0, nil
+}
 
 var _ repository.TaskRepository = (*fakeImageTaskRepo)(nil)
 

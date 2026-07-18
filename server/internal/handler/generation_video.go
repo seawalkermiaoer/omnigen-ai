@@ -183,3 +183,48 @@ func (h *VideoGenerationHandler) List(c *gin.Context) {
 		Items: generationmodel.FromEntities(items),
 	}))
 }
+
+// Delete handles DELETE /api/tasks/:id, scoped to the authenticated user —
+// same not-found-vs-forbidden contract as Get: another user's task (or a
+// nonexistent id) both surface as apperr.ErrTaskNotFound. Deletion is
+// allowed regardless of task status, including in-flight PENDING/RUNNING
+// tasks — see service.VideoGenerationService.DeleteTask's doc for why.
+func (h *VideoGenerationHandler) Delete(c *gin.Context) {
+	userID, ok := middleware.UserIDFrom(c)
+	if !ok {
+		middleware.Fail(c, apperr.ErrUnauthorized)
+		return
+	}
+
+	id, err := pathID(c)
+	if err != nil {
+		middleware.Fail(c, err)
+		return
+	}
+
+	if err := h.videos.DeleteTask(c.Request.Context(), userID, id); err != nil {
+		middleware.Fail(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, common.OK(nil))
+}
+
+// DeleteAll handles DELETE /api/tasks, clearing only the authenticated
+// user's own tasks — never another user's, regardless of role. Returns the
+// deleted count so the UI can confirm "清空全部" actually happened.
+func (h *VideoGenerationHandler) DeleteAll(c *gin.Context) {
+	userID, ok := middleware.UserIDFrom(c)
+	if !ok {
+		middleware.Fail(c, apperr.ErrUnauthorized)
+		return
+	}
+
+	deleted, err := h.videos.DeleteAllTasks(c.Request.Context(), userID)
+	if err != nil {
+		middleware.Fail(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, common.OK(generationmodel.TaskDeleteAllResponse{Deleted: deleted}))
+}

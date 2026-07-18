@@ -264,6 +264,37 @@ func (s *VideoGenerationService) ListTasks(ctx context.Context, userID int64, q 
 	return s.tasks.ListForUser(ctx, userID, q.Offset(), q.Limit())
 }
 
+// DeleteTask deletes a single task, scoped to userID — same not-found-vs-
+// forbidden rule as GetTask: another user's task and a nonexistent id are
+// both apperr.ErrTaskNotFound.
+//
+// Deletion is allowed regardless of the task's current status, including
+// PENDING/RUNNING (still in flight and possibly mid-poll in
+// internal/worker.Poller). The alternative — refusing to delete an
+// in-flight task — would force a "clear history" click to leave rows behind
+// with no way to remove them until the upstream call eventually finishes or
+// times out (up to maxTaskAge=30min later); that's a worse experience than
+// the small risk accepted here. The row disappearing mid-poll is safe:
+// TaskRepository.UpdateStatus/UpdateResult both return
+// apperr.ErrTaskNotFound when the WHERE id=... matches zero rows (see
+// task.go), and Poller.pollTask only logs that error via slog.Error — it
+// never retries by re-creating the row, so a deleted in-flight task simply
+// stops being written to on its next poll and is never resurrected. The one
+// residual cost is a stale entry left behind in Poller.failureCounts for
+// that task id (a plain int in a map, harmless and bounded by how many
+// distinct tasks a long-running process ever polls) — not worth the extra
+// bookkeeping to prune eagerly.
+func (s *VideoGenerationService) DeleteTask(ctx context.Context, userID, id int64) error {
+	return s.tasks.DeleteForUser(ctx, id, userID)
+}
+
+// DeleteAllTasks clears every task owned by userID and reports how many
+// rows were removed, so the caller (history page's "清空全部") can confirm
+// the count to the user. Same in-flight-deletion policy as DeleteTask.
+func (s *VideoGenerationService) DeleteAllTasks(ctx context.Context, userID int64) (int64, error) {
+	return s.tasks.DeleteAllForUser(ctx, userID)
+}
+
 // buildVideoMedia dispatches on the model's catalog capability (each video
 // model in the catalog has exactly one of t2v/i2v/r2v — there is no overlap
 // to disambiguate, unlike image models which can be both t2i and edit) and

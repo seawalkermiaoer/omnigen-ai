@@ -137,6 +137,116 @@ func TestGetTask_OtherUsersTask_NotFound_NotForbidden(t *testing.T) {
 	assert.Equal(t, owned.ID, got.ID)
 }
 
+// ── 删除 ────────────────────────────────────────────────────────────
+
+func TestDeleteTask_OtherUsersTask_NotFound_NotForbidden_LeavesRowIntact(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingVideoFactory{taskID: "t-owner"}
+	svc, repo := newVideoService(t, settings, factory)
+
+	owned, err := svc.CreateVideoTask(context.Background(), 111, service.CreateVideoTaskRequest{
+		Model:  "happyhorse-1.1-t2v",
+		Prompt: "owned by user 111",
+	})
+	require.NoError(t, err)
+
+	err = svc.DeleteTask(context.Background(), 222, owned.ID)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, apperr.ErrTaskNotFound))
+	assert.False(t, errors.Is(err, apperr.ErrForbidden))
+
+	// 失败的删除不能有任何副作用——属主自己应该还能看到这条任务。
+	got, err := svc.GetTask(context.Background(), 111, owned.ID)
+	require.NoError(t, err)
+	assert.Equal(t, owned.ID, got.ID)
+	require.Len(t, repo.all(), 1)
+}
+
+func TestDeleteTask_OwnTask_RemovesIt_SecondDeleteNotFound(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingVideoFactory{taskID: "t-owner"}
+	svc, _ := newVideoService(t, settings, factory)
+
+	owned, err := svc.CreateVideoTask(context.Background(), 111, service.CreateVideoTaskRequest{
+		Model:  "happyhorse-1.1-t2v",
+		Prompt: "owned by user 111",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, svc.DeleteTask(context.Background(), 111, owned.ID))
+
+	_, err = svc.GetTask(context.Background(), 111, owned.ID)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, apperr.ErrTaskNotFound))
+
+	err = svc.DeleteTask(context.Background(), 111, owned.ID)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, apperr.ErrTaskNotFound), "已经删过的任务再删一次应报 NOT_FOUND")
+}
+
+func TestDeleteAllTasks_OnlyRemovesCallersOwnRows_ReturnsCount(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingVideoFactory{taskID: "t-1"}
+	svc, repo := newVideoService(t, settings, factory)
+
+	for i := 0; i < 3; i++ {
+		_, err := svc.CreateVideoTask(context.Background(), 111, service.CreateVideoTaskRequest{
+			Model: "happyhorse-1.1-t2v", Prompt: "x",
+		})
+		require.NoError(t, err)
+	}
+	other, err := svc.CreateVideoTask(context.Background(), 222, service.CreateVideoTaskRequest{
+		Model: "happyhorse-1.1-t2v", Prompt: "not mine",
+	})
+	require.NoError(t, err)
+
+	deleted, err := svc.DeleteAllTasks(context.Background(), 111)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), deleted)
+
+	items, total, err := svc.ListTasks(context.Background(), 111, generationmodel.ListQuery{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), total)
+	assert.Empty(t, items)
+
+	// 别的用户的任务不受影响。
+	got, err := svc.GetTask(context.Background(), 222, other.ID)
+	require.NoError(t, err)
+	assert.Equal(t, other.ID, got.ID)
+	require.Len(t, repo.all(), 1)
+}
+
+func TestDeleteAllTasks_NoTasks_ReturnsZeroNoError(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingVideoFactory{taskID: "t-1"}
+	svc, _ := newVideoService(t, settings, factory)
+
+	deleted, err := svc.DeleteAllTasks(context.Background(), 111)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), deleted)
+}
+
+// TestDeleteTask_InFlightTask_StillAllowed pins the deliberate decision on
+// service.VideoGenerationService.DeleteTask's doc: deletion is not gated on
+// task status, so a PENDING task (possibly mid-poll in internal/worker)
+// deletes exactly like any terminal-state task.
+func TestDeleteTask_InFlightTask_StillAllowed(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingVideoFactory{taskID: "t-1"}
+	svc, _ := newVideoService(t, settings, factory)
+
+	task, err := svc.CreateVideoTask(context.Background(), 111, service.CreateVideoTaskRequest{
+		Model: "happyhorse-1.1-t2v", Prompt: "x",
+	})
+	require.NoError(t, err)
+	require.Equal(t, generationmodel.StatusPending, task.Status, "CreateVideoTask 落库应处于 PENDING，才是这个测试想覆盖的在飞状态")
+
+	require.NoError(t, svc.DeleteTask(context.Background(), 111, task.ID), "PENDING 任务也应允许删除")
+
+	_, err = svc.GetTask(context.Background(), 111, task.ID)
+	assert.True(t, errors.Is(err, apperr.ErrTaskNotFound))
+}
+
 // ── media 顺序：r2v ─────────────────────────────────────────────────
 
 func TestCreateVideoTask_R2V_MediaOrder_ImagesFirstThenVideos(t *testing.T) {

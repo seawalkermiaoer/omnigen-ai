@@ -68,6 +68,10 @@ func (f *fakeDownloadTaskRepo) UpdateResult(context.Context, int64, []string, ma
 func (f *fakeDownloadTaskRepo) ClaimPending(context.Context, int) ([]generationmodel.Task, error) {
 	return nil, nil
 }
+func (f *fakeDownloadTaskRepo) DeleteForUser(context.Context, int64, int64) error { return nil }
+func (f *fakeDownloadTaskRepo) DeleteAllForUser(context.Context, int64) (int64, error) {
+	return 0, nil
+}
 
 var _ repository.TaskRepository = (*fakeDownloadTaskRepo)(nil)
 

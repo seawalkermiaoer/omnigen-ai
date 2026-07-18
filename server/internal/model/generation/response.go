@@ -29,6 +29,13 @@ type TaskListResponse struct {
 	Items []TaskResponse `json:"items"`
 }
 
+// TaskDeleteAllResponse is DELETE /api/tasks's response — the deleted-row
+// count lets the history page confirm "清空全部" actually happened (and how
+// much it cleared) instead of just trusting a bare 200.
+type TaskDeleteAllResponse struct {
+	Deleted int64 `json:"deleted"`
+}
+
 func strOrEmpty(p *string) string {
 	if p == nil {
 		return ""

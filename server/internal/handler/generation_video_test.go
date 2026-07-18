@@ -106,6 +106,30 @@ func (f *fakeVideoTaskRepo) ClaimPending(context.Context, int) ([]generationmode
 	return nil, nil
 }
 
+func (f *fakeVideoTaskRepo) DeleteForUser(_ context.Context, id, userID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok || t.UserID != userID {
+		return apperr.ErrTaskNotFound
+	}
+	delete(f.tasks, id)
+	return nil
+}
+
+func (f *fakeVideoTaskRepo) DeleteAllForUser(_ context.Context, userID int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for id, t := range f.tasks {
+		if t.UserID == userID {
+			delete(f.tasks, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
 var _ repository.TaskRepository = (*fakeVideoTaskRepo)(nil)
 
 type fakeVideoSettings struct {
@@ -172,6 +196,8 @@ func newVideoGenTestEnv(t *testing.T, factory service.VideoProviderFactory) (*gi
 	authed.POST("/generate/video", videoH.Generate)
 	authed.GET("/tasks/:id", videoH.Get)
 	authed.GET("/tasks", videoH.List)
+	authed.DELETE("/tasks/:id", videoH.Delete)
+	authed.DELETE("/tasks", videoH.DeleteAll)
 
 	return r, token, tasksRepo, u.ID
 }
@@ -311,4 +337,153 @@ func TestVideoGenerationHandler_List_ScopedToOwnUser(t *testing.T) {
 
 func itoa(id int64) string {
 	return strconv.FormatInt(id, 10)
+}
+
+func TestVideoGenerationHandler_Delete_NoAuth_401(t *testing.T) {
+	r, _, _, _ := newVideoGenTestEnv(t, fixedVideoProviderFactory("up-1", nil))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestVideoGenerationHandler_Delete_NonNumericID_422(t *testing.T) {
+	r, token, _, _ := newVideoGenTestEnv(t, fixedVideoProviderFactory("up-1", nil))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/not-a-number", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, "响应=%s", w.Body.String())
+}
+
+func TestVideoGenerationHandler_Delete_OtherUsersTask_404NotFound(t *testing.T) {
+	r, token, repo, _ := newVideoGenTestEnv(t, fixedVideoProviderFactory("up-1", nil))
+
+	other := &generationmodel.Task{UserID: 999999, Mode: generationmodel.TaskModeT2V, Model: "happyhorse-1.1-t2v", Status: generationmodel.StatusSucceeded, Prompt: "not mine"}
+	require.NoError(t, repo.Create(context.Background(), other))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/"+itoa(other.ID), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code, "响应=%s", w.Body.String())
+
+	var resp common.Response
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, apperr.ErrTaskNotFound.Code(), resp.Code)
+
+	// 删除失败，另一个用户的任务应原样保留。
+	repo.mu.Lock()
+	_, stillThere := repo.tasks[other.ID]
+	repo.mu.Unlock()
+	assert.True(t, stillThere, "非本人任务不应被删除")
+}
+
+func TestVideoGenerationHandler_Delete_OwnTask_RemovesIt(t *testing.T) {
+	r, token, repo, userID := newVideoGenTestEnv(t, fixedVideoProviderFactory("up-1", nil))
+
+	mine := &generationmodel.Task{UserID: userID, Mode: generationmodel.TaskModeT2V, Model: "happyhorse-1.1-t2v", Status: generationmodel.StatusSucceeded, Prompt: "mine"}
+	require.NoError(t, repo.Create(context.Background(), mine))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/"+itoa(mine.ID), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "响应=%s", w.Body.String())
+
+	repo.mu.Lock()
+	_, stillThere := repo.tasks[mine.ID]
+	repo.mu.Unlock()
+	assert.False(t, stillThere, "删除后任务应不再存在")
+}
+
+// TestVideoGenerationHandler_Delete_InFlightTask_StillAllowed exercises the
+// deliberate design decision documented on
+// service.VideoGenerationService.DeleteTask: an in-flight (PENDING/RUNNING)
+// task can be deleted like any other — deletion is not gated on status.
+func TestVideoGenerationHandler_Delete_InFlightTask_StillAllowed(t *testing.T) {
+	r, token, repo, userID := newVideoGenTestEnv(t, fixedVideoProviderFactory("up-1", nil))
+
+	pending := &generationmodel.Task{UserID: userID, Mode: generationmodel.TaskModeT2V, Model: "happyhorse-1.1-t2v", Status: generationmodel.StatusPending, Prompt: "in flight"}
+	require.NoError(t, repo.Create(context.Background(), pending))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/"+itoa(pending.ID), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code, "PENDING/RUNNING 任务也应允许删除，响应=%s", w.Body.String())
+
+	repo.mu.Lock()
+	_, stillThere := repo.tasks[pending.ID]
+	repo.mu.Unlock()
+	assert.False(t, stillThere)
+}
+
+func TestVideoGenerationHandler_DeleteAll_NoAuth_401(t *testing.T) {
+	r, _, _, _ := newVideoGenTestEnv(t, fixedVideoProviderFactory("up-1", nil))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestVideoGenerationHandler_DeleteAll_OnlyClearsCallersOwnTasks_ReturnsCount(t *testing.T) {
+	r, token, repo, userID := newVideoGenTestEnv(t, fixedVideoProviderFactory("up-1", nil))
+
+	mine1 := &generationmodel.Task{UserID: userID, Mode: generationmodel.TaskModeT2V, Model: "happyhorse-1.1-t2v", Status: generationmodel.StatusSucceeded, Prompt: "mine-1"}
+	require.NoError(t, repo.Create(context.Background(), mine1))
+	mine2 := &generationmodel.Task{UserID: userID, Mode: generationmodel.TaskModeT2V, Model: "happyhorse-1.1-t2v", Status: generationmodel.StatusPending, Prompt: "mine-2"}
+	require.NoError(t, repo.Create(context.Background(), mine2))
+	others := &generationmodel.Task{UserID: userID + 1, Mode: generationmodel.TaskModeT2V, Model: "happyhorse-1.1-t2v", Status: generationmodel.StatusSucceeded, Prompt: "not mine"}
+	require.NoError(t, repo.Create(context.Background(), others))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "响应=%s", w.Body.String())
+
+	var resp common.Response
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data, ok := resp.Data.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(2), data["deleted"])
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	_, mine1Left := repo.tasks[mine1.ID]
+	_, mine2Left := repo.tasks[mine2.ID]
+	_, othersLeft := repo.tasks[others.ID]
+	assert.False(t, mine1Left)
+	assert.False(t, mine2Left)
+	assert.True(t, othersLeft, "别人的任务不应被清空")
+}
+
+func TestVideoGenerationHandler_DeleteAll_NoTasks_ReturnsZero(t *testing.T) {
+	r, token, _, _ := newVideoGenTestEnv(t, fixedVideoProviderFactory("up-1", nil))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "响应=%s", w.Body.String())
+
+	var resp common.Response
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data, ok := resp.Data.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(0), data["deleted"])
 }

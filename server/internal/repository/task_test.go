@@ -381,3 +381,132 @@ func TestTaskRepo_UpdateResult_NonExistentID_ReturnsNotFound(t *testing.T) {
 		assert.True(t, errors.Is(err, apperr.ErrTaskNotFound), "更新不存在的 id 应报 NOT_FOUND 而非静默成功")
 	})
 }
+
+func TestTaskRepo_DeleteForUser_RemovesRow_SecondDeleteNotFound(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("delete-owner-1", usermodel.RoleUser)
+		require.NoError(t, userRepo.Create(ctx, u))
+
+		repo := repository.NewTaskRepository(tx)
+		task := sampleTask(u.ID)
+		require.NoError(t, repo.Create(ctx, task))
+
+		require.NoError(t, repo.DeleteForUser(ctx, task.ID, u.ID))
+
+		_, err := repo.GetByIDForUser(ctx, task.ID, u.ID)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, apperr.ErrTaskNotFound), "删除后应查不到这一行")
+
+		// 对同一个已经删掉的 id 再删一次，必须是 NOT_FOUND，而不是静默成功
+		// （RowsAffected 为 0 时不能假装删除生效了）。
+		err = repo.DeleteForUser(ctx, task.ID, u.ID)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, apperr.ErrTaskNotFound))
+	})
+}
+
+func TestTaskRepo_DeleteForUser_OwnershipIsolation_ReturnsNotFound_LeavesRowIntact(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		owner := sampleUser("delete-owner-2", usermodel.RoleUser)
+		require.NoError(t, userRepo.Create(ctx, owner))
+		intruder := sampleUser("delete-intruder-1", usermodel.RoleUser)
+		require.NoError(t, userRepo.Create(ctx, intruder))
+
+		repo := repository.NewTaskRepository(tx)
+		task := sampleTask(owner.ID)
+		require.NoError(t, repo.Create(ctx, task))
+
+		// 用户 B 删用户 A 的任务：必须是 NOT_FOUND，不是 FORBIDDEN——同
+		// GetByIDForUser 的理由，403 会泄露"这个 id 确实存在"。
+		err := repo.DeleteForUser(ctx, task.ID, intruder.ID)
+		require.Error(t, err)
+		var appErr *apperr.AppError
+		require.True(t, errors.As(err, &appErr))
+		assert.Equal(t, "TASK_NOT_FOUND", appErr.Code())
+		assert.True(t, errors.Is(err, apperr.ErrTaskNotFound))
+
+		// A 的任务必须原样还在——上面那次失败的删除不能有任何副作用。
+		got, err := repo.GetByIDForUser(ctx, task.ID, owner.ID)
+		require.NoError(t, err)
+		assert.Equal(t, task.ID, got.ID)
+	})
+}
+
+func TestTaskRepo_DeleteForUser_NonExistentID_ReturnsNotFound(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("delete-owner-3", usermodel.RoleUser)
+		require.NoError(t, userRepo.Create(ctx, u))
+
+		repo := repository.NewTaskRepository(tx)
+		err := repo.DeleteForUser(ctx, 999999, u.ID)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, apperr.ErrTaskNotFound))
+	})
+}
+
+// 在飞状态（PENDING/RUNNING）的任务同样可以删除——见
+// service.VideoGenerationService.DeleteTask 的 doc：这是刻意的决定，
+// 不是遗漏的状态检查。
+func TestTaskRepo_DeleteForUser_InFlightTask_StillDeletable(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("delete-owner-inflight", usermodel.RoleUser)
+		require.NoError(t, userRepo.Create(ctx, u))
+
+		repo := repository.NewTaskRepository(tx)
+		task := sampleTask(u.ID)
+		task.Status = generationmodel.StatusPending
+		require.NoError(t, repo.Create(ctx, task))
+
+		require.NoError(t, repo.DeleteForUser(ctx, task.ID, u.ID), "PENDING 任务也应允许删除")
+
+		_, err := repo.GetByIDForUser(ctx, task.ID, u.ID)
+		assert.True(t, errors.Is(err, apperr.ErrTaskNotFound))
+	})
+}
+
+func TestTaskRepo_DeleteAllForUser_OnlyRemovesCallersOwnRows_ReturnsCount(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		a := sampleUser("deleteall-user-a", usermodel.RoleUser)
+		require.NoError(t, userRepo.Create(ctx, a))
+		b := sampleUser("deleteall-user-b", usermodel.RoleUser)
+		require.NoError(t, userRepo.Create(ctx, b))
+
+		repo := repository.NewTaskRepository(tx)
+		for i := 0; i < 3; i++ {
+			require.NoError(t, repo.Create(ctx, sampleTask(a.ID)))
+		}
+		bTask := sampleTask(b.ID)
+		require.NoError(t, repo.Create(ctx, bTask))
+
+		deleted, err := repo.DeleteAllForUser(ctx, a.ID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(3), deleted, "应只报告并删除 A 自己的行数")
+
+		_, total, err := repo.ListForUser(ctx, a.ID, 0, 10)
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), total, "A 的任务应全部清空")
+
+		// B 的任务必须原样保留，不受影响。
+		got, err := repo.GetByIDForUser(ctx, bTask.ID, b.ID)
+		require.NoError(t, err)
+		assert.Equal(t, bTask.ID, got.ID)
+	})
+}
+
+func TestTaskRepo_DeleteAllForUser_NoTasks_ReturnsZeroNoError(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("deleteall-user-empty", usermodel.RoleUser)
+		require.NoError(t, userRepo.Create(ctx, u))
+
+		repo := repository.NewTaskRepository(tx)
+		deleted, err := repo.DeleteAllForUser(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), deleted)
+	})
+}

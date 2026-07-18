@@ -149,6 +149,39 @@ func (f *fakeTaskRepo) ClaimPending(_ context.Context, limit int) ([]generationm
 	return out, nil
 }
 
+// delete removes a task directly, bypassing any user-scoping check (worker
+// tests use this to simulate a user deleting a task that's still in flight,
+// mid-poll — see poller_test.go's deletion test).
+func (f *fakeTaskRepo) delete(id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.tasks, id)
+}
+
+func (f *fakeTaskRepo) DeleteForUser(_ context.Context, id, userID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok || t.UserID != userID {
+		return apperr.ErrTaskNotFound
+	}
+	delete(f.tasks, id)
+	return nil
+}
+
+func (f *fakeTaskRepo) DeleteAllForUser(_ context.Context, userID int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for id, t := range f.tasks {
+		if t.UserID == userID {
+			delete(f.tasks, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (f *fakeTaskRepo) get(id int64) generationmodel.Task {
 	f.mu.Lock()
 	defer f.mu.Unlock()
