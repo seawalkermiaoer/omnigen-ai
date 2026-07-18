@@ -4,7 +4,11 @@
 
 **Goal:** 让 `gpt-image-2`（t8star，OpenAI chat-completions 协议）在「图片生成」和「图片编辑」两个模块可用，与现有 DashScope 模型并存。
 
-**Architecture:** 新增一个纯函数模块 `lib/providers/t8star.js` 负责拼请求体与解析响应；`server.js` 的 `/api/generate-image` 按模型分流到 DashScope 或 OpenAI 协议，对外响应契约保持 `{ images, usage, model }` 不变（新增可选 `note`）；前端在设置页新增独立的 Key/BaseURL 字段，并在选中该模型时隐藏接口不支持的参数控件。
+**Architecture:** 新增一个纯函数模块 `lib/providers/t8star.js` 负责拼请求体与解析响应；`server.js` 的 `/api/generate-image` 按模型分流到 DashScope 或 OpenAI 协议，对外请求与响应契约均保持不变（响应新增可选 `note`）；前端把设置页现有的「接入点（Endpoint）」下拉从「DashScope base URL 选择器」升级为「服务商选择器」，新增 t8star 一项，并由此派生出贯穿前端的 provider 概念。
+
+**关键前提（与旧版计划的差异）：** t8star 的 Key 与 base URL **复用现有的 `apiKey` / `endpoint` 两个字段**，
+不新增 `t8ApiKey` / `t8BaseUrl`。因此后端路由的解构一行都不用改；代价是前端要按 provider
+切换 Key 存储槽、模型列表、参数控件和视频可用性。
 
 **Tech Stack:** Node.js + Express（无框架前端，原生 HTML/CSS/JS），测试用 `node:test` + `node:assert/strict`。
 
@@ -52,10 +56,11 @@
 | `lib/providers/t8star.js` | 纯函数：拼 payload、解析响应、规范化 base URL。无网络 IO | 新建 |
 | `tests/t8star.test.js` | 上述纯函数的单测，全部脱网 | 新建 |
 | `server.js` | 模型白名单 + `/api/generate-image` 协议分流 | 修改 |
-| `public/index.html` | 设置页两个新字段；两个模块的 note 容器；参数控件加标记属性 | 修改 |
-| `public/js/app.js` | Key 读写、`getAuth`、`isT8Model`、模型感知的 `checkAuth` | 修改 |
-| `public/js/imggen.js` | 模型选项、控件联动、note 渲染 | 修改 |
+| `public/index.html` | Endpoint 下拉新增一项；视频页提示条；两个模块的 note 容器；参数控件加标记属性 | 修改 |
+| `public/js/app.js` | `getProvider`、双 Key 槽切换、`providerchange` 广播、provider 感知的 `checkAuth` | 修改 |
+| `public/js/imggen.js` | 按 provider 换模型列表、控件联动、note 渲染 | 修改 |
 | `public/js/imgedit.js` | 同上 | 修改 |
+| `public/js/task.js` | `submitTask` 加 provider 闸门，挡住视频提交 | 修改 |
 | `public/locales/zh-CN.json`、`en.json` | 新增文案 | 修改 |
 | `README.md` | 模型表与配置说明 | 修改 |
 
@@ -328,26 +333,16 @@ const t8star = require('./lib/providers/t8star');
 Run: `node --test tests/server-utils.test.js`
 Expected: PASS
 
-- [ ] **Step 5: 加 i18n 错误文案**
+- [ ] **Step 5: 改造 `/api/generate-image`**
 
-`public/locales/zh-CN.json` 的 `server` 段加：
+不需要新增 i18n 错误文案 —— t8star 复用 `apiKey` 字段，缺 Key 时现有的
+`server.missingApiKey` 文案就是对的。
 
-```json
-"missingT8ApiKey": "缺少 gpt-image-2 API Key，请在设置中填写",
-```
-
-`public/locales/en.json` 的 `server` 段加：
-
-```json
-"missingT8ApiKey": "Missing gpt-image-2 API Key — please set it in Settings",
-```
-
-- [ ] **Step 6: 改造 `/api/generate-image`**
-
-把 `server.js` 中该路由**开头的解构与校验**替换为：
+把 `server.js` 中该路由**开头的解构与校验**替换为（解构列表原样不动）：
 
 ```js
-    const { apiKey, region, workspaceId, endpoint, model, prompt, images, params, t8ApiKey, t8BaseUrl } = req.body;
+    const { apiKey, region, workspaceId, endpoint, model, prompt, images, params } = req.body;
+    if (!apiKey) return res.status(400).json({ error: st('server.missingApiKey', lang) });
     if (!model) return res.status(400).json({ error: st('server.missingModel', lang) });
 
     const isOpenAIImage = MODELS.IMAGE_OPENAI.includes(model);
@@ -356,16 +351,16 @@ Expected: PASS
     }
 
     // ─── OpenAI chat-completions branch (t8star / gpt-image-2) ───
+    // Base URL and key both come from the existing endpoint/apiKey fields:
+    // the client picks t8star in the Endpoint dropdown, which swaps both.
     if (isOpenAIImage) {
-      if (!t8ApiKey) return res.status(400).json({ error: st('server.missingT8ApiKey', lang) });
-
-      const t8Base = t8star.resolveBaseUrl(t8BaseUrl);
+      const t8Base = t8star.resolveBaseUrl(endpoint);
       const t8Url = `${t8Base}/v1/chat/completions`;
       const t8Payload = t8star.buildPayload({ model, prompt, images });
 
       console.log(`[generate-image] → ${t8Url}  model=${model}  images=${Array.isArray(images) ? images.length : 0}`);
       const t8r = await forwardJSON(t8Url, 'POST', {
-        Authorization: `Bearer ${t8ApiKey}`,
+        Authorization: `Bearer ${apiKey}`,
       }, t8Payload, 180000);
       console.log(`[generate-image] ← status=${t8r.status}  response=`, JSON.stringify(t8r.data).slice(0, 500));
 
@@ -393,28 +388,37 @@ Expected: PASS
     }
 
     // ─── DashScope native branch (unchanged) ─────────────────────
-    if (!apiKey) return res.status(400).json({ error: st('server.missingApiKey', lang) });
     const base = resolveEndpoint(endpoint, region, workspaceId);
 ```
 
-注意：原来 `if (!apiKey)` 和 `const base = ...` 在路由最前面，
-现在必须移到 DashScope 分支内部——t8star 不需要 DashScope Key。
-原来的 `if (!MODELS.IMAGE.includes(model))` 校验块已被上面的并集校验取代，删掉它。
+注意：原来的 `if (!MODELS.IMAGE.includes(model))` 校验块已被上面的并集校验取代，删掉它。
+`const base = resolveEndpoint(...)` 原本在 `MODELS.IMAGE` 校验之前，现在要挪到 t8star 分支之后 ——
+否则 t8star 请求会白算一次 DashScope endpoint，region 为空时还可能抛错。
 该行以下的原有 DashScope 逻辑（拼 payload、调用、解析）保持不变。
 
-- [ ] **Step 7: 起服务做一次真实冒烟**
+- [ ] **Step 6: 起服务做一次真实冒烟**
 
-用你自己的 t8star Key 替换 `<YOUR_KEY>`：
+用你自己的 t8star Key 替换 `<YOUR_KEY>`。注意 `endpoint` 与 `apiKey` 就是 t8star 的：
 
 ```bash
 node server.js &
 sleep 2
 curl -s -X POST http://localhost:3000/api/generate-image \
   -H 'Content-Type: application/json' \
-  -d '{"model":"gpt-image-2","prompt":"画只猫","images":[],"t8ApiKey":"<YOUR_KEY>"}' | head -c 400
+  -d '{"model":"gpt-image-2","prompt":"画只猫","images":[],"apiKey":"<YOUR_KEY>","endpoint":"https://ai.t8star.org"}' | head -c 400
 ```
 
 Expected: `{"images":["https://webstatic.aiproxy.vip/output/....png"],"usage":{...},"model":"gpt-image-2-pro","note":"..."}`
+
+再验 `endpoint` 缺省时回落到官方地址（去掉 endpoint 字段，应同样成功）：
+
+```bash
+curl -s -X POST http://localhost:3000/api/generate-image \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-image-2","prompt":"画只猫","apiKey":"<YOUR_KEY>"}' | head -c 200
+```
+
+Expected: 同样出图（`resolveBaseUrl('')` → `https://ai.t8star.org`）
 
 再验错误分支：
 
@@ -424,9 +428,9 @@ curl -s -X POST http://localhost:3000/api/generate-image \
   -d '{"model":"gpt-image-2","prompt":"画只猫"}'
 ```
 
-Expected: `{"error":"缺少 gpt-image-2 API Key，请在设置中填写"}`
+Expected: `{"error":"缺少 API Key"}`
 
-再验 DashScope 分支没被弄坏（无 Key 应报 DashScope 的错，不是 t8 的错）：
+再验 DashScope 分支没被弄坏：
 
 ```bash
 curl -s -X POST http://localhost:3000/api/generate-image \
@@ -438,20 +442,23 @@ Expected: `{"error":"缺少 API Key"}`
 
 跑完记得停掉服务：`kill %1`
 
-- [ ] **Step 8: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
-git add server.js tests/server-utils.test.js public/locales/zh-CN.json public/locales/en.json
+git add server.js tests/server-utils.test.js
 git commit -m "feat: /api/generate-image 支持 OpenAI 协议分流"
 ```
 
 ---
 
-### Task 3: 设置页新增 Key 与 Base URL
+### Task 3: 接入点下拉新增 t8star，引入 provider 概念
+
+这是本次改动风险最高的一个任务：动的是一个已被三条链路共用的全局设置。
+**改完务必按 Step 7 逐条回归**，确认原有百炼/蓝星两种配置行为不变。
 
 **Files:**
 - Modify: `public/index.html`（设置面板，约 578-606 行）
-- Modify: `public/js/app.js`（约 27-42 行的元素引用与读取、约 92-96 行的保存、约 124-131 行的 `getAuth`）
+- Modify: `public/js/app.js`（约 27-99 行）
 - Modify: `public/locales/zh-CN.json`、`public/locales/en.json`
 
 - [ ] **Step 1: 加 i18n 文案**
@@ -459,140 +466,258 @@ git commit -m "feat: /api/generate-image 支持 OpenAI 协议分流"
 `zh-CN.json` 的 `settings` 段追加：
 
 ```json
-"t8ApiKeyLabel": "API Key（gpt-image-2 / t8star）",
-"t8ApiKeyNote": "gpt-image-2 使用独立于 DashScope 的另一把 Key，同样只存在浏览器 localStorage。",
-"t8BaseUrlLabel": "gpt-image-2 Base URL",
-"t8BaseUrlNote": "留空则使用官方地址 https://ai.t8star.org"
+"endpointT8star": "t8star 中转站（ai.t8star.org）",
+"apiKeyLabelT8": "API Key（t8star）",
+"apiKeyNoteT8": "t8star 用的是另一把 Key，与 DashScope Key 分开保存，切换接入点时会自动切换。",
+"t8OnlyImageNote": "t8star 只提供 gpt-image-2 图片模型，不支持视频生成。"
 ```
 
 `en.json` 的 `settings` 段追加：
 
 ```json
-"t8ApiKeyLabel": "API Key (gpt-image-2 / t8star)",
-"t8ApiKeyNote": "gpt-image-2 uses its own key, separate from DashScope. Stored only in your browser's localStorage.",
-"t8BaseUrlLabel": "gpt-image-2 Base URL",
-"t8BaseUrlNote": "Leave empty to use the official host https://ai.t8star.org"
+"endpointT8star": "t8star Proxy (ai.t8star.org)",
+"apiKeyLabelT8": "API Key (t8star)",
+"apiKeyNoteT8": "t8star uses a separate key from DashScope. Both are stored independently and swap when you change endpoint.",
+"t8OnlyImageNote": "t8star only serves the gpt-image-2 image model — video generation is unavailable."
 ```
 
 `zh-CN.json` 的 `config` 段追加：
 
 ```json
-"confirmNoT8ApiKey": "尚未填写 gpt-image-2 的 API Key，现在去设置？"
+"readyT8": "已配置 · t8star{epLabel}"
 ```
 
 `en.json` 的 `config` 段追加：
 
 ```json
-"confirmNoT8ApiKey": "No gpt-image-2 API Key configured. Open settings now?"
+"readyT8": "Configured · t8star{epLabel}"
 ```
 
-- [ ] **Step 2: 加设置页字段**
+- [ ] **Step 2: HTML —— 下拉加选项，地域块加包裹层**
 
-在 `public/index.html` 里，找到 WorkspaceId 那个 `<div>` 块的结束标签之后、
-`<label data-i18n="settings.languageLabel">` 之前，插入：
+在 `public/index.html` 里，Endpoint 下拉的蓝星那一项之后插入：
 
 ```html
-        <label data-i18n="settings.t8ApiKeyLabel">API Key（gpt-image-2 / t8star）</label>
-        <input type="password" id="t8ApiKey" placeholder="sk-xxxxxxxxxxxxxxxx" autocomplete="off" />
-        <div style="font-size:11px;color:var(--muted);margin-top:4px" data-i18n="settings.t8ApiKeyNote">gpt-image-2 使用独立于 DashScope 的另一把 Key，同样只存在浏览器 localStorage。</div>
-
-        <label data-i18n="settings.t8BaseUrlLabel">gpt-image-2 Base URL</label>
-        <input type="text" id="t8BaseUrl" placeholder="https://ai.t8star.org" autocomplete="off" />
-        <div style="font-size:11px;color:var(--muted);margin-top:4px" data-i18n="settings.t8BaseUrlNote">留空则使用官方地址 https://ai.t8star.org</div>
+          <option value="https://ai.t8star.org" data-i18n="settings.endpointT8star">t8star 中转站（ai.t8star.org）</option>
 ```
 
-- [ ] **Step 3: app.js 读取与保存**
+地域那一段（`<label ...regionLabel>` + `<select id="region">` + 后面的 regionNote）
+目前是三个裸兄弟节点，没法整体显隐。把这三个节点用一个 div 包起来：
 
-在 `public/js/app.js` 里 `const endpointEl = $('endpoint');` 附近追加元素引用：
-
-```js
-const t8ApiKeyEl = $('t8ApiKey');
-const t8BaseUrlEl = $('t8BaseUrl');
+```html
+        <div id="regionWrap">
+          <label data-i18n="settings.regionLabel">地域</label>
+          <select id="region">
+            ... 四个 option 原样不动 ...
+          </select>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px" data-i18n="settings.regionNote">注意：API Key、模型、Endpoint 必须同地域，跨地域调用会失败。</div>
+        </div>
 ```
 
-在 `endpointEl.value = localStorage.getItem('hh_endpoint') || '';` 附近追加初始化：
+给 API Key 的 label 与说明加 id，好在切换时改文案：
 
-```js
-t8ApiKeyEl.value = localStorage.getItem('hh_t8_api_key') || '';
-t8BaseUrlEl.value = localStorage.getItem('hh_t8_base_url') || '';
+```html
+        <label class="first" id="apiKeyLabel" data-i18n="settings.apiKeyLabel">API Key（DashScope）</label>
+        <input type="password" id="apiKey" placeholder="sk-xxxxxxxxxxxxxxxx" autocomplete="off" />
+        <div id="apiKeyNote" style="font-size:11px;color:var(--muted);margin-top:4px" data-i18n="settings.apiKeyNote">仅保存在你浏览器的 localStorage 里，不会上传到任何第三方。</div>
 ```
 
-在保存设置的函数里，`localStorage.setItem('hh_custom_endpoint', ...)` 之后追加：
+在 Endpoint 说明那个 `<div>` 之后加一条只在 t8star 时显示的提示：
 
-```js
-  localStorage.setItem('hh_t8_api_key', t8ApiKeyEl.value.trim());
-  localStorage.setItem('hh_t8_base_url', t8BaseUrlEl.value.trim());
+```html
+        <div id="t8OnlyImageNote" style="display:none;font-size:11px;color:var(--warn,#c90);margin-top:4px" data-i18n="settings.t8OnlyImageNote">t8star 只提供 gpt-image-2 图片模型，不支持视频生成。</div>
 ```
 
-- [ ] **Step 4: getAuth 带上新字段**
+- [ ] **Step 3: app.js —— provider 判定与双 Key 槽**
 
-把 `getAuth()` 改为：
+把 `public/js/app.js` 里元素引用与初始化那一段（约 27-43 行）改为：
 
 ```js
-function getAuth() {
-  return {
-    apiKey: apiKeyEl.value.trim(),
-    region: regionEl.value,
-    workspaceId: workspaceIdEl.value.trim(),
-    endpoint: getEndpointUrl(),
-    t8ApiKey: t8ApiKeyEl.value.trim(),
-    t8BaseUrl: t8BaseUrlEl.value.trim(),
-  };
+const apiKeyEl = $('apiKey');
+const apiKeyLabelEl = $('apiKeyLabel');
+const apiKeyNoteEl = $('apiKeyNote');
+const regionEl = $('region');
+const regionWrap = $('regionWrap');
+const workspaceWrap = $('workspaceWrap');
+const workspaceIdEl = $('workspaceId');
+const endpointEl = $('endpoint');
+const customEndpointWrap = $('customEndpointWrap');
+const customEndpointEl = $('customEndpoint');
+const t8OnlyImageNote = $('t8OnlyImageNote');
+const configChip = $('configChip');
+const configChipText = $('configChipText');
+const setupHint = $('setupHint');
+
+const T8STAR_BASE = 'https://ai.t8star.org';
+/** localStorage slot per provider — the two keys never overwrite each other. */
+const KEY_SLOT = { dashscope: 'hh_api_key', t8star: 'hh_t8_api_key' };
+
+/**
+ * The provider is derived from the endpoint, never stored separately —
+ * one source of truth avoids the two drifting apart.
+ */
+function getProvider() {
+  return endpointEl.value === T8STAR_BASE ? 't8star' : 'dashscope';
 }
+function isT8Provider() { return getProvider() === 't8star'; }
+
+// Endpoint must be restored before the key: the key slot depends on it.
+endpointEl.value = localStorage.getItem('hh_endpoint') || '';
+customEndpointEl.value = localStorage.getItem('hh_custom_endpoint') || '';
+// Tracks which provider's key currently sits in the input box.
+let keySlotProvider = getProvider();
+apiKeyEl.value = localStorage.getItem(KEY_SLOT[keySlotProvider]) || '';
+regionEl.value = localStorage.getItem('hh_region') || 'cn-beijing';
+workspaceIdEl.value = localStorage.getItem('hh_ws_id') || '';
+toggleCustomEndpoint();
 ```
 
-两个提交路径都是 `JSON.stringify({ ...auth, ... })`，因此新字段自动透传，调用点无需改动。
+- [ ] **Step 4: app.js —— 切换接入点时换 Key 槽与显隐**
 
-- [ ] **Step 5: 手动验证**
+把现有的 `endpointEl.addEventListener('change', toggleCustomEndpoint);` 换成：
+
+```js
+endpointEl.addEventListener('change', onEndpointChange);
+
+function onEndpointChange() {
+  const next = getProvider();
+  if (next !== keySlotProvider) {
+    // Park the current box contents in the old provider's slot before swapping,
+    // otherwise switching back would show an empty key.
+    localStorage.setItem(KEY_SLOT[keySlotProvider], apiKeyEl.value.trim());
+    apiKeyEl.value = localStorage.getItem(KEY_SLOT[next]) || '';
+    keySlotProvider = next;
+  }
+  toggleCustomEndpoint();
+  applyProviderFields();
+  refreshConfigChip();
+}
+
+/** Region and workspace are DashScope-only concepts; hide them for t8star. */
+function applyProviderFields() {
+  const t8 = isT8Provider();
+  regionWrap.style.display = t8 ? 'none' : '';
+  t8OnlyImageNote.style.display = t8 ? '' : 'none';
+  if (t8) workspaceWrap.style.display = 'none';
+  else toggleWorkspace();
+  apiKeyLabelEl.textContent = t(t8 ? 'settings.apiKeyLabelT8' : 'settings.apiKeyLabel');
+  apiKeyNoteEl.textContent = t(t8 ? 'settings.apiKeyNoteT8' : 'settings.apiKeyNote');
+}
+applyProviderFields();
+```
+
+`toggleWorkspace()` 里的法兰克福判断保持不变，但把调用点收敛进 `applyProviderFields()`，
+避免 t8star 下地域仍是法兰克福时把 WorkspaceId 框漏出来。
+
+- [ ] **Step 5: app.js —— 保存、配置条、providerchange 广播**
+
+把保存设置的处理器改为：
+
+```js
+$('settingsSave').addEventListener('click', () => {
+  localStorage.setItem(KEY_SLOT[getProvider()], apiKeyEl.value.trim());
+  localStorage.setItem('hh_region', regionEl.value);
+  localStorage.setItem('hh_ws_id', workspaceIdEl.value.trim());
+  localStorage.setItem('hh_endpoint', endpointEl.value);
+  localStorage.setItem('hh_custom_endpoint', customEndpointEl.value.trim());
+  refreshConfigChip();
+  // Model lists, parameter controls and the video gate all key off the provider.
+  window.dispatchEvent(new Event('providerchange'));
+  switchToTab('r2v');
+});
+```
+
+注意 `switchToTab('r2v')` —— 保存后会跳到视频页。t8star 下那一页是不可用的，
+Task 4 的提示条正好在那里给出说明，不必改这个跳转。
+
+在 `refreshConfigChip()` 里，把设置文本那一段改为：
+
+```js
+  if (hasKey) {
+    configChip.classList.add('ok');
+    configChipText.textContent = isT8Provider()
+      ? t('config.readyT8', { epLabel })
+      : t('config.ready', { region, epLabel });
+    setupHint.style.display = 'none';
+  } else {
+```
+
+`localechange` 监听里补一句 `applyProviderFields()`，否则切语言后 Key 的 label
+会退回 HTML 里的 `data-i18n` 默认值：
+
+```js
+window.addEventListener('localechange', () => {
+  applyProviderFields();
+  refreshConfigChip();
+});
+```
+
+- [ ] **Step 6: getAuth 不动**
+
+`getAuth()` 保持原样 —— `apiKey` 与 `endpoint` 已经承载了 t8star 所需的全部信息。
+这是方案 B 的红利：所有提交路径的 `JSON.stringify({ ...auth, ... })` 一行都不用改。
+
+- [ ] **Step 7: 手动回归（重点）**
 
 Run: `node server.js`，浏览器打开 http://localhost:3000 → 设置页
-Expected: 出现两个新输入框；填入值 → 保存 → 刷新页面 → 值仍在
 
-浏览器控制台执行 `getAuth()`，Expected: 返回对象含 `t8ApiKey` 与 `t8BaseUrl`
+1. 接入点选「t8star 中转站」
+   Expected: 地域块与 WorkspaceId 消失；Key 的 label 变成「API Key（t8star）」；出现橙色的「不支持视频生成」提示
+2. 填入 t8star Key → 保存 → 刷新页面 → 回设置页
+   Expected: 接入点仍是 t8star，Key 仍在
+3. 接入点切回「官方百炼」
+   Expected: 地域块回来；Key 框显示的是**原来那把 DashScope Key**，不是 t8star 的
+4. 再切回 t8star
+   Expected: Key 框显示 t8star 的 Key（两把互不覆盖 —— 这一条最容易写错，务必确认）
+5. 接入点选「自定义…」，填 `https://x.example.com`
+   Expected: 行为与改动前一致，仍按 DashScope 处理，地域块显示
+6. 地域选「德国（法兰克福）」→ 接入点切 t8star
+   Expected: WorkspaceId 框不出现（不是只隐藏地域却漏出 Workspace）
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 8: 提交**
 
 ```bash
 git add public/index.html public/js/app.js public/locales/zh-CN.json public/locales/en.json
-git commit -m "feat: 设置页新增 gpt-image-2 独立 Key 与 Base URL"
+git commit -m "feat: 接入点下拉新增 t8star，按服务商切换 Key 与配置项"
 ```
 
 ---
 
-### Task 4: 模型感知的鉴权校验
+### Task 4: provider 感知的鉴权与视频模块闸门
 
 **Files:**
-- Modify: `public/js/app.js`（`checkAuth`，约 132-146 行）
+- Modify: `public/js/app.js`（`checkAuth`）
+- Modify: `public/js/task.js`（`submitTask`，约 155 行）
+- Modify: `public/index.html`（三个视频页顶部提示条）
+- Modify: `public/locales/zh-CN.json`、`public/locales/en.json`
 
-- [ ] **Step 1: 加模型判定与改造 checkAuth**
+- [ ] **Step 1: 加 i18n 文案**
 
-在 `public/js/app.js` 的 `getAuth()` 之后加：
+`zh-CN.json` 的 `config` 段追加：
 
-```js
-/** True when the model uses the t8star OpenAI-protocol endpoint. */
-function isT8Model(model) {
-  return model === 'gpt-image-2';
-}
+```json
+"t8NoVideo": "当前接入点是 t8star，只支持 gpt-image-2 图片生成。视频功能请到设置里把接入点切回官方百炼。"
 ```
 
-把 `checkAuth` 改为：
+`en.json` 的 `config` 段追加：
+
+```json
+"t8NoVideo": "The current endpoint is t8star, which only serves gpt-image-2 image generation. Switch the endpoint back to Official Bailian in Settings to use video."
+```
+
+- [ ] **Step 2: checkAuth 跳过 t8star 无关的校验**
+
+把 `public/js/app.js` 的 `checkAuth` 改为：
 
 ```js
-function checkAuth(needsWs = true, model = null) {
+function checkAuth(needsWs = true) {
   const a = getAuth();
-  // t8star models use their own key and are region-independent.
-  if (isT8Model(model)) {
-    if (!a.t8ApiKey) {
-      if (confirm(t('config.confirmNoT8ApiKey'))) openSettings();
-      return null;
-    }
-    return a;
-  }
   if (!a.apiKey) {
     if (confirm(t('config.confirmNoApiKey'))) openSettings();
     return null;
   }
-  if (needsWs && a.region === 'eu-central-1' && !a.workspaceId) {
+  // Region and workspace are DashScope concepts — t8star has neither.
+  if (needsWs && !isT8Provider() && a.region === 'eu-central-1' && !a.workspaceId) {
     if (confirm(t('config.confirmWorkspace'))) openSettings();
     return null;
   }
@@ -600,27 +725,71 @@ function checkAuth(needsWs = true, model = null) {
 }
 ```
 
-`app.js` 在 `imggen.js` / `imgedit.js` 之前加载，所以 `isT8Model` 对它们全局可见。
-参数带默认值，现有 `checkAuth()` / `checkAuth(false)` 的调用点行为不变。
+签名不变 —— provider 从 endpoint 推导，不需要调用方传模型。
+所有现有调用点（`checkAuth()` / `checkAuth(false)`）零改动。
 
-- [ ] **Step 2: 手动验证**
+- [ ] **Step 3: 视频提交闸门**
 
-浏览器控制台执行：
-```js
-checkAuth(true, 'gpt-image-2')
-```
-Expected: t8 Key 已填时返回 auth 对象；清空 t8 Key 后弹出「尚未填写 gpt-image-2 的 API Key」
+`task.js` 的 `submitTask()` 是 t2v / i2v / r2v 三个视频页的**唯一**提交入口，
+一道闸门就能全挡住。把开头改为：
 
 ```js
-checkAuth()
+async function submitTask(ctx, payload) {
+  // t8star speaks only the image chat API; DashScope video endpoints do not exist there.
+  if (isT8Provider()) {
+    alert(t('config.t8NoVideo'));
+    return;
+  }
+  const auth = checkAuth();
+  if (!auth) return;
 ```
-Expected: 行为与改动前一致（校验 DashScope Key）
 
-- [ ] **Step 3: 提交**
+同一文件里轮询用的 `checkAuth()`（约 234 行）不用加闸门 ——
+提交都进不去，就不会有待轮询的任务。
+
+- [ ] **Step 4: 视频页常驻提示条**
+
+点了才被拒的体验不好。在 `public/index.html` 的 t2v、i2v、r2v 三个面板里，
+各自的 `<h2>` 之后插入一条默认隐藏的提示（`KIND` 分别替换为 `t2v` / `i2v` / `r2v`）：
+
+```html
+        <div class="meta" id="t8VideoWarn-KIND" style="display:none;color:var(--warn,#c90);margin-bottom:8px" data-i18n="config.t8NoVideo">当前接入点是 t8star，只支持 gpt-image-2 图片生成。视频功能请到设置里把接入点切回官方百炼。</div>
+```
+
+在 `public/js/task.js` 末尾加刷新逻辑，并挂到两个事件上：
+
+```js
+/** Shows the "video unavailable" banner on the video tabs when t8star is selected. */
+function refreshT8VideoWarnings() {
+  const show = isT8Provider();
+  ['t2v', 'i2v', 'r2v'].forEach(kind => {
+    const el = document.getElementById('t8VideoWarn-' + kind);
+    if (el) el.style.display = show ? '' : 'none';
+  });
+}
+window.addEventListener('providerchange', refreshT8VideoWarnings);
+window.addEventListener('localechange', refreshT8VideoWarnings);
+refreshT8VideoWarnings();
+```
+
+- [ ] **Step 5: 手动验证**
+
+Run: `node server.js`，浏览器打开 http://localhost:3000
+
+1. 接入点设为 t8star → 保存
+   Expected: 跳到视频页后，页面顶部就有橙色提示条
+2. 在视频页填内容点提交
+   Expected: 弹出「当前接入点是 t8star…」，不发请求（Network 面板确认无 `/api/create-task`）
+3. 接入点切回官方百炼 → 保存
+   Expected: 提示条消失；视频提交恢复正常
+4. 地域设法兰克福、不填 WorkspaceId，接入点为百炼，提交视频
+   Expected: 仍弹出原来的 WorkspaceId 提示（这条老校验没被误伤）
+
+- [ ] **Step 6: 提交**
 
 ```bash
-git add public/js/app.js
-git commit -m "feat: checkAuth 按模型选择校验对应的 API Key"
+git add public/js/app.js public/js/task.js public/index.html public/locales/zh-CN.json public/locales/en.json
+git commit -m "feat: t8star 接入点下跳过地域校验并挡住视频提交"
 ```
 
 ---
@@ -677,21 +846,56 @@ git commit -m "feat: checkAuth 按模型选择校验对应的 API Key"
         </div>
 ```
 
-- [ ] **Step 3: 模型列表加选项**
+- [ ] **Step 3: 模型列表按 provider 切换**
 
-在 `public/js/imggen.js` 的 `getImggenModels()` 返回数组末尾追加：
+不是追加一项 —— t8star 不认 qwen/wan 模型名，列出来全是必然报错的选项。
+把 `public/js/imggen.js` 的 `getImggenModels()` 改为：
 
 ```js
-    { value: 'gpt-image-2', label: t('imggen.modelGptImage2') },
+function getImggenModels() {
+  // t8star serves exactly one image model; DashScope models are not routable there.
+  if (isT8Provider()) {
+    return [{ value: 'gpt-image-2', label: t('imggen.modelGptImage2') }];
+  }
+  return [
+    { value: 'qwen-image-plus', label: t('imggen.modelQwenPlus') },
+    { value: 'qwen-image', label: t('imggen.modelQwen') },
+    { value: 'wan2.7-image-pro', label: t('imggen.modelWanPro') },
+    { value: 'wan2.7-image', label: t('imggen.modelWan') },
+  ];
+}
 ```
+
+再加一个模型判定（`imggen.js` 与 `imgedit.js` 共用，放 `app.js` 更合适 ——
+放在 `getProvider()` 旁边）：
+
+```js
+/** True when the model speaks the t8star OpenAI chat protocol. */
+function isT8Model(model) {
+  return model === 'gpt-image-2';
+}
+```
+
+切换接入点后模型下拉必须重建，否则会残留上一个 provider 的选项。
+在 `public/js/imggen.js` 现有的 `localechange` 监听旁边加：
+
+```js
+window.addEventListener('providerchange', () => { updateImggenUI(); });
+```
+
+`updateImggenUI()` 开头会读 `$('model-imggen').value` 再重建 `innerHTML`，
+而 `models.some(m => m.value === prevValue)` 判不中时会落到列表第一项 ——
+provider 切换后旧模型名自然被丢弃，这个行为正是我们要的，不用额外处理。
 
 - [ ] **Step 4: 控件联动**
 
-在 `updateImggenUI()` 函数体末尾（`wanControls.forEach(...)` 那行之后）追加：
+在 `updateImggenUI()` 函数体末尾（`wanControls.forEach(...)` 那行之后）追加。
+注意要用**重建后的**下拉当前值，不能用函数开头那个 `model` 变量 ——
+provider 刚切换时它还是旧模型名：
 
 ```js
   // gpt-image-2 is a chat API: it has no size/count/seed/watermark parameters.
-  const isT8 = isT8Model(model);
+  const isT8 = isT8Model(modelSelect.value);
   document.querySelectorAll('[data-imggen-ds]').forEach(el => el.style.display = isT8 ? 'none' : '');
   if (isT8) {
     document.querySelectorAll('[data-imggen-wan]').forEach(el => el.style.display = 'none');
@@ -700,22 +904,8 @@ git commit -m "feat: checkAuth 按模型选择校验对应的 API Key"
 
 - [ ] **Step 5: 提交时跳过不支持的参数**
 
-在 `submitImggen()` 中，把开头的
-
-```js
-  const auth = checkAuth();
-  if (!auth) return;
-
-  const model = $('model-imggen').value;
-```
-
-改为（先读 model 再校验）：
-
-```js
-  const model = $('model-imggen').value;
-  const auth = checkAuth(true, model);
-  if (!auth) return;
-```
+`submitImggen()` 开头的 `checkAuth()` 调用**保持原样** ——
+provider 从 endpoint 推导，不需要传模型进去。
 
 把「Build params」那一段改为：
 
@@ -780,15 +970,18 @@ function renderImggenImageResults(imageUrls, usage, note) {
 
 - [ ] **Step 7: 手动验证**
 
-Run: `node server.js`，浏览器打开 http://localhost:3000 → 图片生成
+Run: `node server.js`，浏览器打开 http://localhost:3000
 
-1. 模型选 `gpt-image-2`
-   Expected: 尺寸/数量/Seed/水印/反向提示词全部消失
-2. Prompt 填「画只猫」→ 点生成
+1. 接入点为官方百炼时打开「图片生成」
+   Expected: 模型下拉是原来四项，`gpt-image-2` **不出现**
+2. 设置页切到 t8star + 填 Key → 保存 → 回「图片生成」
+   Expected: 下拉**只剩** `gpt-image-2`（不用刷新页面 —— 验证 `providerchange` 生效）；
+   尺寸/数量/Seed/水印/反向提示词全部消失
+3. Prompt 填「画只猫」→ 点生成
    Expected: 约 30-60s 后出图，图下方显示「模型说明：给你画好了…」
-3. 模型切回 `qwen-image`
-   Expected: 上述控件全部恢复显示
-4. 用 `qwen-image` 生成一次
+4. 设置页切回官方百炼 → 回「图片生成」
+   Expected: 下拉恢复四项且选中第一项，上述控件全部恢复显示
+5. 用 `qwen-image` 生成一次
    Expected: 行为与改动前一致
 
 - [ ] **Step 8: 提交**
@@ -850,21 +1043,39 @@ note 容器：
         </div>
 ```
 
-- [ ] **Step 3: 模型列表加选项**
+- [ ] **Step 3: 模型列表按 provider 切换**
 
-在 `public/js/imgedit.js` 的 `getImgeditModels()` 返回数组末尾追加：
+把 `public/js/imgedit.js` 的 `getImgeditModels()` 改为：
 
 ```js
-    { value: 'gpt-image-2', label: t('imgedit.modelGptImage2') },
+function getImgeditModels() {
+  // t8star serves exactly one image model; DashScope models are not routable there.
+  if (isT8Provider()) {
+    return [{ value: 'gpt-image-2', label: t('imgedit.modelGptImage2') }];
+  }
+  return [
+    { value: 'qwen-image-edit-plus', label: t('imgedit.modelQwenEditPlus') },
+    { value: 'qwen-image-edit', label: t('imgedit.modelQwenEdit') },
+    { value: 'wan2.7-image-pro', label: t('imgedit.modelWanPro') },
+    { value: 'wan2.7-image', label: t('imgedit.modelWan') },
+  ];
+}
+```
+
+在 `public/js/imgedit.js` 现有的 `localechange` 监听旁边加：
+
+```js
+window.addEventListener('providerchange', () => { updateImgeditUI(); });
 ```
 
 - [ ] **Step 4: 控件联动**
 
-在 `updateImgeditUI()` 函数体末尾（`wanControls.forEach(...)` 之后）追加：
+在 `updateImgeditUI()` 函数体末尾（`wanControls.forEach(...)` 之后）追加。
+同 Task 5，用重建后的下拉当前值：
 
 ```js
   // gpt-image-2 is a chat API: it has no size/count/seed/watermark parameters.
-  const isT8 = isT8Model(model);
+  const isT8 = isT8Model(modelSelect.value);
   document.querySelectorAll('[data-imgedit-ds]').forEach(el => el.style.display = isT8 ? 'none' : '');
   if (isT8) {
     document.querySelectorAll('[data-imgedit-wan]').forEach(el => el.style.display = 'none');
@@ -873,22 +1084,7 @@ note 容器：
 
 - [ ] **Step 5: 提交时跳过不支持的参数**
 
-在 `submitImgedit()` 中，把开头的
-
-```js
-  const auth = checkAuth();
-  if (!auth) return;
-
-  const model = $('model-imgedit').value;
-```
-
-改为（先读 model 再校验）：
-
-```js
-  const model = $('model-imgedit').value;
-  const auth = checkAuth(true, model);
-  if (!auth) return;
-```
+`submitImgedit()` 开头的 `checkAuth()` 调用**保持原样**。
 
 把构建 params 的那一段包进条件里：
 
@@ -953,18 +1149,19 @@ function renderImgeditImageResults(imageUrls, usage, note) {
 
 - [ ] **Step 7: 手动验证**
 
-Run: `node server.js`，浏览器打开 http://localhost:3000 → 图片编辑
+Run: `node server.js`，浏览器打开 http://localhost:3000 → 设置页切 t8star → 图片编辑
 
-1. 模型选 `gpt-image-2`
+1. 模型下拉只有 `gpt-image-2`
    Expected: 尺寸/数量/Seed/水印/反向提示词消失，上传区与 Prompt 仍在
 2. 上传 1 张图，Prompt 填「把背景改成蓝色」→ 点编辑
    Expected: 出图 + 模型说明（验证 base64 data URI 链路通）
 3. 上传 2 张图，Prompt 填「把这两张图并排拼成一张」→ 点编辑
    Expected: 出图（验证多图链路通）
-4. 模型切回 `qwen-image-edit`，编辑一次
+4. 设置页切回官方百炼，模型选 `qwen-image-edit`，编辑一次
    Expected: 行为与改动前一致
 5. 打开历史记录
-   Expected: 新记录的模型显示为 `gpt-image-2-pro`
+   Expected: t8star 那两条记录的模型显示为 `gpt-image-2-pro`，
+   且与 DashScope 的记录混排显示正常（历史记录不区分 provider，这是有意的）
 
 - [ ] **Step 8: 提交**
 
@@ -993,8 +1190,11 @@ git commit -m "feat: 图片编辑模块接入 gpt-image-2"
 在 README「### 4. 配置」小节的列表末尾追加：
 
 ```markdown
-- **API Key（gpt-image-2 / t8star）** — 使用 `gpt-image-2` 模型时必填，与 DashScope Key 相互独立
-- **gpt-image-2 Base URL** — 可选，留空则用官方地址 `https://ai.t8star.org`
+- **接入点（Endpoint）** — 除官方百炼与蓝星中转站外，新增 **t8star 中转站**。
+  选中 t8star 后：
+  - API Key 字段代表 t8star 的 Key（与 DashScope Key 分开保存，切换接入点时自动切换）
+  - 地域与 WorkspaceId 不适用，自动隐藏
+  - 图片模型只有 `gpt-image-2`；视频生成不可用
 ```
 
 - [ ] **Step 3: 更新接口协议说明**
@@ -1029,8 +1229,10 @@ git commit -m "docs: README 补充 gpt-image-2 模型与协议说明"
 ## 完成标准
 
 - `npm test` 全绿，含新增的 `tests/t8star.test.js`
-- 图片生成模块用 `gpt-image-2` 能出图，模型说明正常展示
-- 图片编辑模块用 `gpt-image-2` 单图、多图均能出图
-- 切换到任一 DashScope 模型，行为与接入前完全一致
-- 未填 t8star Key 时给出明确提示而非 500
+- 接入点选 t8star 后，图片生成模块能出图，模型说明正常展示
+- 接入点选 t8star 后，图片编辑模块单图、多图均能出图
+- **两把 Key 互不覆盖**：t8star ↔ 百炼来回切换，各自的 Key 都还在
+- **切回官方百炼后一切如初**：模型下拉恢复四项，参数控件恢复，视频可提交
+- t8star 下视频提交被拦截并给出明确指引，不会发出必然失败的请求
+- 未填 Key 时给出明确提示而非 500
 - 仓库中不含任何真实 API Key

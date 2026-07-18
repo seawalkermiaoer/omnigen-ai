@@ -76,14 +76,42 @@ Content-Type: application/json
 
 ## 架构
 
+### 核心决策：「接入点」下拉升级为服务商选择器
+
+现有的「接入点（Endpoint）」下拉只是 DashScope 的 base URL 选择器 ——
+它的值喂给 `resolveEndpoint()`，图片、视频、任务轮询三条链路共用，
+且共用设置页里那把 DashScope Key。
+
+t8star 与它们协议不同、Key 不同。把 t8star 放进这个下拉，
+等于把它的语义从「DashScope 走哪个地址」改成「用哪家服务商」。
+这是本次改动的主要成本所在，取舍如下：
+
+| | 收益 | 代价 |
+|---|---|---|
+| 放进下拉 | 用户心智一致：一个地方选服务商；不新增 Key 字段 | 下拉值决定协议，模型列表、鉴权、视频可用性都要跟着变 |
+
+选定放进下拉。由此派生出一个贯穿前端的概念 **provider**：
+
+```
+endpoint === 'https://ai.t8star.org'  →  provider = 't8star'
+其它任何值（含空、蓝星、自定义）        →  provider = 'dashscope'
+```
+
+provider 是**从 endpoint 推导**出来的，不单独存 localStorage —— 避免两处状态不一致。
+
+**连带影响：选中 t8star 后，设置页的 API Key 字段代表 t8star 的 Key**，
+不是 DashScope 的。两把 Key 分开存（`hh_api_key` / `hh_t8_api_key`），
+切换接入点时输入框内容跟着切换，否则用户切回百炼会发现 Key 被覆盖没了。
+
 ### 后端
 
-**`lib/providers/t8star.js`（新建）** —— 两个纯函数，不做网络 IO：
+**`lib/providers/t8star.js`（新建）** —— 三个纯函数，不做网络 IO：
 
 - `buildPayload({ model, prompt, images })` → 请求体。`images` 为空时 `content` 用字符串，否则用数组。
 - `parseResponse(data)` → `{ images: string[], note: string }`。
   用全局正则 `/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g` 提取全部图链；
   剥离图链后剩余的正文 trim 后作为 `note`。
+- `resolveBaseUrl(input)` → 规范化 base URL，非 http 值回落到 `https://ai.t8star.org`。
 
 抽成独立模块的理由：`server.js` 已 666 行；纯函数可脱网单测，
 项目已有 `tests/server-utils.test.js` 的先例。
@@ -92,9 +120,12 @@ Content-Type: application/json
 
 - 新增 `MODELS.IMAGE_OPENAI = ['gpt-image-2']`。
 - 模型白名单校验放宽为 `MODELS.IMAGE` 与 `MODELS.IMAGE_OPENAI` 的并集。
-- 命中 `IMAGE_OPENAI` 时：base URL 取请求体的 `t8BaseUrl`（缺省 `https://ai.t8star.org`），
-  Bearer 取 `t8ApiKey`，走 `/v1/chat/completions`，用上述两个纯函数拼装与解析。
+- 命中 `IMAGE_OPENAI` 时：base URL 取**现有的 `endpoint` 字段**（经 `resolveBaseUrl` 规范化），
+  Bearer 取**现有的 `apiKey` 字段**，走 `/v1/chat/completions`，用上述纯函数拼装与解析。
 - 命中 `MODELS.IMAGE` 时：完全走现有 DashScope 逻辑，不改。
+
+**请求契约也不变** —— 方案 B 的一个实际好处：`endpoint` 与 `apiKey` 都是请求体里已有的字段，
+后端不需要新增 `t8ApiKey` / `t8BaseUrl`，路由开头的解构一行都不用动。
 
 **响应契约不变** —— 仍返回 `{ images, usage, model }`，新增可选 `note`。
 因此历史记录、下载、结果渲染全部零改动。
@@ -103,20 +134,25 @@ Content-Type: application/json
 
 **设置页（`index.html` + `app.js`）**
 
-新增两个字段，与现有 DashScope 配置并列：
+- Endpoint 下拉新增一项：`t8star 中转站（ai.t8star.org）`，value 为 `https://ai.t8star.org`。
+- 选中 t8star 时：隐藏「地域」与「WorkspaceId」两块（对该服务商无意义），
+  API Key 的 label 与说明文案切换为 t8star 版本。
+- 两把 Key 分开持久化。切换下拉时把当前输入框内容写回**原 provider** 的槽位，
+  再载入**新 provider** 的槽位。
+- 保存设置后广播 `providerchange` 事件 —— 模型下拉、控件显隐、视频页提示都靠它刷新。
+  现有模块已经在监听 `localechange` 做同类刷新，沿用同一套写法即可。
 
-- `gpt-image-2 API Key` → localStorage `hh_t8_api_key`
-- `Base URL` → localStorage `hh_t8_base_url`，默认 `https://ai.t8star.org`
+`getAuth()` 不变（`apiKey` + `endpoint` 已够用）。
+`checkAuth()` 增加：provider 为 t8star 时跳过法兰克福 workspaceId 校验（与地域无关）。
 
-`getAuth()` 追加返回 `t8ApiKey` / `t8BaseUrl`。
-两个提交路径都是 `JSON.stringify({ ...auth, ... })`，所以字段自动透传，无需改调用点。
+**模型下拉（`imggen.js` / `imgedit.js`）—— 按 provider 切换整个列表**
 
-`checkAuth()` 改为模型感知：选中 `gpt-image-2` 时校验 `t8ApiKey`
-（而非 `apiKey`），且跳过法兰克福 workspaceId 校验（与地域无关）。
+不是「追加一个选项」，而是**换一份列表**：
 
-**模型下拉（`imggen.js` / `imgedit.js`）**
+- provider = t8star → 只有 `gpt-image-2`
+- provider = dashscope → 现有四项，不变
 
-`getImggenModels()` 与 `getImgeditModels()` 各追加 `gpt-image-2` 选项。
+理由：t8star 不认 qwen/wan 模型名，列出来就是一堆必然报错的选项。
 
 **控件联动**
 
@@ -125,6 +161,14 @@ Content-Type: application/json
 复用现有 `data-imggen-wan` / `data-imgedit-wan` 那套 `style.display` 切换写法，
 不引入新机制。数量固定为 1 —— 接口不支持 `n`，也不通过循环调用去凑（YAGNI）。
 
+**视频模块闸门**
+
+t2v / i2v / r2v 三个视频页与任务轮询都走 DashScope 协议，t8star 不提供。
+所有视频提交都收敛在 `task.js` 的 `submitTask()` 一个入口，
+在那里加一道 provider 闸门：provider 为 t8star 时直接 alert 并 return，
+文案明确指引「切回官方百炼」。同时在三个视频页顶部显示一条常驻提示条，
+让用户在点提交之前就知道，而不是点了才被拒。
+
 **note 展示**
 
 模型返回的说明文字（例："我还可以帮你改成：1. 更扁平的纯色 logo…"）
@@ -132,8 +176,8 @@ Content-Type: application/json
 
 ### i18n
 
-`zh-CN.json` 与 `en.json` 同步新增：设置页两个字段的 label 与说明、
-模型下拉选项名、note 区域标题。
+`zh-CN.json` 与 `en.json` 同步新增：Endpoint 新选项名、t8star 版的 API Key label
+与说明、模型下拉选项名、note 区域标题、视频页不可用提示条与拦截 alert 文案。
 
 ## 错误处理
 
@@ -158,6 +202,9 @@ Content-Type: application/json
 - 不支持 `n > 1` 的多图生成（接口无此能力，不做客户端循环）。
 - 不把 t8star Key 放进 `.env`（与现有「用户自带 Key、存 localStorage」的模式保持一致）。
 - 不改动任何现有 DashScope 模型的行为。
+- **不支持「同时用两家」** —— 接入点是全局单选，选了 t8star 就用不了 qwen/wan 和视频。
+  这是方案 B 的固有代价，已知并接受；要并用得回设置页切一下。
+- 不为 t8star 做视频能力探测或降级重试 —— 它就是不提供，直接挡住比试错友好。
 
 ## 安全备注
 
