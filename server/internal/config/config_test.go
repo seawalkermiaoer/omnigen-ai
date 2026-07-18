@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"net/url"
 	"testing"
 	"time"
 
@@ -70,4 +71,58 @@ func TestDSN(t *testing.T) {
 	assert.Equal(t,
 		"postgres://postgres:123456@localhost:5432/omnigen?sslmode=disable",
 		cfg.DB.DSN())
+}
+
+func TestDSN_EscapesSpecialCharacters(t *testing.T) {
+	setRequired(t)
+	const rawPassword = "p@ss w:rd/x"
+	t.Setenv("DB_PASSWORD", rawPassword)
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+
+	dsn := cfg.DB.DSN()
+	parsed, err := url.Parse(dsn)
+	require.NoError(t, err)
+
+	got, ok := parsed.User.Password()
+	require.True(t, ok, "DSN must carry a password component")
+	assert.Equal(t, rawPassword, got)
+}
+
+func TestLoad_FailsOnUnparseableInt(t *testing.T) {
+	setRequired(t)
+	t.Setenv("DB_PORT", "abc")
+
+	_, err := config.Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DB_PORT")
+}
+
+func TestLoad_FailsOnUnparseableDuration(t *testing.T) {
+	setRequired(t)
+	t.Setenv("JWT_TTL", "notaduration")
+
+	_, err := config.Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JWT_TTL")
+}
+
+func TestLoad_RequiredSecretErrorTakesPrecedence(t *testing.T) {
+	t.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "admin12345")
+	t.Setenv("JWT_SECRET", "")
+	t.Setenv("DB_PORT", "abc")
+
+	_, err := config.Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JWT_SECRET")
+}
+
+func TestLoad_EmptyDBPasswordIsRespected(t *testing.T) {
+	setRequired(t)
+	t.Setenv("DB_PASSWORD", "")
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, "", cfg.DB.Password)
 }
