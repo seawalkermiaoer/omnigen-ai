@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -47,10 +48,21 @@ type BootstrapConfig struct {
 }
 
 type Config struct {
-	DB        DBConfig
-	JWT       JWTConfig
-	Bootstrap BootstrapConfig
-	HTTPPort  int
+	DB          DBConfig
+	JWT         JWTConfig
+	Bootstrap   BootstrapConfig
+	HTTPPort    int
+	CORSOrigins []string
+}
+
+// defaultCORSOrigins 是 CORS_ORIGINS 未设置时的默认放行范围。
+//
+// Vite 在默认端口被占用时会自动往上找，所以默认放行一段范围而不是单个端口。
+// 5173 被占用后落到 5174/5175/... 是常见情况，写死单个端口会让前端
+// 静默挂掉并且报出一个完全误导的通用错误。
+var defaultCORSOrigins = []string{
+	"http://localhost:5173", "http://localhost:5174",
+	"http://localhost:5175", "http://localhost:5176", "http://localhost:5177",
 }
 
 func env(key, def string) string {
@@ -92,6 +104,29 @@ func envDuration(key string, def time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s 不是合法时长: %q", key, raw)
 	}
 	return v, nil
+}
+
+// envCORSOrigins 解析逗号分隔的 CORS_ORIGINS。未设置时返回 def；
+// 逐项 trim 空白并跳过空项，避免 "a, ,b" 这类输入产生空字符串 origin
+// （空字符串在 AllowOrigins 里语义不明确，容易被误当成通配）。
+func envCORSOrigins(key string, def []string) []string {
+	raw, ok := os.LookupEnv(key)
+	if !ok || raw == "" {
+		return def
+	}
+	parts := strings.Split(raw, ",")
+	origins := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		origins = append(origins, p)
+	}
+	if len(origins) == 0 {
+		return def
+	}
+	return origins
 }
 
 // minJWTSecretLen 是 JWT_SECRET 的最小字节数。太短的密钥可被暴力破解，
@@ -140,8 +175,9 @@ func Load() (*Config, error) {
 			Name:     env("DB_NAME", "omnigen"),
 			SSLMode:  env("DB_SSLMODE", "disable"),
 		},
-		JWT:       JWTConfig{Secret: secret, TTL: ttl},
-		Bootstrap: BootstrapConfig{Username: env("BOOTSTRAP_ADMIN_USERNAME", "admin"), Password: bootstrapPwd},
-		HTTPPort:  httpPort,
+		JWT:         JWTConfig{Secret: secret, TTL: ttl},
+		Bootstrap:   BootstrapConfig{Username: env("BOOTSTRAP_ADMIN_USERNAME", "admin"), Password: bootstrapPwd},
+		HTTPPort:    httpPort,
+		CORSOrigins: envCORSOrigins("CORS_ORIGINS", defaultCORSOrigins),
 	}, nil
 }

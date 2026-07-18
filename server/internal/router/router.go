@@ -16,13 +16,15 @@ type Handlers struct {
 	Health *handler.HealthHandler
 }
 
-func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository) *gin.Engine {
+func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, corsOrigins []string) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger(), middleware.Recovery(), middleware.ErrorHandler())
 
 	// 开发期允许 Vite dev server 跨域；生产由同源部署或反向代理承担。
+	// 允许的 origin 列表来自 config.Config.CORSOrigins（CORS_ORIGINS 环境变量），
+	// 而非写死在这里——见 config.defaultCORSOrigins 的注释。
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:5173"},
+		AllowOrigins:     corsOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		AllowCredentials: true,

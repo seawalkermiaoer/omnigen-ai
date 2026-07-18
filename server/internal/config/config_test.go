@@ -138,3 +138,42 @@ func TestLoad_EmptyDBPasswordIsRespected(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "", cfg.DB.Password)
 }
+
+func TestLoad_CORSOriginsDefaultsToViteRange(t *testing.T) {
+	setRequired(t)
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{
+		"http://localhost:5173", "http://localhost:5174",
+		"http://localhost:5175", "http://localhost:5176", "http://localhost:5177",
+	}, cfg.CORSOrigins)
+}
+
+func TestLoad_CORSOriginsSingleCustomValue(t *testing.T) {
+	setRequired(t)
+	t.Setenv("CORS_ORIGINS", "https://app.example.com")
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"https://app.example.com"}, cfg.CORSOrigins)
+}
+
+func TestLoad_CORSOriginsCommaSeparatedList(t *testing.T) {
+	setRequired(t)
+	t.Setenv("CORS_ORIGINS", "https://app.example.com,https://admin.example.com")
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"https://app.example.com", "https://admin.example.com"}, cfg.CORSOrigins)
+}
+
+func TestLoad_CORSOriginsTrimsWhitespace(t *testing.T) {
+	setRequired(t)
+	t.Setenv("CORS_ORIGINS", " https://app.example.com , https://admin.example.com  ,, ")
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"https://app.example.com", "https://admin.example.com"}, cfg.CORSOrigins)
+}

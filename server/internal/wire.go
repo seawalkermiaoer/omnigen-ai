@@ -43,6 +43,10 @@ func provideHandlers(a *handler.AuthHandler, u *handler.UserHandler, h *handler.
 	return router.Handlers{Auth: a, User: u, Health: h}
 }
 
+func provideCORSOrigins(cfg *config.Config) []string {
+	return cfg.CORSOrigins
+}
+
 func provideApp(e *gin.Engine, p *pgxpool.Pool, u *service.UserService, cfg *config.Config) *App {
 	return &App{Engine: e, Pool: p, Users: u, Config: cfg}
 }
@@ -52,6 +56,7 @@ var providerSet = wire.NewSet(
 	provideDB,
 	providePinger,
 	provideJWT,
+	provideCORSOrigins,
 	repository.NewUserRepository,
 	service.NewAuthService,
 	service.NewUserService,
