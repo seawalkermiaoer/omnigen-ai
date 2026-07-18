@@ -83,6 +83,22 @@ func TestUserService_Update(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "改过的名字", got.DisplayName)
 	assert.Equal(t, usermodel.StatusDisabled, got.Status)
+
+	// 局部更新：只传 DisplayName 时，未提供的字段必须原样保留——
+	// 这正是 UpdateRequest 全部字段用指针的意义所在，也是
+	// fakeUserRepo.Update 被特意加固为只写四个字段的原因。
+	got2, err := svc.Update(context.Background(), admin.ID, other.ID, usermodel.UpdateRequest{
+		DisplayName: ptr("再改一次"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "再改一次", got2.DisplayName)
+	assert.Equal(t, usermodel.RoleUser, got2.Role, "未提供 Role 不应被清空或改变")
+	assert.Equal(t, usermodel.StatusDisabled, got2.Status, "未提供 Status 不应被重置")
+
+	stored, err := repo.GetByID(context.Background(), other.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "victim", stored.Username, "Update 不应触碰 Username")
+	assert.True(t, password.Verify(stored.PasswordHash, "password123"), "Update 不应触碰密码哈希")
 }
 
 func TestUserService_Update_CannotModifySelf(t *testing.T) {
