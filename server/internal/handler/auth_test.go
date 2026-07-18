@@ -43,13 +43,7 @@ func (m *memRepo) Create(_ context.Context, u *usermodel.User) error {
 	m.nextID++
 	u.CreatedAt = time.Now()
 	u.UpdatedAt = u.CreatedAt
-	// PasswordChangedAt 刻意留零值（而非 u.CreatedAt）：JWT 的 IssuedAt 按
-	// jwt/v5 的 TimePrecision（=time.Second）截断到整秒，而这里的时间戳是
-	// 纳秒精度。若两者在同一挂钟秒内产生，Auth 中间件里的
-	// `claims.IssuedAt.Before(u.PasswordChangedAt)` 会把刚签发的 token 误判为
-	// "签发于改密之前"，导致刚创建就登录的用户立即被拒。这是 Task 10 中间件与
-	// JWT 库精度不匹配所致的真实缺陷，不在本任务范围内修复；测试替身在此
-	// 保持零值以避免让该缺陷污染本文件里的鉴权流程测试。
+	u.PasswordChangedAt = u.CreatedAt
 	m.users[u.ID] = u
 	return nil
 }
