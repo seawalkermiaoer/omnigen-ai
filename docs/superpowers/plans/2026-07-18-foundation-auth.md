@@ -2580,7 +2580,10 @@ func codeOf(t *testing.T, w *httptest.ResponseRecorder) string {
 }
 
 func activeUser(id int64, role usermodel.Role) *usermodel.User {
-	return &usermodel.User{ID: id, Username: "u", Role: role, Status: usermodel.StatusActive}
+	return &usermodel.User{
+		ID: id, Username: "u", Role: role, Status: usermodel.StatusActive,
+		PasswordChangedAt: time.Now().Add(-24 * time.Hour),
+	}
 }
 
 func TestAuth_NoTokenReturns401(t *testing.T) {
@@ -2610,6 +2613,25 @@ func TestAuth_ValidTokenPasses(t *testing.T) {
 
 // 这是「乙方案」的核心断言：token 仍然有效，但用户已被禁用，
 // 必须立即拒绝，而不是等 token 过期。
+// 改密后旧 token 必须立即失效——这是 spec 承诺的「改密立即生效」，
+// 只查 status 是兑现不了的。
+func TestAuth_TokenIssuedBeforePasswordChangeRejected(t *testing.T) {
+	u := activeUser(7, usermodel.RoleUser)
+	u.PasswordChangedAt = time.Now().Add(-time.Hour)
+	users := map[int64]*usermodel.User{7: u}
+	r, jwtMgr := setup(t, users)
+
+	token, err := jwtMgr.Generate(7, usermodel.RoleUser)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, do(r, "/whoami", token).Code)
+
+	u.PasswordChangedAt = time.Now().Add(time.Minute) // 用户在别处改了密码
+
+	w := do(r, "/whoami", token)
+	assert.Equal(t, http.StatusUnauthorized, w.Code, "改密后旧 token 必须立即失效")
+	assert.Equal(t, "AUTH_UNAUTHORIZED", codeOf(t, w))
+}
+
 func TestAuth_DisabledUserRejectedImmediately(t *testing.T) {
 	u := activeUser(7, usermodel.RoleUser)
 	users := map[int64]*usermodel.User{7: u}
@@ -2805,7 +2827,8 @@ type UserLoader interface {
 	GetByID(ctx context.Context, id int64) (*usermodel.User, error)
 }
 
-// Auth 校验 JWT 签名，随后按 ID 回查数据库确认用户仍存在且处于 active。
+// Auth 校验 JWT 签名，随后按 ID 回查数据库确认用户仍存在、处于 active、
+// 且 token 的签发时间不早于该用户最后一次改密的时间。
 // 这次查询是刻意为之：它让禁用、删除、改密立即生效，
 // 代价是每请求一次主键查询——在本系统的量级下可忽略。
 func Auth(jwtMgr *jwtx.Manager, users UserLoader) gin.HandlerFunc {
@@ -2840,6 +2863,13 @@ func Auth(jwtMgr *jwtx.Manager, users UserLoader) gin.HandlerFunc {
 		}
 		if !u.IsActive() {
 			Fail(c, apperr.ErrUserDisabled)
+			return
+		}
+		// 改密后签发时间早于改密时间的旧 token 一律作废。
+		// 只查 status 不足以兑现「改密立即生效」——被窃取的 token
+		// 会在改密后继续有效到过期为止。
+		if claims.IssuedAt != nil && claims.IssuedAt.Time.Before(u.PasswordChangedAt) {
+			Fail(c, apperr.ErrUnauthorized)
 			return
 		}
 
