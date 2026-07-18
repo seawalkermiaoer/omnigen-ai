@@ -219,7 +219,40 @@ func TestImageGenerationHandler_UpstreamFailure_ReturnsErrorResponse(t *testing.
 	var resp common.Response
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.NotEqual(t, apperr.ErrInternal.Code(), resp.Code, "上游失败必须给出具体错误码，不是泛化的 INTERNAL_ERROR")
-	assert.Equal(t, dashscope.CodeUpstreamHTTP, resp.Code)
+	// 归一化之后，服务端不再把 provider 包自己的 DASHSCOPE_* 码原样透传到
+	// HTTP 响应——那是 service.normalizeUpstreamError 收口之后的通用上游码。
+	assert.Equal(t, apperr.ErrUpstreamFailed.Code(), resp.Code)
+	assert.Equal(t, apperr.ErrUpstreamFailed.HTTPStatus(), w.Code)
 	assert.False(t, strings.Contains(w.Body.String(), "sk-"))
 	assert.False(t, strings.Contains(w.Body.String(), imageGenSeededKey))
+}
+
+// TestImageGenerationHandler_UpstreamAuthFailure_NeverReturnsBare401 is the
+// end-to-end regression test for the bug this task fixes: DashScope
+// rejecting an invalid API key with a raw HTTP 401, forwarded verbatim by
+// the provider layer (dashscope.newUpstreamHTTPError), must never reach the
+// client as our own 401 — web/src/api/client.ts's response interceptor
+// treats ANY 401 as session expiry and logs the user out, discarding
+// whatever the user was submitting. Asserting on w.Code (the actual HTTP
+// status written to the wire), not just the JSON body's code field, is the
+// point of this test — that's exactly what the interceptor keys off of.
+func TestImageGenerationHandler_UpstreamAuthFailure_NeverReturnsBare401(t *testing.T) {
+	upstreamErr := apperr.New(dashscope.CodeUpstreamHTTP, http.StatusUnauthorized).
+		Wrap(errors.New("dashscope: invalid api key"))
+	r, token := newImageGenTestEnv(t, fixedImageProviderFactory(nil, upstreamErr))
+
+	body := `{"model":"qwen-image-plus","prompt":"a cat"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/generate/image", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.NotEqual(t, http.StatusUnauthorized, w.Code, "上游 401 绝不能原样冒充成我们自己的 401，响应=%s", w.Body.String())
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+
+	var resp common.Response
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, apperr.ErrUpstreamAuthFailed.Code(), resp.Code)
 }

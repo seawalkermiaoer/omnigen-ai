@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -27,6 +28,7 @@ import (
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/jwtx"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/password"
 	"github.com/chenhao/omnigen-ai/server/internal/provider"
+	"github.com/chenhao/omnigen-ai/server/internal/provider/dashscope"
 	"github.com/chenhao/omnigen-ai/server/internal/repository"
 	"github.com/chenhao/omnigen-ai/server/internal/service"
 )
@@ -229,6 +231,36 @@ func TestVideoGenerationHandler_HappyPath_ReturnsLocalTaskID_NoCredentials(t *te
 	stored, ok := repo.tasks[localID]
 	require.True(t, ok, "落库的 id 必须能在 repository 里查到")
 	assert.Equal(t, userID, stored.UserID)
+}
+
+// TestVideoGenerationHandler_UpstreamAuthFailure_NeverReturnsBare401 is the
+// end-to-end regression test for the login-destroying bug this task fixes,
+// exercised on the video path: DashScope rejecting an invalid API key with
+// a raw HTTP 401, forwarded verbatim by the provider layer, must never
+// reach the client as our own 401 — web/src/api/client.ts's response
+// interceptor would treat it as session expiry and log the user out,
+// discarding whatever the user was submitting. w.Code is asserted directly
+// because that's what the interceptor keys off of, not just the JSON
+// body's code field.
+func TestVideoGenerationHandler_UpstreamAuthFailure_NeverReturnsBare401(t *testing.T) {
+	upstreamErr := apperr.New(dashscope.CodeUpstreamHTTP, http.StatusUnauthorized).
+		Wrap(errors.New("dashscope: invalid api key"))
+	r, token, _, _ := newVideoGenTestEnv(t, fixedVideoProviderFactory("", upstreamErr))
+
+	body := `{"model":"happyhorse-1.1-t2v","prompt":"a cat"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/generate/video", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.NotEqual(t, http.StatusUnauthorized, w.Code, "上游 401 绝不能原样冒充成我们自己的 401，响应=%s", w.Body.String())
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+
+	var resp common.Response
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, apperr.ErrUpstreamAuthFailed.Code(), resp.Code)
 }
 
 func TestVideoGenerationHandler_GetOtherUsersTask_404NotFound(t *testing.T) {

@@ -237,6 +237,18 @@
     "DOWNLOAD_FAILED": "下载失败，请稍后重试",
     "SETTING_INCOMPLETE": "系统尚未完成必要配置，请联系管理员",
     "SETTING_TEST_FAILED": "凭证已配置，但上游拒绝了这次探测请求，请检查密钥、地域与接入点是否正确",
+    "UPSTREAM_AUTH_FAILED": "上游服务拒绝了当前凭证，请前往设置检查 API Key 是否正确、是否已过期或被吊销",
+    "UPSTREAM_RATE_LIMITED": "上游服务请求过于频繁，请稍后重试",
+    "UPSTREAM_FAILED": "上游服务调用失败，请稍后重试；如持续出现，请联系管理员检查上游配置",
+    "DASHSCOPE_REQUEST_FAILED": "未能连接到 DashScope 服务，请稍后重试",
+    "DASHSCOPE_UPSTREAM_HTTP_ERROR": "DashScope 服务返回错误，请前往设置检查 API Key 与接入点配置，或稍后重试",
+    "DASHSCOPE_UPSTREAM_ERROR": "DashScope 服务拒绝了本次请求，请前往设置检查 API Key，或稍后重试",
+    "DASHSCOPE_NO_IMAGE_RESULT": "DashScope 未返回可用的图片结果，请稍后重试",
+    "DASHSCOPE_NO_TASK_ID": "DashScope 未返回有效的任务 ID，请稍后重试",
+    "DASHSCOPE_NO_OPTIMIZE_RESULT": "DashScope 未返回可用的优化结果，请稍后重试",
+    "T8STAR_UPSTREAM_HTTP_ERROR": "t8star 服务返回错误，请前往设置检查 API Key 与接入点配置，或稍后重试",
+    "T8STAR_UPSTREAM_ERROR": "t8star 服务拒绝了本次请求，请前往设置检查 API Key，或稍后重试",
+    "T8STAR_NO_IMAGE_RESULT": "t8star 未返回可用的图片结果，请稍后重试",
     "UNKNOWN": "操作失败，请稍后重试"
   }
 }

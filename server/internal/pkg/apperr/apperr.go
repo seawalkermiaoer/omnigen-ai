@@ -109,4 +109,35 @@ var (
 	// 不单独区分——细分成因只在 internal 里带着供日志排查，绝不需要前端按
 	// 错误码分别处理。
 	ErrDownloadFailed = New("DOWNLOAD_FAILED", http.StatusBadGateway)
+
+	// ── 生成类接口（/api/generate/image、/api/generate/video、
+	// /api/optimize-prompt）的上游错误归一化 ──────────────────────────────
+	//
+	// dashscope/t8star 两个 provider 包为了忠实复刻 server.js 的行为，会把
+	// 上游真实的 HTTP 状态码原样转发出来（newUpstreamHTTPError）——这在
+	// DashScope/t8star 拒绝一个失效 API key 时返回 401，于是我们自己的
+	// /api/generate/image 也回了 401。前端拦截器把任何 401 都当成"我方会话
+	// 过期"处理（见 web/src/api/client.ts），后果是一次上游鉴权失败会直接
+	// 把用户登出、丢掉正在填写的表单。
+	//
+	// 三个错误码把"上游到底发生了什么"折叠成一个前端可以安全展示、且不会
+	// 被误判成会话过期的小集合；service.normalizeUpstreamError 是唯一的
+	// 归一化入口，见该函数注释里"为什么在 service 层而不是 provider 层"的
+	// 取舍说明。原始的 provider 错误（含真实上游状态码/文案）仍然通过
+	// Wrap 挂在 Internal() 里，只是不再决定我们自己的 HTTP 状态。
+
+	// ErrUpstreamAuthFailed：上游明确拒绝了我们的凭证（转发状态码是 401/
+	// 403，或 DashScope 原生 AccessDenied 响应）。502 表达"我们这边认证没
+	// 问题，是我们身后的下游拒绝了我们"——不能是 401，401 是我们自己会话
+	// 失效的语义，两者必须严格分开。
+	ErrUpstreamAuthFailed = New("UPSTREAM_AUTH_FAILED", http.StatusBadGateway)
+	// ErrUpstreamRateLimited：上游返回 429。这里保留 429 而不是折成 502，
+	// 是因为它对客户端而言是可操作的明确信号（稍后重试），不像其它上游
+	// 失败那样只能提示"服务暂时不可用"。
+	ErrUpstreamRateLimited = New("UPSTREAM_RATE_LIMITED", http.StatusTooManyRequests)
+	// ErrUpstreamFailed：上游失败但不属于以上两类的兜底桶——网络层失败、
+	// 上游返回其它非 2xx 状态、200 但业务报错、响应解析不出预期结果等。
+	// 统一 502，不逐一区分成因；成因本身仍完整保留在 Internal() 里供日志
+	// 排查。
+	ErrUpstreamFailed = New("UPSTREAM_FAILED", http.StatusBadGateway)
 )

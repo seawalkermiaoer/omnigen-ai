@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -292,17 +293,106 @@ func TestGenerateImage_UpstreamFailure_PersistsFailedRow_AndReturnsError(t *test
 	})
 
 	require.Error(t, err)
+	// errors.Is 仍然命中 dashscope 的哨兵——normalizeUpstreamError 用 Wrap
+	// 而不是丢弃原始错误，Unwrap 链完整保留。
 	assert.True(t, errors.Is(err, dashscope.ErrUpstreamHTTP))
 	assert.Nil(t, task, "失败时不返回 task，调用方只应该看到 error")
+
+	// 但顶层错误码/状态必须是归一化之后的通用上游码，不是 provider 包自己
+	// 的 DASHSCOPE_* 码——这是本次任务的核心契约（service 层收口上游状态，
+	// provider 层的码只作为 Internal() 里的细节留存）。
+	var appErr *apperr.AppError
+	require.True(t, errors.As(err, &appErr))
+	assert.Equal(t, apperr.ErrUpstreamFailed.Code(), appErr.Code())
+	assert.Equal(t, apperr.ErrUpstreamFailed.HTTPStatus(), appErr.HTTPStatus())
 
 	rows := repo.all()
 	require.Len(t, rows, 1, "上游失败也必须落一行 FAILED")
 	failed := rows[0]
 	assert.Equal(t, generationmodel.StatusFailed, failed.Status)
 	require.NotNil(t, failed.ErrorCode)
-	assert.Equal(t, dashscope.CodeUpstreamHTTP, *failed.ErrorCode)
+	assert.Equal(t, apperr.ErrUpstreamFailed.Code(), *failed.ErrorCode)
 	require.NotNil(t, failed.ErrorMessage)
 	assert.NotEmpty(t, *failed.ErrorMessage)
+	// 上游原始细节（真实状态码文案）仍然完整落库，供运维排查——归一化只是
+	// 不让它决定我们自己的 HTTP 状态，不是把它抹掉。
+	assert.Contains(t, *failed.ErrorMessage, "上游返回 HTTP 500")
+}
+
+// TestGenerateImage_UpstreamAuthFailure_NormalizedTo502NotBare401 复现并锁定
+// 本次修的 bug：DashScope 对一个失效 API key 返回 401，provider 层忠实转发
+// 这个真实状态码（newUpstreamHTTPError），如果这个 401 原样冒充成
+// /api/generate/image 自己的响应状态，web 端拦截器会把它当会话过期处理，
+// 直接登出用户、丢掉正在填写的表单——见 upstream_error.go 顶部注释。
+func TestGenerateImage_UpstreamAuthFailure_NormalizedTo502NotBare401(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	upstreamErr := apperr.New(dashscope.CodeUpstreamHTTP, http.StatusUnauthorized).
+		Wrap(errors.New("dashscope: invalid api key"))
+	factory := &recordingImageFactory{err: upstreamErr}
+	svc, repo := newImageService(t, settings, factory)
+
+	_, err := svc.GenerateImage(context.Background(), 1, service.GenerateImageRequest{
+		Model:  "qwen-image-plus",
+		Prompt: "x",
+	})
+
+	require.Error(t, err)
+	var appErr *apperr.AppError
+	require.True(t, errors.As(err, &appErr))
+	assert.Equal(t, apperr.ErrUpstreamAuthFailed.Code(), appErr.Code())
+	assert.Equal(t, http.StatusBadGateway, appErr.HTTPStatus(), "上游 401 绝不能变成我们自己的 401")
+	assert.NotEqual(t, http.StatusUnauthorized, appErr.HTTPStatus())
+
+	require.NotNil(t, appErr.Internal(), "上游细节必须还在 Internal() 里，供日志排查")
+	assert.Contains(t, appErr.Internal().Error(), "invalid api key")
+
+	rows := repo.all()
+	require.Len(t, rows, 1)
+	require.NotNil(t, rows[0].ErrorCode)
+	assert.Equal(t, apperr.ErrUpstreamAuthFailed.Code(), *rows[0].ErrorCode)
+	require.NotNil(t, rows[0].ErrorMessage)
+	assert.Contains(t, *rows[0].ErrorMessage, "invalid api key", "详细原因进日志/落库，不进响应体")
+}
+
+// TestGenerateImage_UpstreamRateLimit_NormalizedTo429WithDedicatedCode 覆盖
+// 429 分支：与 401/403 不同，429 是一个客户端可操作的明确信号（稍后重试），
+// 因此保留 429 而不是折成 502，但错误码仍然是我们自己的
+// UPSTREAM_RATE_LIMITED，不是裸的 provider 码。
+func TestGenerateImage_UpstreamRateLimit_NormalizedTo429WithDedicatedCode(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	upstreamErr := apperr.New(dashscope.CodeUpstreamHTTP, http.StatusTooManyRequests).
+		Wrap(errors.New("dashscope: throttling"))
+	factory := &recordingImageFactory{err: upstreamErr}
+	svc, _ := newImageService(t, settings, factory)
+
+	_, err := svc.GenerateImage(context.Background(), 1, service.GenerateImageRequest{
+		Model:  "qwen-image-plus",
+		Prompt: "x",
+	})
+
+	require.Error(t, err)
+	var appErr *apperr.AppError
+	require.True(t, errors.As(err, &appErr))
+	assert.Equal(t, apperr.ErrUpstreamRateLimited.Code(), appErr.Code())
+	assert.Equal(t, http.StatusTooManyRequests, appErr.HTTPStatus())
+}
+
+// TestGenerateImage_ValidationErrorBeforeUpstreamCall_NotTouchedByNormalization
+// 确保归一化只作用于真正打过上游的错误——校验失败（还没触到 provider）
+// 必须原样透传 apperr.ErrValidation，不能被误判成"上游失败"。
+func TestGenerateImage_ValidationErrorBeforeUpstreamCall_NotTouchedByNormalization(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingImageFactory{result: &provider.ImageResult{Images: []string{"x"}}}
+	svc, _ := newImageService(t, settings, factory)
+
+	_, err := svc.GenerateImage(context.Background(), 1, service.GenerateImageRequest{
+		Model:  "not-a-real-model",
+		Prompt: "x",
+	})
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, apperr.ErrValidation))
+	assert.Equal(t, 0, factory.calls, "校验失败不应该打任何上游请求")
 }
 
 // t8star 协议的上游失败同样必须落 FAILED 行——不是只有 dashscope 协议才有

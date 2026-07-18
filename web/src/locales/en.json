@@ -237,6 +237,18 @@
     "DOWNLOAD_FAILED": "Download failed, please try again later",
     "SETTING_INCOMPLETE": "The system is not fully configured yet, please contact an administrator",
     "SETTING_TEST_FAILED": "Credentials are configured, but the upstream provider rejected the test request — check the key, region and endpoint",
+    "UPSTREAM_AUTH_FAILED": "The upstream provider rejected the current credential — go to Settings and check whether the API key is correct, expired, or revoked",
+    "UPSTREAM_RATE_LIMITED": "The upstream provider is rate-limiting requests, please try again later",
+    "UPSTREAM_FAILED": "The upstream provider call failed, please try again later; contact an administrator if this keeps happening",
+    "DASHSCOPE_REQUEST_FAILED": "Could not reach the DashScope service, please try again later",
+    "DASHSCOPE_UPSTREAM_HTTP_ERROR": "DashScope returned an error — go to Settings and check the API key and endpoint, or try again later",
+    "DASHSCOPE_UPSTREAM_ERROR": "DashScope rejected this request — go to Settings and check the API key, or try again later",
+    "DASHSCOPE_NO_IMAGE_RESULT": "DashScope did not return a usable image result, please try again later",
+    "DASHSCOPE_NO_TASK_ID": "DashScope did not return a valid task ID, please try again later",
+    "DASHSCOPE_NO_OPTIMIZE_RESULT": "DashScope did not return a usable optimized result, please try again later",
+    "T8STAR_UPSTREAM_HTTP_ERROR": "t8star returned an error — go to Settings and check the API key and endpoint, or try again later",
+    "T8STAR_UPSTREAM_ERROR": "t8star rejected this request — go to Settings and check the API key, or try again later",
+    "T8STAR_NO_IMAGE_RESULT": "t8star did not return a usable image result, please try again later",
     "UNKNOWN": "Action failed, please try again later"
   }
 }

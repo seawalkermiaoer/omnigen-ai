@@ -179,7 +179,12 @@ func (s *OptimizeService) Optimize(ctx context.Context, req OptimizeRequest) (te
 			if errors.Is(callErr, provider.ErrAccessDenied) && canRetry {
 				continue
 			}
-			return "", "", callErr
+			// 上游状态归一化：同 generation_image.go，见 upstream_error.go
+			// 顶部注释。特意放在重试判断之后——AccessDenied 触发的重试要看
+			// 的是原始 callErr（provider.ErrAccessDenied 哨兵），归一化后的
+			// 错误依然能被 errors.Is 命中同一个哨兵（Wrap 保留了 Unwrap
+			// 链），但没必要在还可能重试的中间状态就替换它。
+			return "", "", normalizeUpstreamError(callErr)
 		}
 	}
 	// 理论上 models/endpointVariants 都非空（models 来自 catalog 固定登记
@@ -187,7 +192,7 @@ func (s *OptimizeService) Optimize(ctx context.Context, req OptimizeRequest) (te
 	// 循环体内每条路径要么 return 成功、要么在最后一次尝试时直接
 	// return callErr，不会真的执行到这里；保留这一行只是让函数在类型上
 	// 总能返回一个非 nil error，避免调用方需要处理"什么都没返回"的情形。
-	return "", "", fmt.Errorf("optimize: 全部尝试均失败: %w", lastErr)
+	return "", "", normalizeUpstreamError(lastErr)
 }
 
 // optimizeModelIDs 按 hasImages 从目录里取出对应能力的模型 id 列表，顺序

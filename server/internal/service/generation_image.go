@@ -134,6 +134,10 @@ func (s *ImageGenerationService) GenerateImage(ctx context.Context, userID int64
 		Images: req.Images,
 		Params: req.Params,
 	})
+	// 上游状态归一化：不能让上游的真实 HTTP 状态（尤其是 401）冒充成我们
+	// 自己的响应状态，否则前端拦截器会把它当会话过期处理并登出用户——见
+	// upstream_error.go 顶部注释。
+	callErr = normalizeUpstreamError(callErr)
 
 	task := &generationmodel.Task{
 		UserID:    userID,

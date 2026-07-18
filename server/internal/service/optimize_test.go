@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,6 +16,7 @@ import (
 	settingmodel "github.com/chenhao/omnigen-ai/server/internal/model/setting"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/apperr"
 	"github.com/chenhao/omnigen-ai/server/internal/provider"
+	"github.com/chenhao/omnigen-ai/server/internal/provider/dashscope"
 	"github.com/chenhao/omnigen-ai/server/internal/service"
 )
 
@@ -363,4 +365,52 @@ func TestOptimize_NonAccessDeniedErrorReturnsImmediatelyWithoutRetry(t *testing.
 	assert.Equal(t, []optimizeAttempt{
 		{model: "qwen3.7-plus", endpoint: "https://custom.example.com"},
 	}, factory.attempts, "非 AccessDenied 错误必须立即返回，不能触发降级重试")
+}
+
+// ── 上游状态归一化：真实上游 401 绝不能冒充成我们自己的 401 ──────────────
+//
+// 与 image/video 两个路径共用同一个 service.normalizeUpstreamError；这里
+// 只需要确认 Optimize 的两个返回点都真的接了这个函数，不需要重复
+// image/video 测试里已经覆盖的分类细节。
+
+func TestOptimize_UpstreamAuthFailure_NormalizedTo502NotBare401(t *testing.T) {
+	settings := newFakeOptimizeSettings(settingsWithEndpoint(""))
+	upstreamErr := apperr.New(dashscope.CodeUpstreamHTTP, http.StatusUnauthorized).
+		Wrap(errors.New("dashscope: invalid api key"))
+	factory := newScriptedProviderFactory([]scriptedResult{
+		{err: upstreamErr},
+		{err: upstreamErr},
+	})
+	svc := service.NewOptimizeServiceWithFactory(settings, factory.Factory())
+
+	_, _, err := svc.Optimize(context.Background(), service.OptimizeRequest{Mode: "t2v", Draft: "hi"})
+
+	require.Error(t, err)
+	var appErr *apperr.AppError
+	require.True(t, errors.As(err, &appErr))
+	assert.Equal(t, apperr.ErrUpstreamAuthFailed.Code(), appErr.Code())
+	assert.Equal(t, http.StatusBadGateway, appErr.HTTPStatus(), "上游 401 绝不能变成我们自己的 401")
+	assert.NotEqual(t, http.StatusUnauthorized, appErr.HTTPStatus())
+
+	require.NotNil(t, appErr.Internal(), "上游细节必须还在 Internal() 里，供日志排查")
+	assert.Contains(t, appErr.Internal().Error(), "invalid api key")
+}
+
+func TestOptimize_UpstreamRateLimit_NormalizedTo429WithDedicatedCode(t *testing.T) {
+	settings := newFakeOptimizeSettings(settingsWithEndpoint(""))
+	upstreamErr := apperr.New(dashscope.CodeUpstreamHTTP, http.StatusTooManyRequests).
+		Wrap(errors.New("dashscope: throttling"))
+	factory := newScriptedProviderFactory([]scriptedResult{
+		{err: upstreamErr},
+		{err: upstreamErr},
+	})
+	svc := service.NewOptimizeServiceWithFactory(settings, factory.Factory())
+
+	_, _, err := svc.Optimize(context.Background(), service.OptimizeRequest{Mode: "t2v", Draft: "hi"})
+
+	require.Error(t, err)
+	var appErr *apperr.AppError
+	require.True(t, errors.As(err, &appErr))
+	assert.Equal(t, apperr.ErrUpstreamRateLimited.Code(), appErr.Code())
+	assert.Equal(t, http.StatusTooManyRequests, appErr.HTTPStatus())
 }

@@ -218,6 +218,8 @@ func (s *VideoGenerationService) CreateVideoTask(ctx context.Context, userID int
 
 	p := s.factory(apiKey, region, workspaceID, endpoint)
 	upstreamID, callErr := p.CreateVideoTask(ctx, provider.VideoRequest{Payload: payload})
+	// 上游状态归一化：同 generation_image.go，见 upstream_error.go 顶部注释。
+	callErr = normalizeUpstreamError(callErr)
 
 	task := &generationmodel.Task{
 		UserID:    userID,

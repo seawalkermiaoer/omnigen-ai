@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +12,7 @@ import (
 	generationmodel "github.com/chenhao/omnigen-ai/server/internal/model/generation"
 	settingmodel "github.com/chenhao/omnigen-ai/server/internal/model/setting"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/apperr"
+	"github.com/chenhao/omnigen-ai/server/internal/provider/dashscope"
 	"github.com/chenhao/omnigen-ai/server/internal/service"
 )
 
@@ -333,6 +335,59 @@ func TestCreateVideoTask_UpstreamFailure_PersistsFailedRow(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, generationmodel.StatusFailed, rows[0].Status)
 	require.NotNil(t, rows[0].ErrorCode)
+}
+
+// TestCreateVideoTask_UpstreamAuthFailure_NormalizedTo502NotBare401 mirrors
+// generation_image_test.go's equivalent case for the video path: DashScope
+// answering with 401 for an invalid API key must not surface as our own
+// 401, or web/src/api/client.ts's interceptor logs the user out.
+func TestCreateVideoTask_UpstreamAuthFailure_NormalizedTo502NotBare401(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	upstreamErr := apperr.New(dashscope.CodeUpstreamHTTP, http.StatusUnauthorized).
+		Wrap(errors.New("dashscope: invalid api key"))
+	factory := &recordingVideoFactory{err: upstreamErr}
+	svc, repo := newVideoService(t, settings, factory)
+
+	_, err := svc.CreateVideoTask(context.Background(), 5, service.CreateVideoTaskRequest{
+		Model:  "happyhorse-1.1-t2v",
+		Prompt: "x",
+	})
+
+	require.Error(t, err)
+	var appErr *apperr.AppError
+	require.True(t, errors.As(err, &appErr))
+	assert.Equal(t, apperr.ErrUpstreamAuthFailed.Code(), appErr.Code())
+	assert.Equal(t, http.StatusBadGateway, appErr.HTTPStatus(), "上游 401 绝不能变成我们自己的 401")
+	assert.NotEqual(t, http.StatusUnauthorized, appErr.HTTPStatus())
+
+	require.NotNil(t, appErr.Internal())
+	assert.Contains(t, appErr.Internal().Error(), "invalid api key")
+
+	rows := repo.all()
+	require.Len(t, rows, 1)
+	require.NotNil(t, rows[0].ErrorCode)
+	assert.Equal(t, apperr.ErrUpstreamAuthFailed.Code(), *rows[0].ErrorCode)
+}
+
+// TestCreateVideoTask_UpstreamRateLimit_NormalizedTo429WithDedicatedCode
+// mirrors the image path's 429 case.
+func TestCreateVideoTask_UpstreamRateLimit_NormalizedTo429WithDedicatedCode(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	upstreamErr := apperr.New(dashscope.CodeUpstreamHTTP, http.StatusTooManyRequests).
+		Wrap(errors.New("dashscope: throttling"))
+	factory := &recordingVideoFactory{err: upstreamErr}
+	svc, _ := newVideoService(t, settings, factory)
+
+	_, err := svc.CreateVideoTask(context.Background(), 5, service.CreateVideoTaskRequest{
+		Model:  "happyhorse-1.1-t2v",
+		Prompt: "x",
+	})
+
+	require.Error(t, err)
+	var appErr *apperr.AppError
+	require.True(t, errors.As(err, &appErr))
+	assert.Equal(t, apperr.ErrUpstreamRateLimited.Code(), appErr.Code())
+	assert.Equal(t, http.StatusTooManyRequests, appErr.HTTPStatus())
 }
 
 // ── resolution/duration/watermark/ratio ──────────────────────────────

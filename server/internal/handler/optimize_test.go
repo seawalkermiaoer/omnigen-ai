@@ -209,7 +209,7 @@ func TestOptimizeHandler_ImgeditAlias_ReachesImageEditPromptNotT2V(t *testing.T)
 }
 
 func TestOptimizeHandler_UpstreamFailure_ReturnsErrorResponseNot500(t *testing.T) {
-	upstreamErr := dashscope.ErrUpstreamHTTP.Wrap(errors.New("dashscope: 上游返回 HTTP 401"))
+	upstreamErr := dashscope.ErrUpstreamHTTP.Wrap(errors.New("dashscope: 上游返回 HTTP 500"))
 	factory := &capturingOptimizeProviderFactory{err: upstreamErr}
 	r, token := newOptimizeTestEnv(t, factory)
 
@@ -226,5 +226,38 @@ func TestOptimizeHandler_UpstreamFailure_ReturnsErrorResponseNot500(t *testing.T
 	var resp common.Response
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.NotEqual(t, apperr.ErrInternal.Code(), resp.Code, "上游失败必须给出具体错误码，不是泛化的 INTERNAL_ERROR")
-	assert.Equal(t, dashscope.CodeUpstreamHTTP, resp.Code)
+	// 归一化之后，服务端不再把 provider 包自己的 DASHSCOPE_* 码原样透传到
+	// HTTP 响应——那是 service.normalizeUpstreamError 收口之后的通用上游码。
+	assert.Equal(t, apperr.ErrUpstreamFailed.Code(), resp.Code)
+	assert.Equal(t, apperr.ErrUpstreamFailed.HTTPStatus(), w.Code)
+}
+
+// TestOptimizeHandler_UpstreamAuthFailure_NeverReturnsBare401 is the
+// end-to-end regression test for the login-destroying bug this task fixes,
+// exercised on the optimize-prompt path: a real upstream 401 (DashScope
+// rejecting an invalid API key), forwarded verbatim by the provider layer,
+// must never reach the client as our own 401 — web/src/api/client.ts's
+// response interceptor would treat it as session expiry and log the user
+// out. w.Code is asserted directly because that's what the interceptor
+// keys off of, not just the JSON body's code field.
+func TestOptimizeHandler_UpstreamAuthFailure_NeverReturnsBare401(t *testing.T) {
+	upstreamErr := apperr.New(dashscope.CodeUpstreamHTTP, http.StatusUnauthorized).
+		Wrap(errors.New("dashscope: invalid api key"))
+	factory := &capturingOptimizeProviderFactory{err: upstreamErr}
+	r, token := newOptimizeTestEnv(t, factory)
+
+	body := `{"mode":"t2v","draft":"a cat running"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/optimize-prompt", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.NotEqual(t, http.StatusUnauthorized, w.Code, "上游 401 绝不能原样冒充成我们自己的 401，响应=%s", w.Body.String())
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+
+	var resp common.Response
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, apperr.ErrUpstreamAuthFailed.Code(), resp.Code)
 }
