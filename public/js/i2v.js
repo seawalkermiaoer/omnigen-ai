@@ -21,11 +21,11 @@ modelI2vEl.addEventListener('change', () => {
     el.style.display = wan ? '' : 'none';
   });
   if (wan) {
-    $('firstFrameLabel-i2v').innerHTML = '首帧图像 <span style="color: var(--muted)">（JPG/PNG/BMP/WEBP，宽高 240~8000px，宽高比 1:8~8:1，≤50MB）</span>';
-    $('promptHint-i2v').textContent = '（可选，描述视频内容；首尾帧任务可描述过渡过程）';
+    $('firstFrameLabel-i2v').innerHTML = t('i2v.firstFrameLabelWanFull');
+    $('promptHint-i2v').textContent = t('i2v.promptHintWan');
   } else {
-    $('firstFrameLabel-i2v').innerHTML = '首帧图像 <span style="color: var(--muted)">（必填，1 张，JPG/PNG/WEBP，宽高 ≥300px，宽高比 1:2.5~2.5:1，≤50MB）</span>';
-    $('promptHint-i2v').textContent = '（可选，描述"接下来发生什么"）';
+    $('firstFrameLabel-i2v').innerHTML = t('i2v.firstFrameLabelFull');
+    $('promptHint-i2v').textContent = t('i2v.promptHint');
   }
   applyI2vSlots();
 });
@@ -83,7 +83,7 @@ function bindSingleImageUploader(opts) {
     log(message, 'err');
     errorEl.textContent = message;
     errorEl.style.display = 'block';
-    setStatusHTML('status-i2v', `<span class="pill FAILED">上传失败</span> ${escapeHTML(message)}`);
+    setStatusHTML('status-i2v', '<span class="pill FAILED">' + t('common.uploadFailedGeneric') + '</span> ' + escapeHTML(message));
     preview.style.display = 'none';
     uploader.style.display = '';
     onClear();
@@ -105,7 +105,7 @@ function bindSingleImageUploader(opts) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
-      img.onerror = () => reject(new Error('图像无法解码，请换一张图片'));
+      img.onerror = () => reject(new Error(t('i2v.imageDecodeError')));
       img.src = src;
     });
   }
@@ -128,7 +128,7 @@ function bindSingleImageUploader(opts) {
     const log = makeLog('log-i2v');
     if (!file) return;
     if (!accept.test(file.type)) {
-      rejectSelectedFile('文件类型不支持，请上传 JPG/PNG/WEBP 图片');
+      rejectSelectedFile(t('i2v.fileTypeError'));
       return;
     }
     errorEl.style.display = 'none';
@@ -143,12 +143,12 @@ function bindSingleImageUploader(opts) {
     const { minSize, ratioMin, ratioMax } = getValidationLimits();
     const { w, h } = dimensions;
     if (w < minSize || h < minSize) {
-      rejectSelectedFile(`图像尺寸 ${w}×${h} 不满足（宽高需 ≥${minSize}px），请换一张更大的图片`);
+      rejectSelectedFile(t('i2v.sizeError', { w, h, minSize }));
       return;
     }
     const r = w / h;
     if (r < ratioMin || r > ratioMax) {
-      rejectSelectedFile(`宽高比 ${r.toFixed(2)} 超出范围（要求 ${ratioMin.toFixed(2)}~${ratioMax.toFixed(2)}），请换一张比例更接近视频画面的图片`);
+      rejectSelectedFile(t('i2v.ratioError', { r: r.toFixed(2), ratioMin: ratioMin.toFixed(2), ratioMax: ratioMax.toFixed(2) }));
       return;
     }
 
@@ -156,7 +156,7 @@ function bindSingleImageUploader(opts) {
     try {
       uploadUrl = await uploadImageToServer(file);
     } catch (e) {
-      rejectSelectedFile(`${file.name} 上传失败：${e.message}`);
+      rejectSelectedFile(t('i2v.uploadFail', { name: file.name, msg: e.message }));
       return;
     }
     const thumb = await makeThumb(file, 96);
@@ -216,24 +216,24 @@ $('submitBtn-i2v').addEventListener('click', () => {
   if (wan) {
     const auth = getAuth();
     if (!['cn-beijing', 'ap-southeast-1'].includes(auth.region)) {
-      alert('wan2.7-i2v 仅支持北京 / 新加坡地域，请到设置中切换。'); return;
+      alert(t('i2v.alertWanRegion')); return;
     }
-    const t = i2v.state.task;
+    const taskType = i2v.state.task;
     const media = [];
-    if (t === 'first_frame' || t === 'first_last') {
-      if (!i2v.state.image) { alert('该任务需要首帧图'); return; }
+    if (taskType === 'first_frame' || taskType === 'first_last') {
+      if (!i2v.state.image) { alert(t('i2v.alertNeedFirstFrame')); return; }
       media.push({ type: 'first_frame', url: i2v.state.image.base64Url });
     }
-    if (t === 'first_last') {
-      if (!i2v.state.lastFrame) { alert('首尾帧任务需要尾帧图'); return; }
+    if (taskType === 'first_last') {
+      if (!i2v.state.lastFrame) { alert(t('i2v.alertNeedLastFrame')); return; }
       media.push({ type: 'last_frame', url: i2v.state.lastFrame.base64Url });
     }
-    if (t === 'continue') {
-      if (!i2v.state.firstClip) { alert('视频续写任务需要首段视频 URL'); return; }
+    if (taskType === 'continue') {
+      if (!i2v.state.firstClip) { alert(t('i2v.alertNeedFirstClip')); return; }
       media.push({ type: 'first_clip', url: i2v.state.firstClip });
       if (i2v.state.lastFrame) media.push({ type: 'last_frame', url: i2v.state.lastFrame.base64Url });
     }
-    if ((t === 'first_frame' || t === 'first_last') && i2v.state.drivingAudio) {
+    if ((taskType === 'first_frame' || taskType === 'first_last') && i2v.state.drivingAudio) {
       media.push({ type: 'driving_audio', url: i2v.state.drivingAudio });
     }
     const params = collectParams('i2v');
@@ -251,7 +251,7 @@ $('submitBtn-i2v').addEventListener('click', () => {
   }
 
   // OmniGen AI i2v
-  if (!i2v.state.image) { alert('请先上传首帧图'); return; }
+  if (!i2v.state.image) { alert(t('i2v.alertUploadFirst')); return; }
   submitTask(i2v, {
     model: 'happyhorse-1.1-i2v',
     input: {
@@ -282,7 +282,7 @@ $('resetBtn-i2v').addEventListener('click', () => {
   $('seed-i2v').value = '';
   if ($('negative-i2v')) $('negative-i2v').value = '';
   $('videoOut-i2v').style.display = 'none';
-  setStatusHTML('status-i2v', '<span style="color: var(--muted)">已重置</span>');
+  setStatusHTML('status-i2v', '<span style="color: var(--muted)">' + t('common.resetDone') + '</span>');
   $('log-i2v').innerHTML = '';
 });
 

@@ -16,11 +16,11 @@ modelR2vEl.addEventListener('change', () => {
     el.style.display = wan ? '' : 'none';
   });
   $('imageLabel-r2v').innerHTML = wan
-    ? `参考图像 <span style="color: var(--muted)">（图+视频合计 ≤5，JPG/PNG/BMP/WEBP，宽高 240-8000px，≤50MB）</span>`
-    : `参考图像 <span style="color: var(--muted)">（1~9 张，JPG/PNG/WEBP，≤50MB，短边 ≥400px）</span>`;
+    ? t('r2v.imageLabelWanFull')
+    : t('r2v.imageLabelFull');
   $('prompt-r2v').placeholder = wan
-    ? '示例：图1中的女孩抱着图2的小猫，在视频1的房间里轻声说道："今天的阳光真好"。镜头从中景缓缓推近至特写。'
-    : '示例：[Image 1]中身着红色旗袍的女性，镜头先以侧面中景勾勒旗袍修身剪裁与S型曲线，随即切换至低角度仰拍...';
+    ? t('r2v.promptPlaceholderWan')
+    : t('r2v.promptPlaceholder');
   renderImages();
 });
 
@@ -48,17 +48,17 @@ async function handleFiles(fileList) {
   const limit = maxImagesForR2v();
   for (const f of files) {
     if (r2v.state.images.length >= limit) {
-      log(`已达上限 ${limit} 张${wan ? '（图+视频 ≤5）' : ''}，已忽略多余文件`, 'err');
+      log(t('r2v.alertMaxImages', { limit, extra: wan ? '（图+视频 ≤5）' : '' }), 'err');
       break;
     }
     const thumb = await makeThumb(f, 64);
-    log(`正在上传 ${f.name}…`);
+    log(t('common.uploading', { name: f.name }));
     try {
       const uploadUrl = await uploadImageToServer(f);
       r2v.state.images.push({ file: f, dataUrl: thumb || '', base64Url: uploadUrl, thumb, voiceUrl: '' });
-      log(`✓ ${f.name} 上传完成`, 'ok');
+      log(t('common.uploadDone', { name: f.name }), 'ok');
     } catch (e) {
-      log(`${f.name} 上传失败: ${e.message}`, 'err');
+      log(t('common.uploadFailed', { name: f.name, msg: e.message }), 'err');
     }
   }
   renderImages();
@@ -73,15 +73,15 @@ function renderImages() {
     wrap.className = 'img-wrap';
     wrap.innerHTML = `
       <div class="img-card">
-        <span class="tag">${wan ? `图${i + 1}` : `[Image ${i + 1}]`}</span>
-        <button class="remove" title="删除">×</button>
+        <span class="tag">${wan ? t('r2v.imageTag', { n: i + 1 }) : t('r2v.imageTagBracket', { n: i + 1 })}</span>
+        <button class="remove" title="${t('r2v.delete')}">×</button>
         <img src="${img.dataUrl}" alt="img${i+1}" />
         <div class="order">
-          <button data-act="left" title="左移">←</button>
-          <button data-act="right" title="右移">→</button>
+          <button data-act="left" title="${t('r2v.moveLeft')}">←</button>
+          <button data-act="right" title="${t('r2v.moveRight')}">→</button>
         </div>
       </div>
-      ${wan ? `<input type="text" class="voice-input" placeholder="🎤 音色 URL（可选，wav/mp3）" value="${img.voiceUrl || ''}" />` : ''}
+      ${wan ? `<input type="text" class="voice-input" placeholder="${t('r2v.voiceUrlPlaceholder')}" value="${img.voiceUrl || ''}" />` : ''}
     `;
     wrap.querySelector('.remove').addEventListener('click', () => {
       r2v.state.images.splice(i, 1); renderImages();
@@ -109,10 +109,10 @@ function renderVideos() {
     const row = document.createElement('div');
     row.className = 'video-row has-tag';
     row.innerHTML = `
-      <span class="vid-num">视频${i + 1}</span>
-      <input type="text" class="v-url" placeholder="参考视频 URL（http/https，MP4/MOV）" value="${escapeAttr(v.url)}" />
-      <input type="text" class="v-voice" placeholder="🎤 音色 URL（可选）" value="${escapeAttr(v.voiceUrl || '')}" />
-      <button class="remove-vid" title="删除">×</button>
+      <span class="vid-num">${t('r2v.videoNum', { n: i + 1 })}</span>
+      <input type="text" class="v-url" placeholder="${t('r2v.videoUrlPlaceholder')}" value="${escapeAttr(v.url)}" />
+      <input type="text" class="v-voice" placeholder="${t('r2v.voiceUrlShort')}" value="${escapeAttr(v.voiceUrl || '')}" />
+      <button class="remove-vid" title="${t('r2v.delete')}">×</button>
     `;
     row.querySelector('.v-url').addEventListener('change', (e) => {
       r2v.state.videos[i].url = e.target.value.trim();
@@ -129,7 +129,7 @@ function renderVideos() {
 
 $('addVideoBtn').addEventListener('click', () => {
   const totalMedia = r2v.state.images.length + r2v.state.videos.length;
-  if (totalMedia >= 5) { alert('图+视频合计最多 5 个'); return; }
+  if (totalMedia >= 5) { alert(t('r2v.alertMaxMedia')); return; }
   r2v.state.videos.push({ url: '', voiceUrl: '' });
   renderVideos();
 });
@@ -137,23 +137,23 @@ $('addVideoBtn').addEventListener('click', () => {
 // ---------- Submit ----------
 $('submitBtn-r2v').addEventListener('click', () => {
   const prompt = $('prompt-r2v').value.trim();
-  if (!prompt) { alert('请填写 prompt'); return; }
+  if (!prompt) { alert(t('common.pleasePrompt')); return; }
   const wan = isWanR2v();
   const validVideos = r2v.state.videos.filter(v => v.url);
 
   if (wan) {
     const auth = getAuth();
     if (!['cn-beijing', 'ap-southeast-1'].includes(auth.region)) {
-      alert('wan2.7-r2v 仅支持北京 / 新加坡地域，请到设置中切换。'); return;
+      alert(t('r2v.alertWanRegion')); return;
     }
     if (!r2v.state.images.length && !validVideos.length) {
-      alert('至少需要 1 张参考图或 1 个参考视频'); return;
+      alert(t('r2v.alertNeedMedia')); return;
     }
     if (r2v.state.images.length + validVideos.length > 5) {
-      alert('图+视频合计最多 5 个'); return;
+      alert(t('r2v.alertMaxMediaStrict')); return;
     }
   } else {
-    if (!r2v.state.images.length) { alert('至少上传 1 张参考图'); return; }
+    if (!r2v.state.images.length) { alert(t('r2v.alertNeedImage')); return; }
   }
 
   const media = [];
@@ -196,7 +196,7 @@ $('resetBtn-r2v').addEventListener('click', () => {
   $('seed-r2v').value = '';
   if ($('negative-r2v')) $('negative-r2v').value = '';
   $('videoOut-r2v').style.display = 'none';
-  setStatusHTML('status-r2v', '<span style="color: var(--muted)">已重置</span>');
+  setStatusHTML('status-r2v', '<span style="color: var(--muted)">' + t('common.resetDone') + '</span>');
   $('log-r2v').innerHTML = '';
 });
 
@@ -207,7 +207,7 @@ const t2v = { kind: 't2v', state: {} };
 
 $('submitBtn-t2v').addEventListener('click', () => {
   const prompt = $('prompt-t2v').value.trim();
-  if (!prompt) { alert('请填写 prompt'); return; }
+  if (!prompt) { alert(t('common.pleasePrompt')); return; }
   const payload = {
     model: 'happyhorse-1.1-t2v',
     input: { prompt },
@@ -219,7 +219,7 @@ $('resetBtn-t2v').addEventListener('click', () => {
   $('prompt-t2v').value = '';
   $('seed-t2v').value = '';
   $('videoOut-t2v').style.display = 'none';
-  setStatusHTML('status-t2v', '<span style="color: var(--muted)">已重置</span>');
+  setStatusHTML('status-t2v', '<span style="color: var(--muted)">' + t('common.resetDone') + '</span>');
   $('log-t2v').innerHTML = '';
 });
 bindOptimize(t2v);

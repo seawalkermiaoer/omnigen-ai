@@ -15,10 +15,10 @@ let MODEL_NAMES = { TEXT_OPTIMIZE: 'qwen3.7-plus', VISION_OPTIMIZE_LABEL: 'qwen-
       IMAGE: cfg.models.IMAGE,
     };
     document.querySelectorAll('[data-model-title="vision"]').forEach(el => {
-      el.title = `用 ${MODEL_NAMES.VISION_OPTIMIZE_LABEL} 看图后润色 prompt`;
+      el.title = t('r2v.optimizeTitle');
     });
     document.querySelectorAll('[data-model-title="text"]').forEach(el => {
-      el.title = `用 ${MODEL_NAMES.TEXT_OPTIMIZE} 润色 prompt`;
+      el.title = t('t2v.optimizeTitle');
     });
   } catch (e) { /* use fallback defaults */ }
 })();
@@ -43,10 +43,10 @@ customEndpointEl.value = localStorage.getItem('hh_custom_endpoint') || '';
 toggleCustomEndpoint();
 
 const REGION_LABELS = {
-  'cn-beijing': '北京',
-  'ap-southeast-1': '新加坡',
-  'us-east-1': '弗吉尼亚',
-  'eu-central-1': '法兰克福',
+  'cn-beijing': t('regions.cn-beijing'),
+  'ap-southeast-1': t('regions.ap-southeast-1'),
+  'us-east-1': t('regions.us-east-1'),
+  'eu-central-1': t('regions.eu-central-1'),
 };
 
 regionEl.addEventListener('change', toggleWorkspace);
@@ -67,18 +67,18 @@ function refreshConfigChip() {
   if (endpointEl.value === 'custom') {
     const ce = customEndpointEl.value.trim();
     if (ce) {
-      try { epLabel = ' · ' + new URL(ce).hostname; } catch { epLabel = ' · 自定义'; }
+      try { epLabel = ' · ' + new URL(ce).hostname; } catch { epLabel = t('config.custom'); }
     }
   } else if (endpointEl.value) {
     try { epLabel = ' · ' + new URL(endpointEl.value).hostname; } catch { /* */ }
   }
   if (hasKey) {
     configChip.classList.add('ok');
-    configChipText.textContent = `已就绪 · ${region}${epLabel}`;
+    configChipText.textContent = t('config.ready', { region, epLabel });
     setupHint.style.display = 'none';
   } else {
     configChip.classList.remove('ok');
-    configChipText.textContent = '未配置 API Key';
+    configChipText.textContent = t('config.noApiKey');
     setupHint.style.display = '';
   }
 }
@@ -96,6 +96,20 @@ $('settingsSave').addEventListener('click', () => {
   localStorage.setItem('hh_custom_endpoint', customEndpointEl.value.trim());
   refreshConfigChip();
   switchToTab('r2v');
+});
+
+// Language switcher
+const langSelect = $('langSelect');
+if (langSelect) {
+  langSelect.value = getLocale();
+  langSelect.addEventListener('change', async () => {
+    await setLocale(langSelect.value);
+    refreshConfigChip();
+  });
+}
+
+window.addEventListener('localechange', () => {
+  refreshConfigChip();
 });
 
 /**
@@ -118,11 +132,11 @@ function getAuth() {
 function checkAuth(needsWs = true) {
   const a = getAuth();
   if (!a.apiKey) {
-    if (confirm('尚未配置 API Key。是否现在去设置？')) openSettings();
+    if (confirm(t('config.confirmNoApiKey'))) openSettings();
     return null;
   }
   if (needsWs && a.region === 'eu-central-1' && !a.workspaceId) {
-    if (confirm('法兰克福地域需提供 WorkspaceId。是否现在去设置？')) openSettings();
+    if (confirm(t('config.confirmWorkspace'))) openSettings();
     return null;
   }
   return a;

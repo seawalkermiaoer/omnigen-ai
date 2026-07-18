@@ -11,6 +11,60 @@ const multer = require('multer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const fs = require('fs');
+
+// ─── Server-side i18n ──────────────────────────────────────────
+const I18N_SUPPORTED_LOCALES = ['zh-CN', 'en'];
+const I18N_DEFAULT_LOCALE = 'zh-CN';
+const _serverDicts = {};
+for (const loc of I18N_SUPPORTED_LOCALES) {
+  try {
+    _serverDicts[loc] = JSON.parse(
+      fs.readFileSync(path.join(__dirname, 'public', 'locales', `${loc}.json`), 'utf8')
+    );
+  } catch { _serverDicts[loc] = {}; }
+}
+
+function _getNestedValue(obj, key) {
+  const parts = key.split('.');
+  let current = obj;
+  for (const part of parts) {
+    if (current === undefined || current === null) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+/**
+ * Server-side translate: st(key, lang, params?)
+ * Falls back to I18N_DEFAULT_LOCALE if key missing in requested locale.
+ */
+function st(key, lang, params) {
+  let value = _getNestedValue(_serverDicts[lang], key);
+  if (value === undefined || value === null) {
+    value = _getNestedValue(_serverDicts[I18N_DEFAULT_LOCALE], key);
+  }
+  if (value === undefined || value === null) return key;
+  let str = String(value);
+  if (params) {
+    str = str.replace(/\{(\w+)\}/g, (_, name) =>
+      params[name] !== undefined ? String(params[name]) : `{${name}}`
+    );
+  }
+  return str;
+}
+
+/** Detect language from Accept-Language header; default to zh-CN */
+function detectLang(req) {
+  const al = req.headers['accept-language'] || '';
+  for (const loc of I18N_SUPPORTED_LOCALES) {
+    const prefix = loc.split('-')[0].toLowerCase();
+    if (al.toLowerCase().includes(loc.toLowerCase()) || al.toLowerCase().includes(prefix)) {
+      return loc;
+    }
+  }
+  return I18N_DEFAULT_LOCALE;
+}
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -128,7 +182,7 @@ const MODELS = {
 
 function getEndpoint(region, workspaceId) {
   if (region === 'eu-central-1') {
-    if (!workspaceId) throw new Error('德国（法兰克福）地域必须提供 WorkspaceId');
+    if (!workspaceId) throw new Error(st('server.workspaceRequired', I18N_DEFAULT_LOCALE));
     return `https://${workspaceId}.eu-central-1.maas.aliyuncs.com`;
   }
   return REGION_ENDPOINTS[region] || REGION_ENDPOINTS['cn-beijing'];
@@ -165,7 +219,7 @@ function forwardJSON(targetUrl, method, headers, bodyObj, timeoutMs = 120000) {
     );
     req.on('timeout', () => {
       req.destroy();
-      reject(new Error(`上游请求超时（${timeoutMs / 1000}s）: ${url.hostname}${url.pathname}`));
+      reject(new Error(st('server.upstreamTimeout', I18N_DEFAULT_LOCALE, { seconds: timeoutMs / 1000 }) + `: ${url.hostname}${url.pathname}`));
     });
     req.on('error', reject);
     if (body) req.write(body);
@@ -193,9 +247,10 @@ function isAccessDeniedResponse(data) {
 
 // ─── Image upload (compression + optional OSS storage) ─────────
 function uploadMiddleware(req, res, next) {
+  const lang = detectLang(req);
   upload.single('file')(req, res, (err) => {
     if (err) {
-      if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: '文件超过 50MB 限制' });
+      if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: st('server.fileTooLarge', lang) });
       return res.status(400).json({ error: err.message });
     }
     next();
@@ -203,8 +258,9 @@ function uploadMiddleware(req, res, next) {
 }
 
 app.post('/api/upload-image', uploadMiddleware, async (req, res) => {
+  const lang = detectLang(req);
   try {
-    if (!req.file) return res.status(400).json({ error: '未提供文件或文件类型不支持（仅支持 JPG/PNG/WEBP/BMP）' });
+    if (!req.file) return res.status(400).json({ error: st('server.noFileOrUnsupported', lang) });
 
     const { buffer, originalname, mimetype, size: originalSize } = req.file;
     const SIZE_THRESHOLD = 12 * 1024 * 1024;  // 12MB
@@ -225,7 +281,7 @@ app.post('/api/upload-image', uploadMiddleware, async (req, res) => {
 
     // >12MB: OSS path
     if (!OSS_ENABLED) {
-      return res.status(413).json({ error: '文件超过 12MB 但 OSS 未配置，请联系管理员' });
+      return res.status(413).json({ error: st('server.fileTooLargeNoOss', lang) });
     }
 
     const client = await getOSSClient();
@@ -240,15 +296,16 @@ app.post('/api/upload-image', uploadMiddleware, async (req, res) => {
     res.json({ url: signedUrl, key: objectKey, size: finalBuffer.length });
   } catch (e) {
     console.error('[upload] error:', e.message);
-    res.status(500).json({ error: '图片处理失败: ' + e.message });
+    res.status(500).json({ error: st('server.imageProcessFail', lang, { msg: e.message }) });
   }
 });
 
 app.post('/api/create-task', async (req, res) => {
+  const lang = detectLang(req);
   try {
     const { apiKey, region, workspaceId, endpoint, payload } = req.body;
-    if (!apiKey) return res.status(400).json({ error: '缺少 API Key' });
-    if (!payload) return res.status(400).json({ error: '缺少 payload' });
+    if (!apiKey) return res.status(400).json({ error: st('server.missingApiKey', lang) });
+    if (!payload) return res.status(400).json({ error: st('server.missingPayload', lang) });
 
     const base = resolveEndpoint(endpoint, region, workspaceId);
     const url = `${base}/api/v1/services/aigc/video-generation/video-synthesis`;
@@ -264,14 +321,15 @@ app.post('/api/create-task', async (req, res) => {
 
 // ─── Image generation (synchronous) ─────────────────────────────
 app.post('/api/generate-image', async (req, res) => {
+  const lang = detectLang(req);
   try {
     const { apiKey, region, workspaceId, endpoint, model, prompt, images, params } = req.body;
-    if (!apiKey) return res.status(400).json({ error: '缺少 API Key' });
-    if (!model) return res.status(400).json({ error: '缺少 model' });
+    if (!apiKey) return res.status(400).json({ error: st('server.missingApiKey', lang) });
+    if (!model) return res.status(400).json({ error: st('server.missingModel', lang) });
 
     const base = resolveEndpoint(endpoint, region, workspaceId);
     if (!MODELS.IMAGE.includes(model)) {
-      return res.status(400).json({ error: '不支持的图片模型: ' + model });
+      return res.status(400).json({ error: st('server.unsupportedImageModel', lang, { model }) });
     }
 
     // All image models use DashScope native protocol
@@ -306,13 +364,13 @@ app.post('/api/generate-image', async (req, res) => {
 
     // Upstream HTTP error (non-2xx)
     if (r.status >= 400) {
-      const msg = r.data?.error?.message || r.data?.message || r.data?.code || `上游返回 HTTP ${r.status}`;
+      const msg = r.data?.error?.message || r.data?.message || r.data?.code || st('server.upstreamHttpError', lang, { status: r.status });
       return res.status(r.status).json({ error: msg, raw: r.data });
     }
 
     // Error handling: DashScope native format
     if (r.data && (r.data.code || r.data.error)) {
-      const msg = r.data.message || r.data.error?.message || r.data.code || '调用失败';
+      const msg = r.data.message || r.data.error?.message || r.data.code || st('server.callFailed', lang);
       return res.status(r.status || 400).json({ error: msg, raw: r.data });
     }
 
@@ -332,7 +390,7 @@ app.post('/api/generate-image', async (req, res) => {
     usage = r.data?.usage || {};
 
     if (imageUrls.length === 0) {
-      return res.status(502).json({ error: '模型未返回图片结果', raw: r.data });
+      return res.status(502).json({ error: st('server.noImageResult', lang), raw: r.data });
     }
 
     res.json({ images: imageUrls, usage, model });
@@ -451,9 +509,10 @@ const SYSTEM_PROMPTS = {
 };
 
 app.post('/api/optimize-prompt', async (req, res) => {
+  const lang = detectLang(req);
   try {
     const { apiKey, region, workspaceId, endpoint, draft, images, mode, videoCount } = req.body;
-    if (!apiKey) return res.status(400).json({ error: '缺少 API Key' });
+    if (!apiKey) return res.status(400).json({ error: st('server.missingApiKey', lang) });
 
     const base = resolveEndpoint(endpoint, region, workspaceId);
     const hasImages = Array.isArray(images) && images.length > 0;
@@ -526,20 +585,20 @@ app.post('/api/optimize-prompt', async (req, res) => {
 
     // 错误响应：DashScope 原生用 r.data.code；OpenAI 兼容用 r.data.error
     if (r.data && (r.data.code || r.data.error)) {
-      const msg = r.data.message || r.data.error?.message || r.data.code || '调用失败';
+      const msg = r.data.message || r.data.error?.message || r.data.code || st('server.callFailed', lang);
       return res.status(r.status || 400).json({ error: msg });
     }
 
     // 解析 choices：兼容两种返回结构
     const choices = isCompat ? r.data?.choices : r.data?.output?.choices;
     if (!choices || !choices.length) {
-      return res.status(502).json({ error: '模型未返回结果', raw: r.data });
+      return res.status(502).json({ error: st('server.noModelResult', lang), raw: r.data });
     }
     const content = choices[0]?.message?.content;
     let text = '';
     if (typeof content === 'string') text = content.trim();
     else if (Array.isArray(content)) text = content.map(c => c.text || '').join('').trim();
-    if (!text) return res.status(502).json({ error: '解析模型输出失败', raw: r.data });
+    if (!text) return res.status(502).json({ error: st('server.parseFail', lang), raw: r.data });
 
     res.json({ prompt: text, model });
   } catch (e) {
@@ -548,10 +607,11 @@ app.post('/api/optimize-prompt', async (req, res) => {
 });
 
 app.get('/api/task/:taskId', async (req, res) => {
+  const lang = detectLang(req);
   try {
     const { apiKey, region, workspaceId, endpoint } = req.query;
     const { taskId } = req.params;
-    if (!apiKey) return res.status(400).json({ error: '缺少 API Key' });
+    if (!apiKey) return res.status(400).json({ error: st('server.missingApiKey', lang) });
 
     const base = resolveEndpoint(endpoint, region, workspaceId);
     const url = `${base}/api/v1/tasks/${taskId}`;
