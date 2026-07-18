@@ -92,4 +92,13 @@ var (
 	// 与 ErrUploadTooLarge 用同一个 HTTP 状态码但错误码不同，
 	// 前端可以分别提示"文件太大"和"服务未配置大文件上传"。
 	ErrUploadOSSNotConfigured = New("UPLOAD_OSS_NOT_CONFIGURED", http.StatusRequestEntityTooLarge)
+
+	// ErrTaskPollFailed: 视频轮询 worker 连续 5 次收到 UNKNOWN 状态或网络失败
+	// 后判任务失败（Task 12，修的是旧系统 task.js:135 把单次 UNKNOWN 当终态的
+	// bug）。502 反映"我们能连上游，但反复拿不到一个可信的状态"。
+	ErrTaskPollFailed = New("TASK_POLL_FAILED", http.StatusBadGateway)
+	// ErrTaskTimeout: 视频任务从创建起超过 30 分钟仍未到终态，worker 主动判超时
+	// 失败（Task 12 新增的上限，旧系统的轮询循环没有这个上限）。504 反映
+	// "不是上游明确拒绝，是我们等够了"。
+	ErrTaskTimeout = New("TASK_TIMEOUT", http.StatusGatewayTimeout)
 )

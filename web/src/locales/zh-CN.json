@@ -102,6 +102,9 @@
     "HEALTH_DB_UNREACHABLE": "数据库连接异常",
     "INTERNAL_ERROR": "服务器出错了，请稍后重试",
     "NETWORK_ERROR": "网络连接失败，请检查后端服务是否已启动",
+    "TASK_NOT_FOUND": "任务不存在",
+    "TASK_POLL_FAILED": "多次查询任务状态均未从上游获得有效响应",
+    "TASK_TIMEOUT": "任务超过 30 分钟未完成，已判定为超时",
     "UNKNOWN": "操作失败，请稍后重试"
   }
 }

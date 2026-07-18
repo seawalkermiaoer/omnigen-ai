@@ -102,6 +102,9 @@
     "HEALTH_DB_UNREACHABLE": "Database is unreachable",
     "INTERNAL_ERROR": "Something went wrong, please try again later",
     "NETWORK_ERROR": "Network error, check whether the backend is running",
+    "TASK_NOT_FOUND": "Task not found",
+    "TASK_POLL_FAILED": "Repeatedly failed to reach the upstream provider while checking task status",
+    "TASK_TIMEOUT": "The task did not finish within 30 minutes and was marked as timed out",
     "UNKNOWN": "Action failed, please try again later"
   }
 }

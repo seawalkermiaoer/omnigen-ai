@@ -1,0 +1,277 @@
+package worker_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	generationmodel "github.com/chenhao/omnigen-ai/server/internal/model/generation"
+	"github.com/chenhao/omnigen-ai/server/internal/pkg/apperr"
+	"github.com/chenhao/omnigen-ai/server/internal/provider"
+	"github.com/chenhao/omnigen-ai/server/internal/worker"
+)
+
+func seedPendingTask(repo *fakeTaskRepo, upstreamID string, createdAt time.Time) int64 {
+	uid := upstreamID
+	return repo.seed(generationmodel.Task{
+		UserID:         1,
+		Mode:           generationmodel.TaskModeT2V,
+		Model:          "happyhorse-1.1-t2v",
+		Status:         generationmodel.StatusPending,
+		UpstreamTaskID: &uid,
+		Prompt:         "x",
+	}, createdAt)
+}
+
+func ok(status string) scriptedPoll {
+	return scriptedPoll{result: &provider.TaskResult{Status: status, Raw: map[string]any{
+		"output": map[string]any{"task_status": status},
+	}}}
+}
+
+func succeeded(url string) scriptedPoll {
+	return scriptedPoll{result: &provider.TaskResult{
+		Status: string(generationmodel.StatusSucceeded),
+		Raw: map[string]any{
+			"output": map[string]any{"task_status": "SUCCEEDED", "video_url": url},
+			"usage":  map[string]any{"output_video_duration": 5},
+		},
+	}}
+}
+
+// ── PENDING → RUNNING → SUCCEEDED ────────────────────────────────────
+
+func TestPoller_PendingRunningSucceeded_UpdatesRowAtEachStep(t *testing.T) {
+	repo := newFakeTaskRepo()
+	id := seedPendingTask(repo, "up-1", time.Now())
+
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{
+		"up-1": {ok("RUNNING"), succeeded("https://cdn.example.com/v.mp4")},
+	})
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	p.PollOnce(context.Background())
+	got := repo.get(id)
+	assert.Equal(t, generationmodel.StatusRunning, got.Status)
+
+	p.PollOnce(context.Background())
+	got = repo.get(id)
+	assert.Equal(t, generationmodel.StatusSucceeded, got.Status)
+	assert.Equal(t, []string{"https://cdn.example.com/v.mp4"}, got.ResultURLs)
+}
+
+// ── 4 UNKNOWNs 保持轮询；第 5 次判失败 ───────────────────────────────
+
+func TestPoller_FourConsecutiveUnknowns_KeepPolling_FifthFails(t *testing.T) {
+	repo := newFakeTaskRepo()
+	id := seedPendingTask(repo, "up-1", time.Now())
+
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{
+		"up-1": {ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN")},
+	})
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	for i := 0; i < 4; i++ {
+		p.PollOnce(context.Background())
+		got := repo.get(id)
+		require.Equal(t, generationmodel.StatusPending, got.Status, "第 %d 次 UNKNOWN 不应该终止任务", i+1)
+	}
+
+	p.PollOnce(context.Background())
+	got := repo.get(id)
+	assert.Equal(t, generationmodel.StatusFailed, got.Status, "第 5 次连续 UNKNOWN 必须判失败")
+	require.NotNil(t, got.ErrorCode)
+	assert.Equal(t, apperr.ErrTaskPollFailed.Code(), *got.ErrorCode)
+}
+
+// ── 好响应重置计数器 ──────────────────────────────────────────────────
+
+func TestPoller_GoodResponse_ResetsCounter(t *testing.T) {
+	repo := newFakeTaskRepo()
+	id := seedPendingTask(repo, "up-1", time.Now())
+
+	script := []scriptedPoll{
+		ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), // 4 UNKNOWN
+		ok("RUNNING"),                                              // 1 好响应，重置计数器
+		ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), // 再 4 个 UNKNOWN
+	}
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{"up-1": script})
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	for i := 0; i < len(script); i++ {
+		p.PollOnce(context.Background())
+	}
+
+	got := repo.get(id)
+	assert.NotEqual(t, generationmodel.StatusFailed, got.Status,
+		"4 UNKNOWN + 1 好响应 + 4 UNKNOWN 一共只攒到 4 连续失败，不应该判失败")
+}
+
+// ── 计数器按任务隔离，不是全局的 ─────────────────────────────────────
+
+func TestPoller_FailureCounter_IsPerTask_NotGlobal(t *testing.T) {
+	repo := newFakeTaskRepo()
+	now := time.Now()
+	// 交错插入两个任务，创建时间相同顺序无关紧要——ClaimPending 每轮把两个
+	// 都claim 出来，poller 在同一个 PollOnce 里依次处理。
+	idA := seedPendingTask(repo, "up-A", now)
+	idB := seedPendingTask(repo, "up-B", now.Add(time.Millisecond))
+
+	// A 连续 3 次 UNKNOWN 后转 RUNNING（不该失败）；
+	// B 连续 5 次 UNKNOWN（该失败）。
+	// 如果计数器是全局共享的，A 的 3 次会和 B 的失败合并计数，导致 B 提前
+	// 在第 2 次就被判失败，或者 A 的失败被 B 的好响应错误地重置。
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{
+		"up-A": {ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("RUNNING"), ok("RUNNING")},
+		"up-B": {ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN")},
+	})
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	for i := 0; i < 5; i++ {
+		p.PollOnce(context.Background())
+	}
+
+	gotA := repo.get(idA)
+	gotB := repo.get(idB)
+	assert.Equal(t, generationmodel.StatusRunning, gotA.Status, "A 从未连续 5 次失败，不该被判失败")
+	assert.Equal(t, generationmodel.StatusFailed, gotB.Status, "B 连续 5 次 UNKNOWN，必须判失败")
+}
+
+// ── 超过 30 分钟的任务判超时失败 ─────────────────────────────────────
+
+func TestPoller_TaskOlderThan30Minutes_FailsWithTimeoutCode(t *testing.T) {
+	repo := newFakeTaskRepo()
+	old := time.Now().Add(-31 * time.Minute)
+	id := seedPendingTask(repo, "up-1", old)
+
+	// 空脚本：一旦轮询真的打到上游，PollTask 会因为找不到脚本而 panic——
+	// 这次调用必须完全不发生，从而验证"超时任务从不轮询上游"。CreatedAt
+	// 已经手工设成 31 分钟前，不需要额外注入假时钟就能触发超时判断，但
+	// WithClock 仍然可用（下面这行留空走默认 time.Now，证明两条路径都对）。
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{})
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	p.PollOnce(context.Background())
+
+	got := repo.get(id)
+	assert.Equal(t, generationmodel.StatusFailed, got.Status)
+	require.NotNil(t, got.ErrorCode)
+	assert.Equal(t, apperr.ErrTaskTimeout.Code(), *got.ErrorCode)
+}
+
+func TestPoller_TaskUnder30Minutes_NotTimedOut(t *testing.T) {
+	repo := newFakeTaskRepo()
+	recent := time.Now().Add(-5 * time.Minute)
+	id := seedPendingTask(repo, "up-1", recent)
+
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{"up-1": {ok("RUNNING")}})
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	p.PollOnce(context.Background())
+
+	got := repo.get(id)
+	assert.Equal(t, generationmodel.StatusRunning, got.Status)
+}
+
+// ── 优雅停机：中途取消不留脏状态 ─────────────────────────────────────
+
+func TestPoller_GracefulShutdown_MidPoll_LeavesNoCorruptedState(t *testing.T) {
+	repo := newFakeTaskRepo()
+	id := seedPendingTask(repo, "up-1", time.Now())
+
+	block := make(chan struct{}) // never closed: PollTask blocks until ctx is canceled
+	pv := &scriptedVideoProvider{scripts: map[string][]scriptedPoll{}, cursor: map[string]int{}, blockUntil: block}
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		p.PollOnce(ctx)
+		close(done)
+	}()
+
+	// Give PollOnce time to reach the blocked PollTask call, then cancel.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PollOnce 在 context 取消后没有及时返回")
+	}
+
+	got := repo.get(id)
+	assert.Equal(t, generationmodel.StatusPending, got.Status,
+		"关停中断的轮询不应该把任务写成任何终态或半途状态")
+	assert.Nil(t, got.ErrorCode)
+}
+
+// ── Run() 在 ctx 取消后退出，且不会遗留一个仍在运行的 goroutine 卡住测试 ──
+
+func TestPoller_Run_StopsOnContextCancel(t *testing.T) {
+	repo := newFakeTaskRepo()
+	seedPendingTask(repo, "up-1", time.Now())
+
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(alwaysRunningProvider{}), worker.WithInterval(time.Millisecond))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		p.Run(ctx)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run 在 context 取消后没有及时返回")
+	}
+}
+
+// ── 上游 provider 构造失败（凭证未配置）时整轮跳过，不牵连任何任务 ──────
+
+func TestPoller_CredentialsMissing_SkipsCycle_DoesNotFailTasks(t *testing.T) {
+	repo := newFakeTaskRepo()
+	id := seedPendingTask(repo, "up-1", time.Now())
+
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{})
+	p := worker.New(repo, fakeSettings{}, fixedVideoFactory(pv)) // 空设置：apiKey 为空
+
+	p.PollOnce(context.Background())
+
+	got := repo.get(id)
+	assert.Equal(t, generationmodel.StatusPending, got.Status, "凭证缺失不应该牵连任何具体任务")
+}
+
+// ── 网络失败按 UNKNOWN 同样的规则计数 ──────────────────────────────────
+
+func TestPoller_NetworkFailure_CountsTowardSameThreshold(t *testing.T) {
+	repo := newFakeTaskRepo()
+	id := seedPendingTask(repo, "up-1", time.Now())
+
+	netErr := errors.New("dial tcp: connection refused")
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{
+		"up-1": {
+			{err: netErr}, {err: netErr}, {err: netErr}, {err: netErr}, {err: netErr},
+		},
+	})
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	for i := 0; i < 4; i++ {
+		p.PollOnce(context.Background())
+		got := repo.get(id)
+		require.Equal(t, generationmodel.StatusPending, got.Status)
+	}
+	p.PollOnce(context.Background())
+	got := repo.get(id)
+	assert.Equal(t, generationmodel.StatusFailed, got.Status)
+	require.NotNil(t, got.ErrorCode)
+	assert.Equal(t, apperr.ErrTaskPollFailed.Code(), *got.ErrorCode)
+}

@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -13,11 +14,14 @@ import (
 	"github.com/chenhao/omnigen-ai/server/internal/service"
 )
 
-// fakeTaskRepo 是内存版 repository.TaskRepository，只有 Create/
-// GetByIDForUser 有真正的行为——ImageGenerationService 只用到 Create，其余
-// 方法（ListForUser/UpdateStatus/UpdateResult/ClaimPending）留给 Task 12
-// 的视频轮询 worker 测试使用，这里给出满足接口的最小实现即可，不代表真实
-// 语义。
+// fakeTaskRepo is an in-memory repository.TaskRepository shared by the
+// generation_image and generation_video service tests (and, via a second
+// implementation of the same interface in internal/worker, the poller
+// tests). Every method here has real, if simplified, semantics — ClaimPending
+// only returns PENDING/RUNNING rows ordered by CreatedAt like the real SQL
+// does, UpdateStatus/UpdateResult mutate in place, ListForUser paginates and
+// counts — because Task 12's worker tests exercise the full
+// claim/poll/update state machine against this fake, not just Create.
 type fakeTaskRepo struct {
 	mu        sync.Mutex
 	tasks     map[int64]*generationmodel.Task
@@ -29,6 +33,10 @@ func newFakeTaskRepo() *fakeTaskRepo {
 	return &fakeTaskRepo{tasks: map[int64]*generationmodel.Task{}, nextID: 1}
 }
 
+// Create assigns the next id and timestamps. It only fills in CreatedAt/
+// UpdatedAt when the caller left them zero, so worker tests can pre-set an
+// old CreatedAt (to simulate a task that's been in flight for a while)
+// before calling Create.
 func (f *fakeTaskRepo) Create(_ context.Context, t *generationmodel.Task) error {
 	if f.createErr != nil {
 		return f.createErr
@@ -38,7 +46,9 @@ func (f *fakeTaskRepo) Create(_ context.Context, t *generationmodel.Task) error 
 	t.ID = f.nextID
 	f.nextID++
 	now := time.Now()
-	t.CreatedAt = now
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = now
+	}
 	t.UpdatedAt = now
 	clone := *t
 	f.tasks[t.ID] = &clone
@@ -56,20 +66,116 @@ func (f *fakeTaskRepo) GetByIDForUser(_ context.Context, id, userID int64) (*gen
 	return &clone, nil
 }
 
-func (f *fakeTaskRepo) ListForUser(_ context.Context, _ int64, _, _ int) ([]generationmodel.Task, int64, error) {
-	return nil, 0, nil
+func (f *fakeTaskRepo) ListForUser(_ context.Context, userID int64, offset, limit int) ([]generationmodel.Task, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var owned []*generationmodel.Task
+	for _, t := range f.tasks {
+		if t.UserID == userID {
+			owned = append(owned, t)
+		}
+	}
+	sort.Slice(owned, func(i, j int) bool {
+		if owned[i].CreatedAt.Equal(owned[j].CreatedAt) {
+			return owned[i].ID > owned[j].ID
+		}
+		return owned[i].CreatedAt.After(owned[j].CreatedAt)
+	})
+
+	total := int64(len(owned))
+	if offset >= len(owned) {
+		return []generationmodel.Task{}, total, nil
+	}
+	end := offset + limit
+	if end > len(owned) {
+		end = len(owned)
+	}
+	out := make([]generationmodel.Task, 0, end-offset)
+	for _, t := range owned[offset:end] {
+		out = append(out, *t)
+	}
+	return out, total, nil
 }
 
-func (f *fakeTaskRepo) UpdateStatus(_ context.Context, _ int64, _ generationmodel.Status, _, _ string) error {
+func (f *fakeTaskRepo) UpdateStatus(_ context.Context, id int64, status generationmodel.Status, errCode, errMsg string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok {
+		return apperr.ErrTaskNotFound
+	}
+	t.Status = status
+	if errCode == "" {
+		t.ErrorCode = nil
+	} else {
+		t.ErrorCode = &errCode
+	}
+	if errMsg == "" {
+		t.ErrorMessage = nil
+	} else {
+		t.ErrorMessage = &errMsg
+	}
+	t.UpdatedAt = time.Now()
 	return nil
 }
 
-func (f *fakeTaskRepo) UpdateResult(_ context.Context, _ int64, _ []string, _ map[string]any, _ string) error {
+func (f *fakeTaskRepo) UpdateResult(_ context.Context, id int64, urls []string, usage map[string]any, note string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok {
+		return apperr.ErrTaskNotFound
+	}
+	t.ResultURLs = urls
+	t.Usage = usage
+	if note == "" {
+		t.Note = nil
+	} else {
+		t.Note = &note
+	}
+	t.Status = generationmodel.StatusSucceeded
+	t.UpdatedAt = time.Now()
 	return nil
 }
 
-func (f *fakeTaskRepo) ClaimPending(_ context.Context, _ int) ([]generationmodel.Task, error) {
-	return nil, nil
+func (f *fakeTaskRepo) ClaimPending(_ context.Context, limit int) ([]generationmodel.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var pending []*generationmodel.Task
+	for _, t := range f.tasks {
+		if t.IsInFlight() {
+			pending = append(pending, t)
+		}
+	}
+	sort.Slice(pending, func(i, j int) bool {
+		if pending[i].CreatedAt.Equal(pending[j].CreatedAt) {
+			return pending[i].ID < pending[j].ID
+		}
+		return pending[i].CreatedAt.Before(pending[j].CreatedAt)
+	})
+	if limit > 0 && len(pending) > limit {
+		pending = pending[:limit]
+	}
+	out := make([]generationmodel.Task, 0, len(pending))
+	for _, t := range pending {
+		out = append(out, *t)
+	}
+	return out, nil
+}
+
+// get is a test-only accessor for a single task's current in-memory state
+// (worker tests poll this after each cycle instead of round-tripping
+// through GetByIDForUser, which requires knowing the owning userID).
+func (f *fakeTaskRepo) get(id int64) (generationmodel.Task, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[id]
+	if !ok {
+		return generationmodel.Task{}, false
+	}
+	return *t, true
 }
 
 // all lists every task Create() has stored, in insertion order, for tests

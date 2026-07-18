@@ -42,6 +42,7 @@ describe('语言文件', () => {
       'USER_USERNAME_TAKEN', 'USER_CANNOT_MODIFY_SELF', 'USER_LAST_ADMIN',
       'USER_PASSWORD_TOO_LONG', 'SETTING_NOT_FOUND',
       'VALIDATION_FAILED', 'INTERNAL_ERROR', 'UNKNOWN',
+      'TASK_NOT_FOUND', 'TASK_POLL_FAILED', 'TASK_TIMEOUT',
     ]
     required.forEach((code) => {
       expect(zhCN.errors, `zh-CN 缺少 ${code}`).toHaveProperty(code)
