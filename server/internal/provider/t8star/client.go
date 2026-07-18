@@ -57,20 +57,18 @@ type Result struct {
 // GenerateImage implements provider.ImageProvider.
 //
 // provider.ImageResult (defined in provider.go, owned by a different task)
-// has no Note field, but the t8star protocol always returns one alongside
-// the image link and the old server.js response mapping
-// (`res.json({ images, usage, model, note })`) forwards it to the client.
-// GenerateImage here satisfies the polymorphic interface and silently drops
-// Note; callers that need it (Task 11's service layer, when it knows it's
-// talking to t8star specifically) should call GenerateImageWithNote instead.
-// Flagging this for reconciliation rather than editing provider.go directly,
-// per the plan's task boundaries.
+// 现在 provider.ImageResult 已经有 Note 字段（协调后新增），所以通用接口
+// 也能带出 t8star 的散文说明，service 层不必为 t8star 单独走一条分支。
+// GenerateImageWithNote 保留下来，给明确知道自己在跟 t8star 说话、
+// 想拿到强类型 Result 的调用方用。
 func (c *Client) GenerateImage(ctx context.Context, req provider.ImageRequest) (*provider.ImageResult, error) {
 	result, err := c.GenerateImageWithNote(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	return &result.ImageResult, nil
+	out := result.ImageResult
+	out.Note = result.Note
+	return &out, nil
 }
 
 // GenerateImageWithNote posts a chat-completions request and parses the

@@ -211,3 +211,23 @@ func TestGenerateImage_ResolvesEndpointConfiguredAtConstruction(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/v1/chat/completions", gotPath)
 }
+
+// GenerateImage 走通用接口时也要带出 Note——否则 service 层必须为 t8star
+// 单开一条分支，而 Note 是 t8star 协议里跟图片一起返回的产品内容。
+func TestGenerateImage_CarriesNoteThroughGenericInterface(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(realFixture))
+	}))
+	defer srv.Close()
+
+	c := t8star.New("test-key", srv.URL)
+	got, err := c.GenerateImage(context.Background(), provider.ImageRequest{
+		Model:  "gpt-image-2",
+		Prompt: "一只可爱的小猫",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, got.Images)
+	assert.Equal(t, "给你画好了，一只可爱的小猫。", got.Note,
+		"通用接口不能把 Note 丢掉")
+}

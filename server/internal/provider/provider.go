@@ -79,6 +79,11 @@ type ImageResult struct {
 	// （server.js:437 `res.json({ images, usage, model })`）；t8star 分支会
 	// 用上游回显的具体子模型覆盖（如 gpt-image-2-pro），由 t8star 包自行处理。
 	Model string
+	// Note 是模型随图片一起返回的散文说明。只有 t8star 协议有——它把图片 URL
+	// 以 markdown 形式嵌在对话内容里，剥掉链接后剩下的文字就是 Note，
+	// 旧系统会原样透传给前端展示（server.js 的 t8star 分支）。
+	// DashScope 分支恒为空。
+	Note string
 }
 
 // VideoRequest 是创建异步视频任务的入参。Payload 是发往
