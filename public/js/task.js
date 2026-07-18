@@ -36,7 +36,7 @@ async function uploadImageToServer(file) {
       formData.append('file', file);
       const res = await fetch('/api/upload-image', { method: 'POST', body: formData });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `上传失败 (${res.status})`);
+      if (!res.ok) throw new Error(data.error || t('common.uploadFailedGeneric') + ' (' + res.status + ')');
       return data.url;
     } catch (e) {
       lastError = e;
@@ -79,9 +79,11 @@ function renderVideo(ctx, url, data) {
   out.style.display = '';
   video.src = url;
   const usage = data.usage || {};
-  meta.textContent =
-    `时长 ${usage.output_video_duration || data.output?.duration || ''}s · ` +
-    `${usage.SR || ''}P · ${usage.ratio || ''} · 视频链接 24 小时内有效`;
+  meta.textContent = t('task.videoMeta', {
+    duration: usage.output_video_duration || data.output?.duration || '',
+    sr: usage.SR || '',
+    ratio: usage.ratio || ''
+  });
   $('downloadBtn-' + ctx.kind).onclick = () => {
     const fname = `omnigen-${ctx.kind}-${Date.now()}.mp4`;
     window.location.href = `/api/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(fname)}`;
@@ -90,9 +92,9 @@ function renderVideo(ctx, url, data) {
     try {
       await navigator.clipboard.writeText(url);
       const b = $('copyBtn-' + ctx.kind);
-      const old = b.textContent; b.textContent = '已复制 ✓';
+      const old = b.textContent; b.textContent = t('common.copySuccess');
       setTimeout(() => b.textContent = old, 1500);
-    } catch { alert('复制失败：' + url); }
+    } catch { alert(t('common.copyFailed', { url })); }
   };
 }
 
@@ -110,16 +112,16 @@ async function pollTask(ctx, taskId, log) {
       const out = d.output || {};
       const status = out.task_status || 'UNKNOWN';
       const elapsed = Math.round((Date.now() - start) / 1000);
-      log(`[${elapsed}s] 状态: ${status}`);
+      log(`[${elapsed}s] ${t('task.status', { status })}`);
       setStatusHTML('status-' + ctx.kind,
-        `<span class="pill ${status}">${status}</span> task_id: <code>${taskId}</code> · 已用时 ${elapsed}s`);
+        `<span class="pill ${status}">${status}</span> task_id: <code>${taskId}</code> · ${t('task.elapsed', { elapsed })}`);
 
       if (ctx.currentHistoryId) {
         patchHistoryRecord(ctx.currentHistoryId, { status });
       }
 
       if (status === 'SUCCEEDED') {
-        log('✓ 视频生成完成', 'ok');
+        log(t('task.videoDone'), 'ok');
         renderVideo(ctx, out.video_url, d);
         $('submitBtn-' + ctx.kind).disabled = false;
         if (ctx.currentHistoryId) {
@@ -131,8 +133,8 @@ async function pollTask(ctx, taskId, log) {
         return;
       }
       if (['FAILED', 'CANCELED', 'UNKNOWN'].includes(status)) {
-        const err = out.message || d.message || '未知错误';
-        log(`任务${status}: ${err}`, 'err');
+        const err = out.message || d.message || t('task.unknownError');
+        log(t('task.taskFailed', { status, err }), 'err');
         setStatusHTML('status-' + ctx.kind, `<span class="pill ${status}">${status}</span> ${err}`);
         $('submitBtn-' + ctx.kind).disabled = false;
         if (ctx.currentHistoryId) {
@@ -143,7 +145,7 @@ async function pollTask(ctx, taskId, log) {
         return;
       }
     } catch (e) {
-      log('轮询异常: ' + e.message, 'err');
+      log(t('task.pollError', { msg: e.message }), 'err');
     }
     await new Promise(r => setTimeout(r, 15000));
   }
@@ -158,8 +160,8 @@ async function submitTask(ctx, payload) {
   $('log-' + ctx.kind).innerHTML = '';
   $('videoOut-' + ctx.kind).style.display = 'none';
   $('submitBtn-' + ctx.kind).disabled = true;
-  setStatusHTML('status-' + ctx.kind, '<span class="pill PENDING">提交中</span> 正在创建任务…');
-  log(`提交 ${payload.model} 任务到 ${auth.region}`);
+  setStatusHTML('status-' + ctx.kind, `<span class="pill PENDING">${t('task.submitting')}</span> ${t('task.submitting')}`);
+  log(t('task.submitLog', { model: payload.model, region: auth.region }));
 
   const historyId = genHistoryId();
   ctx.currentHistoryId = historyId;
@@ -196,14 +198,14 @@ async function submitTask(ctx, payload) {
       throw new Error(data.message || data.error || JSON.stringify(data));
     }
     const taskId = data.output?.task_id;
-    if (!taskId) throw new Error('未拿到 task_id');
-    log('任务已创建：' + taskId, 'ok');
+    if (!taskId) throw new Error(t('task.noTaskId'));
+    log(t('task.taskCreated', { taskId }), 'ok');
     setStatusHTML('status-' + ctx.kind, `<span class="pill PENDING">PENDING</span> task_id: <code>${taskId}</code>`);
     patchHistoryRecord(historyId, { taskId });
     pollTask(ctx, taskId, log);
   } catch (e) {
     log(e.message, 'err');
-    setStatusHTML('status-' + ctx.kind, `<span class="pill FAILED">失败</span> ${e.message}`);
+    setStatusHTML('status-' + ctx.kind, `<span class="pill FAILED">${t('common.pillFailed')}</span> ${e.message}`);
     $('submitBtn-' + ctx.kind).disabled = false;
     patchHistoryRecord(historyId, { status: 'FAILED', errorMsg: e.message, endTime: Date.now() });
   }
@@ -223,7 +225,7 @@ function bindOptimize(ctx) {
       promptEl.value = lastBefore;
       lastBefore = null;
       undoBtn.style.display = 'none';
-      hint.textContent = '已还原';
+      hint.textContent = t('common.removed');
       hint.className = 'optimize-hint';
     }
   });
@@ -258,14 +260,14 @@ function bindOptimize(ctx) {
     }
 
     btn.disabled = true; btn.classList.add('loading');
-    labelSpan.textContent = '优化中…';
+    labelSpan.textContent = t('common.optimizing');
     const srcDesc = [
-      images.length ? `${images.length} 张图` : '',
-      videoCount ? `${videoCount} 个视频` : '',
+      images.length ? t('task.optimizeSource', { count: images.length }) : '',
+      videoCount ? t('task.optimizeSourceVideo', { count: videoCount }) : '',
     ].filter(Boolean).join(' + ');
     hint.textContent = images.length
-      ? `${MODEL_NAMES.VISION_OPTIMIZE_LABEL} 正在分析${ctx.kind === 'i2v' ? '首帧图' : srcDesc || ' 图'}并改写 prompt…`
-      : `${MODEL_NAMES.TEXT_OPTIMIZE} 正在润色 prompt…`;
+      ? t('task.optimizeAnalyzing', { model: MODEL_NAMES.VISION_OPTIMIZE_LABEL, target: ctx.kind === 'i2v' ? t('task.optimizeFirstFrame') : srcDesc || t('task.optimizeSource', { count: '' }).trim() })
+      : t('task.optimizePolishing', { model: MODEL_NAMES.TEXT_OPTIMIZE });
     hint.className = 'optimize-hint';
     undoBtn.style.display = 'none';
 
@@ -276,19 +278,19 @@ function bindOptimize(ctx) {
         body: JSON.stringify({ ...auth, draft, images, mode, videoCount }),
       });
       const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || '优化失败');
+      if (!res.ok || data.error) throw new Error(data.error || t('common.optimizeFailed'));
       lastBefore = draft;
       promptEl.value = data.prompt;
-      hint.textContent = `✓ 已用 ${data.model} 优化（${data.prompt.length} 字）`;
+      hint.textContent = t('common.optimizeDone', { model: data.model, count: data.prompt.length });
       hint.className = 'optimize-hint ok';
       undoBtn.style.display = '';
     } catch (e) {
-      hint.textContent = '优化失败：' + e.message;
+      hint.textContent = t('common.optimizeFailedDetail', { msg: e.message });
       hint.className = 'optimize-hint err';
     } finally {
       btn.disabled = false;
       btn.classList.remove('loading');
-      labelSpan.textContent = '自动优化';
+      labelSpan.textContent = t('common.autoOptimize');
     }
   });
 }

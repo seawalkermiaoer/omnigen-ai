@@ -7,26 +7,32 @@ const imggen = {
 };
 
 // ─── Model definitions (text-to-image only) ─────────────────────
-const IMGGEN_MODELS = [
-  { value: 'qwen-image-plus', label: 'Qwen-Image-Plus（高质量，DashScope 协议）' },
-  { value: 'qwen-image', label: 'Qwen-Image（快速，DashScope 协议）' },
-  { value: 'wan2.7-image-pro', label: 'Wan 2.7 Image Pro（高质量，DashScope 协议）' },
-  { value: 'wan2.7-image', label: 'Wan 2.7 Image（基础版，DashScope 协议）' },
-];
+function getImggenModels() {
+  return [
+    { value: 'qwen-image-plus', label: t('imggen.modelQwenPlus') },
+    { value: 'qwen-image', label: t('imggen.modelQwen') },
+    { value: 'wan2.7-image-pro', label: t('imggen.modelWanPro') },
+    { value: 'wan2.7-image', label: t('imggen.modelWan') },
+  ];
+}
 
 // Qwen models use these sizes; wan2.7 uses 1K/2K/4K
-const QWEN_SIZES = [
-  { value: '1664*928', label: '1664×928（16:9）' },
-  { value: '1472*1140', label: '1472×1140（4:3）' },
-  { value: '1328*1328', label: '1328×1328（1:1）' },
-  { value: '1140*1472', label: '1140×1472（3:4）' },
-  { value: '928*1664', label: '928×1664（9:16）' },
-];
-const WAN_SIZES = [
-  { value: '1K', label: '1K（默认）' },
-  { value: '2K', label: '2K' },
-  { value: '4K', label: '4K' },
-];
+function getQwenSizes() {
+  return [
+    { value: '1664*928', label: '1664×928 (16:9)' },
+    { value: '1472*1140', label: '1472×1140 (4:3)' },
+    { value: '1328*1328', label: '1328×1328 (1:1)' },
+    { value: '1140*1472', label: '1140×1472 (3:4)' },
+    { value: '928*1664', label: '928×1664 (9:16)' },
+  ];
+}
+function getWanSizes() {
+  return [
+    { value: '1K', label: t('imggen.size1k') },
+    { value: '2K', label: '2K' },
+    { value: '4K', label: '4K' },
+  ];
+}
 
 function isWanModel(model) {
   return model && model.startsWith('wan2.7');
@@ -40,8 +46,9 @@ function updateImggenUI() {
   // Update model dropdown
   const modelSelect = $('model-imggen');
   const prevValue = modelSelect.value;
-  modelSelect.innerHTML = IMGGEN_MODELS.map(m => `<option value="${m.value}">${m.label}</option>`).join('');
-  if (IMGGEN_MODELS.some(m => m.value === prevValue)) {
+  const models = getImggenModels();
+  modelSelect.innerHTML = models.map(m => `<option value="${m.value}">${m.label}</option>`).join('');
+  if (models.some(m => m.value === prevValue)) {
     modelSelect.value = prevValue;
   }
 
@@ -58,7 +65,7 @@ function updateImggenUI() {
 function updateSizeOptions() {
   const model = $('model-imggen').value;
   const isWan = isWanModel(model);
-  const sizes = isWan ? WAN_SIZES : QWEN_SIZES;
+  const sizes = isWan ? getWanSizes() : getQwenSizes();
   const sizeSelect = $('size-imggen');
   sizeSelect.innerHTML = sizes.map(s => `<option value="${s.value}">${s.label}</option>`).join('');
   if (!isWan) {
@@ -90,6 +97,7 @@ function updateCountOptions() {
 
 // Model change handler
 $('model-imggen').addEventListener('change', updateImggenUI);
+window.addEventListener('localechange', () => { updateImggenUI(); });
 
 // Sequential checkbox changes count options
 $('sequential-imggen').addEventListener('change', updateCountOptions);
@@ -106,11 +114,11 @@ async function submitImggen() {
 
   // Validate
   if (!prompt) {
-    return alert('请输入 Prompt');
+    return alert(t('common.pleaseInputPrompt'));
   }
   // wan2.7 region check
   if (isWanModel(model) && !['cn-beijing', 'ap-southeast-1'].includes(auth.region)) {
-    return alert('Wan 2.7 图片模型仅支持北京和新加坡地域，当前地域为：' + auth.region);
+    return alert(t('imggen.alertWanRegion', { region: auth.region }));
   }
 
   // Build params
@@ -132,8 +140,8 @@ async function submitImggen() {
   $('log-imggen').innerHTML = '';
   $('imageOut-imggen').style.display = 'none';
   $('submitBtn-imggen').disabled = true;
-  setStatusHTML('status-imggen', '<span class="pill PENDING">生成中</span> 正在调用模型，请稍候…');
-  log(`提交 ${model} 任务到 ${auth.region}`);
+  setStatusHTML('status-imggen', '<span class="pill PENDING">' + t('common.pillPending') + '</span> ' + t('imggen.generating'));
+  log(t('task.submitLog', { model, region: auth.region }));
 
   // Create history record
   const historyId = genHistoryId();
@@ -169,10 +177,10 @@ async function submitImggen() {
     }
 
     const imageUrls = data.images || [];
-    if (!imageUrls.length) throw new Error('模型未返回图片结果');
+    if (!imageUrls.length) throw new Error(t('imggen.noResult'));
 
-    log(`✓ 生成完成，共 ${imageUrls.length} 张图片（耗时 ${elapsed}s）`, 'ok');
-    setStatusHTML('status-imggen', `<span class="pill SUCCEEDED">完成</span> ${imageUrls.length} 张图片 · 耗时 ${elapsed}s`);
+    log(t('imggen.genDone', { count: imageUrls.length, elapsed }), 'ok');
+    setStatusHTML('status-imggen', '<span class="pill SUCCEEDED">' + t('common.pillSuccess') + '</span> ' + imageUrls.length + ' · ' + elapsed + 's');
 
     renderImggenImageResults(imageUrls, data.usage);
 
@@ -184,7 +192,7 @@ async function submitImggen() {
     });
   } catch (e) {
     log(e.message, 'err');
-    setStatusHTML('status-imggen', `<span class="pill FAILED">失败</span> ${escapeHTML(e.message)}`);
+    setStatusHTML('status-imggen', '<span class="pill FAILED">' + t('common.pillFailed') + '</span> ' + escapeHTML(e.message));
     patchHistoryRecord(historyId, { status: 'FAILED', errorMsg: e.message, endTime: Date.now() });
   } finally {
     $('submitBtn-imggen').disabled = false;
@@ -200,14 +208,14 @@ function renderImggenImageResults(imageUrls, usage) {
   out.style.display = '';
   const count = imageUrls.length;
   const sizeInfo = usage?.size || '';
-  meta.textContent = `生成了 ${count} 张图片${sizeInfo ? ' · ' + sizeInfo : ''} · 链接 24 小时内有效`;
+  meta.textContent = t('imggen.genMeta', { count, sizeInfo: sizeInfo ? ' · ' + sizeInfo : '' });
 
   grid.innerHTML = imageUrls.map((url, i) => `
     <div class="image-card">
-      <img src="${escapeAttr(url)}" alt="生成图片 ${i + 1}" />
+      <img src="${escapeAttr(url)}" alt="${t('imggen.genImageAlt', { n: i + 1 })}" />
       <div class="actions">
-        <button class="primary" data-download="${i}">下载</button>
-        <button class="ghost" data-copy="${i}">复制链接</button>
+        <button class="primary" data-download="${i}">${t('common.download')}</button>
+        <button class="ghost" data-copy="${i}">${t('common.copyLink')}</button>
       </div>
     </div>
   `).join('');
@@ -226,9 +234,9 @@ function renderImggenImageResults(imageUrls, usage) {
       try {
         await navigator.clipboard.writeText(url);
         const old = btn.textContent;
-        btn.textContent = '已复制 ✓';
+        btn.textContent = t('common.copySuccess');
         setTimeout(() => btn.textContent = old, 1500);
-      } catch { alert('复制失败：' + url); }
+      } catch { alert(t('common.copyFailed', { url })); }
     });
   });
 }
@@ -245,7 +253,7 @@ $('resetBtn-imggen').addEventListener('click', () => {
   $('sequential-imggen').checked = false;
   $('imageOut-imggen').style.display = 'none';
   $('log-imggen').innerHTML = '';
-  setStatusHTML('status-imggen', '<span style="color: var(--muted)">填写 prompt 后点击「生成图片」</span>');
+  setStatusHTML('status-imggen', '<span style="color: var(--muted)">' + t('imggen.statusDefault') + '</span>');
   updateImggenUI();
 });
 
