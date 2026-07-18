@@ -3815,6 +3815,14 @@ git add -A server/ && git commit -m "chore(server): 后端全量测试与静态�
 
 ---
 
+## 前端类型检查的坑
+
+**不要用 `npx tsc --noEmit` 验证前端。** 本项目根 `tsconfig.json` 是 `"files": []` + project references 结构，裸跑 `tsc` 什么都不检查就退出 0。只有 `tsc -b`（`npm run build` 内部调用的那个）才会沿着 references 真正检查 `src/`。
+
+前端各任务一律用 `npx tsc -b --force`（`--force` 是必须的，否则增量缓存会让它跳过）或 `npm run build` 作为类型检查闸门。
+
+---
+
 # Phase B：前端
 
 ## Task 14: Vite 脚手架与主题
@@ -6306,7 +6314,7 @@ body {
 - [ ] **Step 3: 类型检查与构建**
 
 ```bash
-cd web && npx tsc --noEmit && npm run build
+cd web && npx tsc -b --force && npm run build
 ```
 预期：无类型错误，构建成功
 
@@ -6431,7 +6439,7 @@ git add README.md && git commit -m "docs: README 补充新版启动方式与改�
 - [ ] `cd server && go test ./...` 全绿
 - [ ] `cd server && go vet ./...` 无输出，`gofmt -l .` 无文件
 - [ ] `cd web && npm test` 全绿
-- [ ] `cd web && npx tsc --noEmit && npm run build` 通过
+- [ ] `cd web && npx tsc -b --force && npm run build` 通过
 - [ ] Task 21 的十条浏览器走查逐项确认
 - [ ] Task 21 Step 4 的禁用立即生效验证通过
 - [ ] 旧版 `npm start`（:3000）仍可独立运行，未受影响
