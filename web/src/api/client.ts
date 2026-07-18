@@ -5,11 +5,13 @@ export const TOKEN_STORAGE_KEY = 'omnigen_token'
 
 /** 携带后端错误码的异常，供 UI 查 i18n 表得到文案。 */
 export class ApiError extends Error {
-  constructor(
-    readonly code: string,
-    readonly status: number,
-  ) {
+  readonly code: string
+  readonly status: number
+
+  constructor(code: string, status: number) {
     super(code)
+    this.code = code
+    this.status = status
     this.name = 'ApiError'
   }
 }
