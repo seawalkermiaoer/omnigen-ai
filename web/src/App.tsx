@@ -7,6 +7,11 @@ import AdminRoute from '@/components/AdminRoute'
 import LoginPage from '@/pages/LoginPage'
 import UsersPage from '@/pages/UsersPage'
 import PlaceholderPage from '@/pages/PlaceholderPage'
+import ImageGenPage from '@/pages/generation/ImageGenPage'
+import ImageEditPage from '@/pages/generation/ImageEditPage'
+import T2VPage from '@/pages/generation/T2VPage'
+import I2VPage from '@/pages/generation/I2VPage'
+import R2VPage from '@/pages/generation/R2VPage'
 import { useAuthStore } from '@/stores/auth'
 
 export default function App() {
@@ -24,11 +29,11 @@ export default function App() {
       <Route element={<ProtectedRoute />}>
         <Route element={<AppShell />}>
           <Route index element={<Navigate to="/imggen" replace />} />
-          <Route path="/imggen" element={<PlaceholderPage nameKey="nav.imggen" />} />
-          <Route path="/imgedit" element={<PlaceholderPage nameKey="nav.imgedit" />} />
-          <Route path="/t2v" element={<PlaceholderPage nameKey="nav.t2v" />} />
-          <Route path="/i2v" element={<PlaceholderPage nameKey="nav.i2v" />} />
-          <Route path="/r2v" element={<PlaceholderPage nameKey="nav.r2v" />} />
+          <Route path="/imggen" element={<ImageGenPage />} />
+          <Route path="/imgedit" element={<ImageEditPage />} />
+          <Route path="/t2v" element={<T2VPage />} />
+          <Route path="/i2v" element={<I2VPage />} />
+          <Route path="/r2v" element={<R2VPage />} />
           <Route path="/history" element={<PlaceholderPage nameKey="nav.history" />} />
 
           <Route element={<AdminRoute />}>
