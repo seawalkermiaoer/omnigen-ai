@@ -8,6 +8,7 @@ const sharp = require('sharp');
 const OSS = require('ali-oss');
 const StsClient = require('@alicloud/sts20150401');
 const multer = require('multer');
+const t8star = require('./lib/providers/t8star');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -178,6 +179,8 @@ const MODELS = {
   VISION_OPTIMIZE_LABEL: 'qwen-vl-max',
   /** Image generation models — all use DashScope native protocol (model names are lowercase) */
   IMAGE: ['qwen-image-plus', 'qwen-image', 'qwen-image-edit-plus', 'qwen-image-edit', 'wan2.7-image-pro', 'wan2.7-image'],
+  /** Image models that speak the OpenAI chat-completions protocol (t8star) */
+  IMAGE_OPENAI: ['gpt-image-2'],
 };
 
 function getEndpoint(region, workspaceId) {
@@ -327,12 +330,50 @@ app.post('/api/generate-image', async (req, res) => {
     if (!apiKey) return res.status(400).json({ error: st('server.missingApiKey', lang) });
     if (!model) return res.status(400).json({ error: st('server.missingModel', lang) });
 
-    const base = resolveEndpoint(endpoint, region, workspaceId);
-    if (!MODELS.IMAGE.includes(model)) {
+    const isOpenAIImage = MODELS.IMAGE_OPENAI.includes(model);
+    if (!isOpenAIImage && !MODELS.IMAGE.includes(model)) {
       return res.status(400).json({ error: st('server.unsupportedImageModel', lang, { model }) });
     }
 
-    // All image models use DashScope native protocol
+    // ─── OpenAI chat-completions branch (t8star / gpt-image-2) ───
+    // Base URL and key both come from the existing endpoint/apiKey fields:
+    // the client picks t8star in the Endpoint dropdown, which swaps both.
+    if (isOpenAIImage) {
+      const t8Base = t8star.resolveBaseUrl(endpoint);
+      const t8Url = `${t8Base}/v1/chat/completions`;
+      const t8Payload = t8star.buildPayload({ model, prompt, images });
+
+      console.log(`[generate-image] → ${t8Url}  model=${model}  images=${Array.isArray(images) ? images.length : 0}`);
+      const t8r = await forwardJSON(t8Url, 'POST', {
+        Authorization: `Bearer ${apiKey}`,
+      }, t8Payload, 180000);
+      console.log(`[generate-image] ← status=${t8r.status}  response=`, JSON.stringify(t8r.data).slice(0, 500));
+
+      if (t8r.status >= 400) {
+        const msg = t8r.data?.error?.message || t8r.data?.message || st('server.upstreamHttpError', lang, { status: t8r.status });
+        return res.status(t8r.status).json({ error: msg, raw: t8r.data });
+      }
+      if (t8r.data?.error) {
+        const msg = t8r.data.error.message || st('server.callFailed', lang);
+        return res.status(400).json({ error: msg, raw: t8r.data });
+      }
+
+      const { images: t8Images, note } = t8star.parseResponse(t8r.data);
+      if (t8Images.length === 0) {
+        return res.status(502).json({ error: st('server.noImageResult', lang), raw: t8r.data });
+      }
+
+      return res.json({
+        images: t8Images,
+        usage: t8r.data?.usage || {},
+        // Upstream echoes the concrete model it ran (e.g. gpt-image-2-pro).
+        model: t8r.data?.model || model,
+        note,
+      });
+    }
+
+    // ─── DashScope native branch (unchanged) ─────────────────────
+    const base = resolveEndpoint(endpoint, region, workspaceId);
     const url = `${base}/api/v1/services/aigc/multimodal-generation/generation`;
     const p = params || {};
     const content = [];
