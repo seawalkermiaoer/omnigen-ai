@@ -2033,6 +2033,17 @@ import (
 	"github.com/chenhao/omnigen-ai/server/internal/repository"
 )
 
+// mapHashError 把 password.Hash 的失败翻成对客户端有意义的错误码。
+// bcrypt 的 72 字节上限按字节算，而 gin binding 的 max=72 按 rune 算，
+// 24 个以上中文字符会通过前端与绑定校验却在这里失败——
+// 那是用户输入问题，必须是 422 而不是 500。
+func mapHashError(err error) *apperr.AppError {
+	if errors.Is(err, password.ErrTooLong) {
+		return apperr.ErrPasswordTooLong.Wrap(err)
+	}
+	return apperr.ErrInternal.Wrap(err)
+}
+
 type AuthService struct {
 	users repository.UserRepository
 	jwt   *jwtx.Manager
@@ -2078,7 +2089,7 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID int64, req auth
 	}
 	hash, err := password.Hash(req.NewPassword)
 	if err != nil {
-		return apperr.ErrInternal.Wrap(err)
+		return mapHashError(err)
 	}
 	return s.users.UpdatePasswordHash(ctx, userID, hash)
 }
@@ -2355,7 +2366,7 @@ func NewUserService(users repository.UserRepository) *UserService {
 func (s *UserService) Create(ctx context.Context, req usermodel.CreateRequest) (*usermodel.UserResponse, error) {
 	hash, err := password.Hash(req.Password)
 	if err != nil {
-		return nil, apperr.ErrValidation.Wrap(err)
+		return nil, mapHashError(err)
 	}
 	u := &usermodel.User{
 		Username:     req.Username,
@@ -2420,7 +2431,7 @@ func (s *UserService) Update(ctx context.Context, actorID, targetID int64, req u
 func (s *UserService) ResetPassword(ctx context.Context, targetID int64, req usermodel.ResetPasswordRequest) error {
 	hash, err := password.Hash(req.Password)
 	if err != nil {
-		return apperr.ErrValidation.Wrap(err)
+		return mapHashError(err)
 	}
 	return s.users.UpdatePasswordHash(ctx, targetID, hash)
 }
