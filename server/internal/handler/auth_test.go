@@ -120,22 +120,35 @@ func (m *memRepo) CountActiveAdmins(_ context.Context) (int64, error) {
 var _ repository.UserRepository = (*memRepo)(nil)
 
 type testEnv struct {
-	r      *gin.Engine
-	repo   *memRepo
-	jwtMgr *jwtx.Manager
+	r            *gin.Engine
+	repo         *memRepo
+	jwtMgr       *jwtx.Manager
+	settingsRepo *memSettingRepo
 }
+
+// testEncryptionKey 是合法的 APP_ENCRYPTION_KEY（32 原始字节的 base64 编码），
+// 与 crypto_test.go / config_test.go / service/setting_test.go 是同一把测试
+// 密钥。SettingHandler 经由 SettingService 间接依赖 internal/pkg/crypto，
+// crypto 每次调用都从环境变量重新读取密钥（见 crypto.go 顶部注释），
+// 所以每个用到 newTestEnv 的测试都要设置它，不能只设置一次。
+const testEncryptionKey = "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
+	t.Setenv("APP_ENCRYPTION_KEY", testEncryptionKey)
 
 	repo := newMemRepo()
+	settingsRepo := newMemSettingRepo()
 	jwtMgr := jwtx.NewManager("handler-test-secret", time.Hour)
 	authSvc := service.NewAuthService(repo, jwtMgr)
 	userSvc := service.NewUserService(repo)
+	settingSvc := service.NewSettingService(settingsRepo)
 
 	authH := handler.NewAuthHandler(authSvc)
 	userH := handler.NewUserHandler(userSvc)
+	settingH := handler.NewSettingHandler(settingSvc)
+	catalogH := handler.NewCatalogHandler()
 
 	r := gin.New()
 	r.Use(middleware.Recovery(), middleware.ErrorHandler())
@@ -147,6 +160,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	authed.GET("/auth/me", authH.Me)
 	authed.POST("/auth/logout", authH.Logout)
 	authed.PUT("/auth/password", authH.ChangePassword)
+	authed.GET("/settings", settingH.Get)
+	authed.GET("/catalog", catalogH.Get)
 
 	admin := authed.Group("", middleware.RequireAdmin())
 	admin.GET("/users", userH.List)
@@ -154,8 +169,10 @@ func newTestEnv(t *testing.T) *testEnv {
 	admin.PUT("/users/:id", userH.Update)
 	admin.PUT("/users/:id/password", userH.ResetPassword)
 	admin.DELETE("/users/:id", userH.Delete)
+	admin.PUT("/settings", settingH.Update)
+	admin.POST("/settings/test", settingH.TestConnection)
 
-	return &testEnv{r: r, repo: repo, jwtMgr: jwtMgr}
+	return &testEnv{r: r, repo: repo, jwtMgr: jwtMgr, settingsRepo: settingsRepo}
 }
 
 func (e *testEnv) seed(t *testing.T, name, plain string, role usermodel.Role) *usermodel.User {

@@ -11,9 +11,11 @@ import (
 )
 
 type Handlers struct {
-	Auth   *handler.AuthHandler
-	User   *handler.UserHandler
-	Health *handler.HealthHandler
+	Auth    *handler.AuthHandler
+	User    *handler.UserHandler
+	Health  *handler.HealthHandler
+	Setting *handler.SettingHandler
+	Catalog *handler.CatalogHandler
 }
 
 func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, corsOrigins []string) *gin.Engine {
@@ -38,6 +40,8 @@ func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, cors
 	authed.GET("/auth/me", h.Auth.Me)
 	authed.POST("/auth/logout", h.Auth.Logout)
 	authed.PUT("/auth/password", h.Auth.ChangePassword)
+	authed.GET("/settings", h.Setting.Get)
+	authed.GET("/catalog", h.Catalog.Get)
 
 	admin := authed.Group("", middleware.RequireAdmin())
 	admin.GET("/users", h.User.List)
@@ -45,6 +49,8 @@ func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, cors
 	admin.PUT("/users/:id", h.User.Update)
 	admin.PUT("/users/:id/password", h.User.ResetPassword)
 	admin.DELETE("/users/:id", h.User.Delete)
+	admin.PUT("/settings", h.Setting.Update)
+	admin.POST("/settings/test", h.Setting.TestConnection)
 
 	return r
 }

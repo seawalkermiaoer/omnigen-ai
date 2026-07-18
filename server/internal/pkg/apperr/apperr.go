@@ -61,4 +61,10 @@ var (
 	ErrInternal   = New("INTERNAL_ERROR", http.StatusInternalServerError)
 
 	ErrSettingNotFound = New("SETTING_NOT_FOUND", http.StatusNotFound)
+	// ErrSettingIncomplete: TestConnection 之类需要先读到某个凭证才能继续的
+	// 操作，在该凭证还没配置时使用——是校验失败（422），不是找不到资源。
+	ErrSettingIncomplete = New("SETTING_INCOMPLETE", http.StatusUnprocessableEntity)
+	// ErrUpstreamTestFailed 表示凭证已配置但上游拒绝了这次探测请求
+	// （网络失败、非 2xx 响应等），502 反映"我们能连，但下游有问题"。
+	ErrUpstreamTestFailed = New("SETTING_TEST_FAILED", http.StatusBadGateway)
 )
