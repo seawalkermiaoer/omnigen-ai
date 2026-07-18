@@ -59,4 +59,6 @@ var (
 
 	ErrValidation = New("VALIDATION_FAILED", http.StatusUnprocessableEntity)
 	ErrInternal   = New("INTERNAL_ERROR", http.StatusInternalServerError)
+
+	ErrSettingNotFound = New("SETTING_NOT_FOUND", http.StatusNotFound)
 )

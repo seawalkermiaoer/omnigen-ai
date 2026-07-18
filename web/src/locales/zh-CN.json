@@ -97,6 +97,7 @@
     "USER_CANNOT_MODIFY_SELF": "不能对自己执行该操作",
     "USER_LAST_ADMIN": "系统必须保留至少一个可用的管理员",
     "USER_PASSWORD_TOO_LONG": "密码过长（上限 72 字节，一个中文字符占 3 字节）",
+    "SETTING_NOT_FOUND": "该配置项不存在",
     "VALIDATION_FAILED": "提交的内容不合法，请检查后重试",
     "HEALTH_DB_UNREACHABLE": "数据库连接异常",
     "INTERNAL_ERROR": "服务器出错了，请稍后重试",

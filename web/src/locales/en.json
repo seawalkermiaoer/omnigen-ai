@@ -97,6 +97,7 @@
     "USER_CANNOT_MODIFY_SELF": "You cannot perform this action on yourself",
     "USER_LAST_ADMIN": "The system must keep at least one usable administrator",
     "USER_PASSWORD_TOO_LONG": "Password is too long (max 72 bytes; each Chinese character uses 3)",
+    "SETTING_NOT_FOUND": "That setting does not exist",
     "VALIDATION_FAILED": "The submitted data is invalid, please check and retry",
     "HEALTH_DB_UNREACHABLE": "Database is unreachable",
     "INTERNAL_ERROR": "Something went wrong, please try again later",
