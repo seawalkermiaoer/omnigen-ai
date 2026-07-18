@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -81,24 +82,46 @@ func TestUserRepo_DuplicateUsernameReturnsTaken(t *testing.T) {
 	})
 }
 
+// updated_at 完全靠应用层 SQL 里显式的 `now()`，没有数据库触发器兜底——
+// 这是唯一守着「它确实会前进」这条不变式的测试。但 Postgres 的 now()
+// 是当前事务开始时刻的快照，同一个事务内多次调用不会前进
+// （用 psql 验证过：BEGIN 后隔 1 秒两次 SELECT now() 结果完全相同，
+// clock_timestamp() 才会走）。withTx 把整条用例包在一个事务里，
+// 如果 Create 和 Update 共享它，updated_at 就永远等于 created_at，
+// 断言表面成立实则测不出任何东西。这里改为直接用包级共享的 testPool
+// （不再包一层事务），让 Create 和 Update 落在两个真正各自提交的事务里，
+// 从而能真实观察到 updated_at 前进；用例自己在 defer 里清理创建的行，
+// 不依赖回滚兜底隔离。
 func TestUserRepo_Update(t *testing.T) {
-	withTx(t, func(ctx context.Context, tx repository.DB) {
-		repo := repository.NewUserRepository(tx)
-		u := sampleUser("dave", usermodel.RoleUser)
-		require.NoError(t, repo.Create(ctx, u))
+	ctx := context.Background()
+	repo := repository.NewUserRepository(testPool)
 
-		u.DisplayName = "Dave 改名"
-		u.Status = usermodel.StatusDisabled
-		u.Role = usermodel.RoleAdmin
-		require.NoError(t, repo.Update(ctx, u))
+	u := sampleUser("dave", usermodel.RoleUser)
+	require.NoError(t, repo.Create(ctx, u))
+	defer func() { _ = repo.Delete(ctx, u.ID) }()
 
-		got, err := repo.GetByID(ctx, u.ID)
-		require.NoError(t, err)
-		assert.Equal(t, "Dave 改名", got.DisplayName)
-		assert.Equal(t, usermodel.StatusDisabled, got.Status)
-		assert.Equal(t, usermodel.RoleAdmin, got.Role)
-		assert.True(t, got.UpdatedAt.After(got.CreatedAt) || got.UpdatedAt.Equal(got.CreatedAt))
-	})
+	originalUsername := u.Username
+	originalHash := u.PasswordHash
+	createdAt := u.CreatedAt
+	updatedAtBeforeUpdate := u.UpdatedAt
+
+	time.Sleep(10 * time.Millisecond) // 确保下一个事务的 now() 严格晚于上一个
+
+	u.DisplayName = "Dave 改名"
+	u.Status = usermodel.StatusDisabled
+	u.Role = usermodel.RoleAdmin
+	require.NoError(t, repo.Update(ctx, u))
+
+	got, err := repo.GetByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "Dave 改名", got.DisplayName)
+	assert.Equal(t, usermodel.StatusDisabled, got.Status)
+	assert.Equal(t, usermodel.RoleAdmin, got.Role)
+	assert.True(t, got.UpdatedAt.After(updatedAtBeforeUpdate),
+		"updated_at 应真正前进；如果这条断言失败，先检查是不是又被套进了共享事务")
+	assert.Equal(t, createdAt, got.CreatedAt, "Update 不应改动 created_at")
+	assert.Equal(t, originalUsername, got.Username, "Update 不应改动 username")
+	assert.Equal(t, originalHash, got.PasswordHash, "Update 不应改动 password_hash")
 }
 
 func TestUserRepo_Delete(t *testing.T) {
@@ -120,6 +143,14 @@ func TestUserRepo_Delete(t *testing.T) {
 	})
 }
 
+func usernamesOf(items []usermodel.User) []string {
+	out := make([]string, len(items))
+	for i, u := range items {
+		out[i] = u.Username
+	}
+	return out
+}
+
 func TestUserRepo_ListPaginates(t *testing.T) {
 	withTx(t, func(ctx context.Context, tx repository.DB) {
 		repo := repository.NewUserRepository(tx)
@@ -127,15 +158,33 @@ func TestUserRepo_ListPaginates(t *testing.T) {
 			require.NoError(t, repo.Create(ctx, sampleUser(n, usermodel.RoleUser)))
 		}
 
-		items, total, err := repo.List(ctx, 0, 2)
+		page1, total, err := repo.List(ctx, 0, 2)
 		require.NoError(t, err)
 		assert.Equal(t, int64(5), total, "total 应为总数而非当页数量")
-		assert.Len(t, items, 2)
+		require.Len(t, page1, 2)
+		assert.Equal(t, []string{"u1", "u2"}, usernamesOf(page1), "第一页应按 id 升序返回前两条")
+		assert.True(t, page1[0].ID < page1[1].ID, "页内应按 id 升序排列")
+
+		page2, total, err := repo.List(ctx, 2, 2)
+		require.NoError(t, err)
+		assert.Equal(t, int64(5), total)
+		require.Len(t, page2, 2)
+		assert.Equal(t, []string{"u3", "u4"}, usernamesOf(page2), "第二页应紧接第一页之后")
+		assert.True(t, page2[0].ID > page1[1].ID, "第二页与第一页不应重叠")
 
 		page3, total, err := repo.List(ctx, 4, 2)
 		require.NoError(t, err)
 		assert.Equal(t, int64(5), total)
-		assert.Len(t, page3, 1)
+		require.Len(t, page3, 1)
+		assert.Equal(t, []string{"u5"}, usernamesOf(page3))
+
+		// 越过末尾的分页：LIMIT/OFFSET 应用在 count(*) OVER() 之后，
+		// 一行都取不到时窗口函数本身没有行能携带 total——
+		// repository 需要在这种情况下退化成一次单独统计，而不是悄悄报 0。
+		pastEnd, total, err := repo.List(ctx, 9999, 10)
+		require.NoError(t, err)
+		assert.Equal(t, int64(5), total, "越过末尾的分页也应报告正确的 total，而非 0")
+		assert.Empty(t, pastEnd)
 	})
 }
 
