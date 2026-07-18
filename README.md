@@ -1,3 +1,29 @@
+## 新版（改造中）
+
+新版前后端位于 `server/`（Go + Gin + wire + Postgres）与 `web/`（React + Vite + antd）。
+旧版 `server.js` + `public/` 仍可独立运行，改造全部完成后移除。
+
+### 启动新版
+
+```bash
+# 数据库：docker 容器 postgres-17，端口 5432
+# 注意：若本机 brew postgresql 在运行会遮蔽该端口，需先 brew services stop postgresql@14
+
+cd server
+cp .env.example .env   # 填入 JWT_SECRET 与 BOOTSTRAP_ADMIN_PASSWORD
+make migrate-up
+make run               # :8080
+
+cd ../web
+npm install
+npm run dev            # :5173
+```
+
+改造分四个阶段推进，当前已完成阶段 1「地基与登录」：
+详见 `docs/superpowers/specs/2026-07-18-rewrite-foundation-auth-design.md`。
+
+---
+
 # AIGC 图片生成，视频生成
 
 基于阿里云百炼 DashScope API 的 AIGC 图片与视频生成 Web 应用。
