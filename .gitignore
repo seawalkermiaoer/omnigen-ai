@@ -28,3 +28,6 @@ npm-debug.log*
 .trellis/
 
 AGENTS.md
+
+api.md
+.gstack/
