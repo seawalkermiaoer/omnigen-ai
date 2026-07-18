@@ -23,6 +23,7 @@
 | `qwen-image-edit` | 图片编辑 | DashScope 原生 |
 | `wan2.7-image-pro` | 万相 2.7 图像生成（文生图/编辑/组图） | DashScope 原生 |
 | `wan2.7-image` | 万相 2.7 图像生成（基础版） | DashScope 原生 |
+| `gpt-image-2` | 文生图 / 图片编辑（t8star 中转站） | OpenAI chat-completions |
 | `happyhorse-1.1-r2v` | 多图参考生视频 | DashScope 原生 |
 | `happyhorse-1.1-i2v` | 首帧图生视频 | DashScope 原生 |
 | `happyhorse-1.1-t2v` | 文生视频 | DashScope 原生 |
@@ -64,8 +65,20 @@ PORT=8080 npm start
 - **API Key** — 从[阿里云百炼控制台](https://bailian.console.aliyun.com/)获取 DashScope API Key
 - **地域** — 选择与 API Key 匹配的地域（北京/新加坡/弗吉尼亚/法兰克福）
 - **WorkspaceId** — 仅法兰克福地域需要
+- **接入点（Endpoint）** — 官方百炼 / 蓝星纪元中转站 / **t8star 中转站** / 自定义
 
 > 设置保存在浏览器 localStorage，API Key 不会上传到任何第三方。
+
+#### 关于 t8star 中转站
+
+接入点选 **t8star 中转站** 后，整个应用切换到该服务商，行为与百炼不同：
+
+- **API Key 字段代表 t8star 的 Key** —— 与 DashScope Key 分开保存，切换接入点时自动切换，互不覆盖
+- **地域与 WorkspaceId 不适用**，自动隐藏
+- **图片模型只有 `gpt-image-2`**，图片生成与图片编辑都可用（编辑支持多图输入）
+- **视频生成不可用** —— t8star 不提供视频接口，三个视频页会给出提示并拦截提交
+
+要同时用两家，回设置页切换接入点即可。
 
 ## 项目结构
 
@@ -110,6 +123,13 @@ omnigen-ai/
   - 请求地址：`/api/v1/services/aigc/multimodal-generation/generation`
   - 请求格式：`{ model, input: { messages: [{ role: "user", content: [{ text }, { image }] }] }, parameters: { size, n, watermark, thinking_mode, seed, enable_sequential, negative_prompt, prompt_extend } }`
   - 响应格式：`{ output: { choices: [{ message: { content: [{ image: "url", type: "image" }] } }] }, usage: { image_count, size } }`
+- **`gpt-image-2`**（t8star）使用 OpenAI chat-completions 协议
+  - 请求地址：`{接入点}/v1/chat/completions`，默认 `https://ai.t8star.org`
+  - 请求格式：`{ model, stream: false, messages: [{ role: "user", content: string | [{ type: "text", text }, { type: "image_url", image_url: { url } }] }] }`
+    —— 无图时 `content` 为字符串，有图时为块数组
+  - 响应格式：图片 URL 以 markdown `![image](url)` 内嵌在 `choices[0].message.content` 中，需正则提取；剥离图链后剩余的正文作为「模型说明」展示在结果图下方
+  - 不支持 `size` / `n` / `seed` / `watermark` / `negative_prompt` 等参数，选中该模型时相关控件自动隐藏
+  - 上游会回显更具体的模型名（如 `gpt-image-2-pro`），历史记录存回显值
 
 ### 视频生成 & Prompt 优化
 
