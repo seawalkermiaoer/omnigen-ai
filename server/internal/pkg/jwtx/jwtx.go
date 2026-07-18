@@ -13,6 +13,10 @@ import (
 	usermodel "github.com/chenhao/omnigen-ai/server/internal/model/user"
 )
 
+// issuer 是本服务签发 token 时写入的 Issuer 声明。Parse 强制校验它，
+// 防止其他共享同一份 JWT_SECRET 的服务签发的 token 被当作本服务的合法 token 接受。
+const issuer = "omnigen-ai"
+
 type Manager struct {
 	secret []byte
 	ttl    time.Duration
@@ -29,7 +33,7 @@ func (m *Manager) Generate(userID int64, role usermodel.Role) (string, error) {
 			Subject:   strconv.FormatInt(userID, 10),
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(m.ttl)),
-			Issuer:    "omnigen-ai",
+			Issuer:    issuer,
 		},
 		Role: role,
 	}
@@ -53,6 +57,7 @@ func (m *Manager) Parse(token string) (*authmodel.Claims, error) {
 			return m.secret, nil
 		},
 		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuer(issuer),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("token 校验失败: %w", err)

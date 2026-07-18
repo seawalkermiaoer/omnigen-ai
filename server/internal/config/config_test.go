@@ -11,8 +11,11 @@ import (
 	"github.com/chenhao/omnigen-ai/server/internal/config"
 )
 
+// testJWTSecret 长度 ≥32 字节，满足 Load() 的最小长度校验。
+const testJWTSecret = "test-secret-value-0123456789abcdef"
+
 func setRequired(t *testing.T) {
-	t.Setenv("JWT_SECRET", "test-secret-value")
+	t.Setenv("JWT_SECRET", testJWTSecret)
 	t.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "admin12345")
 }
 
@@ -41,12 +44,21 @@ func TestLoad_FailsWithoutJWTSecret(t *testing.T) {
 }
 
 func TestLoad_FailsWithoutBootstrapPassword(t *testing.T) {
-	t.Setenv("JWT_SECRET", "test-secret-value")
+	t.Setenv("JWT_SECRET", testJWTSecret)
 	t.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "")
 
 	_, err := config.Load()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "BOOTSTRAP_ADMIN_PASSWORD")
+}
+
+func TestLoad_FailsOnShortJWTSecret(t *testing.T) {
+	t.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "admin12345")
+	t.Setenv("JWT_SECRET", "too-short")
+
+	_, err := config.Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JWT_SECRET")
 }
 
 func TestLoad_ReadsOverrides(t *testing.T) {

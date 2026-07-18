@@ -94,6 +94,11 @@ func envDuration(key string, def time.Duration) (time.Duration, error) {
 	return v, nil
 }
 
+// minJWTSecretLen 是 JWT_SECRET 的最小字节数。太短的密钥可被暴力破解，
+// 从而伪造任意用户的 token；openssl rand -base64 32 产出 44 字符，
+// 不会给按文档生成密钥的正常用法带来不便。
+const minJWTSecretLen = 32
+
 // Load 从环境变量构建配置。
 // JWT_SECRET 与 BOOTSTRAP_ADMIN_PASSWORD 无默认值：缺失时直接失败。
 // 前者若自动生成随机值，每次重启都会使全部 token 失效且极难排查。
@@ -103,6 +108,10 @@ func Load() (*Config, error) {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
 		return nil, fmt.Errorf("JWT_SECRET 必须设置，且不得为空")
+	}
+	if len(secret) < minJWTSecretLen {
+		return nil, fmt.Errorf("JWT_SECRET 至少需要 %d 字节，当前 %d 字节；生成方式：openssl rand -base64 32",
+			minJWTSecretLen, len(secret))
 	}
 	bootstrapPwd := os.Getenv("BOOTSTRAP_ADMIN_PASSWORD")
 	if bootstrapPwd == "" {
