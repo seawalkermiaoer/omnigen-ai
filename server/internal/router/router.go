@@ -20,6 +20,7 @@ type Handlers struct {
 	ImageGeneration *handler.ImageGenerationHandler
 	VideoGeneration *handler.VideoGenerationHandler
 	Download        *handler.DownloadHandler
+	Optimize        *handler.OptimizeHandler
 }
 
 func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, corsOrigins []string) *gin.Engine {
@@ -49,6 +50,7 @@ func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, cors
 	authed.POST("/upload", h.Upload.Upload)
 	authed.POST("/generate/image", h.ImageGeneration.Generate)
 	authed.POST("/generate/video", h.VideoGeneration.Generate)
+	authed.POST("/optimize-prompt", h.Optimize.Optimize)
 	authed.GET("/tasks", h.VideoGeneration.List)
 	authed.GET("/tasks/:id", h.VideoGeneration.Get)
 	authed.GET("/download/:taskId/:index", h.Download.Download)
