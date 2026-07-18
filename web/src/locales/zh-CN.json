@@ -105,6 +105,7 @@
     "TASK_NOT_FOUND": "任务不存在",
     "TASK_POLL_FAILED": "多次查询任务状态均未从上游获得有效响应",
     "TASK_TIMEOUT": "任务超过 30 分钟未完成，已判定为超时",
+    "DOWNLOAD_FAILED": "下载失败，请稍后重试",
     "UNKNOWN": "操作失败，请稍后重试"
   }
 }

@@ -101,4 +101,12 @@ var (
 	// 失败（Task 12 新增的上限，旧系统的轮询循环没有这个上限）。504 反映
 	// "不是上游明确拒绝，是我们等够了"。
 	ErrTaskTimeout = New("TASK_TIMEOUT", http.StatusGatewayTimeout)
+
+	// ErrDownloadFailed 覆盖 /api/download/:taskId/:index 转发失败的全部原因：
+	// 结果 URL 的主机不在白名单内（无论是任务记录里的原始 URL 还是转发途中
+	// 某一跳重定向落到的主机）、重定向跳数超过上限、上游网络错误、上游返回
+	// 非 2xx。这些都是"我们代为转发这次请求，但没能拿到结果"，统一用 502，
+	// 不单独区分——细分成因只在 internal 里带着供日志排查，绝不需要前端按
+	// 错误码分别处理。
+	ErrDownloadFailed = New("DOWNLOAD_FAILED", http.StatusBadGateway)
 )
