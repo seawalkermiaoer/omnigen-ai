@@ -7,7 +7,7 @@ GOBIN   := $(shell go env GOPATH)/bin
 MIGRATE := $(GOBIN)/migrate
 WIRE    := $(GOBIN)/wire
 
-.PHONY: migrate-up migrate-down migrate-test-up test wire run tools
+.PHONY: migrate-up migrate-down migrate-test-up migrate-force migrate-test-force migrate-create test wire run tools
 
 tools:
 	go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
@@ -21,6 +21,17 @@ migrate-down:
 
 migrate-test-up:
 	$(MIGRATE) -path migrations -database "$(TEST_DB_URL)" up
+
+# golang-migrate 在迁移失败时会把 schema_migrations 标记为 dirty 并拒绝继续，
+# 必须先 force 到某个版本才能恢复。用法：make migrate-force VERSION=1
+migrate-force:
+	$(MIGRATE) -path migrations -database "$(DB_URL)" force $(VERSION)
+
+migrate-test-force:
+	$(MIGRATE) -path migrations -database "$(TEST_DB_URL)" force $(VERSION)
+
+migrate-create:
+	$(MIGRATE) create -ext sql -dir migrations -seq $(NAME)
 
 test: migrate-test-up
 	go test ./... -v

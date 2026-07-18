@@ -45,3 +45,17 @@ func TestNewPool_FailsOnBadDSN(t *testing.T) {
 	_, err := repository.NewPool(context.Background(), "postgres://nobody:wrong@localhost:5432/nope?sslmode=disable")
 	require.Error(t, err)
 }
+
+// 迁移是否真的跑过。TargetsPostgres17 只验证连对了实例，
+// 不验证 schema 存在——曾经把 users 表删掉后三条测试依然全绿。
+func TestNewPool_SchemaIsMigrated(t *testing.T) {
+	pool, err := repository.NewPool(context.Background(), testDSN())
+	require.NoError(t, err)
+	defer pool.Close()
+
+	var exists bool
+	require.NoError(t, pool.QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM information_schema.tables
+		 WHERE table_schema = 'public' AND table_name = 'users')`).Scan(&exists))
+	require.True(t, exists, "users 表不存在——请先执行 make migrate-test-up")
+}
