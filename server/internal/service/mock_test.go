@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"time"
 
 	usermodel "github.com/chenhao/omnigen-ai/server/internal/model/user"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/apperr"
@@ -17,9 +18,19 @@ func newFakeRepo() *fakeUserRepo {
 	return &fakeUserRepo{users: map[int64]*usermodel.User{}, nextID: 1}
 }
 
+// add 模拟一次 INSERT ... RETURNING：分配 ID 并回填 CreatedAt/UpdatedAt/PasswordChangedAt，
+// 与真实 repository.Create 的可观察行为保持一致。
 func (f *fakeUserRepo) add(u *usermodel.User) *usermodel.User {
 	u.ID = f.nextID
 	f.nextID++
+	now := time.Now()
+	if u.CreatedAt.IsZero() {
+		u.CreatedAt = now
+	}
+	u.UpdatedAt = now
+	if u.PasswordChangedAt.IsZero() {
+		u.PasswordChangedAt = now
+	}
 	f.users[u.ID] = u
 	return u
 }
@@ -71,21 +82,35 @@ func (f *fakeUserRepo) List(_ context.Context, offset, limit int) ([]usermodel.U
 	return all[offset:end], total, nil
 }
 
+// Update 只写 display_name/role/status/updated_at，
+// 与真实 SQL（UPDATE users SET display_name=…, role=…, status=…, updated_at=now()）保持一致。
+// 不能整体替换存储的 struct：调用方传入的 u 若是半成品（例如 PasswordHash 为空），
+// 整体替换会悄悄冲掉真实 SQL 根本不会触碰的字段，掩盖 bug。
 func (f *fakeUserRepo) Update(_ context.Context, u *usermodel.User) error {
-	if _, ok := f.users[u.ID]; !ok {
+	stored, ok := f.users[u.ID]
+	if !ok {
 		return apperr.ErrUserNotFound
 	}
-	clone := *u
-	f.users[u.ID] = &clone
+	stored.DisplayName = u.DisplayName
+	stored.Role = u.Role
+	stored.Status = u.Status
+	stored.UpdatedAt = time.Now()
+	u.UpdatedAt = stored.UpdatedAt
 	return nil
 }
 
+// UpdatePasswordHash 同时推进 UpdatedAt 与 PasswordChangedAt，与真实 SQL
+// （UPDATE users SET password_hash=…, updated_at=now(), password_changed_at=now() WHERE id=…）保持一致。
+// PasswordChangedAt 是 Task 10 中间件用来让改密前签发的 token 立即失效的依据。
 func (f *fakeUserRepo) UpdatePasswordHash(_ context.Context, id int64, hash string) error {
 	u, ok := f.users[id]
 	if !ok {
 		return apperr.ErrUserNotFound
 	}
+	now := time.Now()
 	u.PasswordHash = hash
+	u.UpdatedAt = now
+	u.PasswordChangedAt = now
 	return nil
 }
 

@@ -23,6 +23,12 @@ func mapHashError(err error) *apperr.AppError {
 	return apperr.ErrInternal.Wrap(err)
 }
 
+// dummyHash 是一个固定的 bcrypt 哈希，用于用户不存在时消耗与真实校验
+// 相当的时间。否则「查无此人」几微秒返回、「密码错误」要几十毫秒，
+// 攻击者用响应时间就能枚举用户名——错误码一致也挡不住。
+// 由 password.Hash("dummy-password-for-timing") 生成，cost 与生产环境一致（bcrypt.DefaultCost = 10）。
+const dummyHash = "$2a$10$xDit37TKOC3KsKrIfzKmXOWPVXlpeSAtjLsaWNVMaZ0Id7AH6jubm"
+
 type AuthService struct {
 	users repository.UserRepository
 	jwt   *jwtx.Manager
@@ -39,6 +45,9 @@ func (s *AuthService) Login(ctx context.Context, req authmodel.LoginRequest) (*a
 	if err != nil {
 		var appErr *apperr.AppError
 		if errors.As(err, &appErr) && appErr.Code() == apperr.ErrUserNotFound.Code() {
+			// 即使用户不存在也要跑一次 bcrypt 校验，消耗与真实路径相当的时间，
+			// 否则响应耗时本身就会泄露用户名是否存在。
+			password.Verify(dummyHash, req.Password)
 			return nil, apperr.ErrInvalidCredentials
 		}
 		return nil, err

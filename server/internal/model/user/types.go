@@ -29,6 +29,10 @@ type User struct {
 	Status       Status
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	// PasswordChangedAt 记录密码最近一次变更的时间。
+	// Task 10 中间件用它与 token 的签发时间比较，让改密前签发的 token 立即失效，
+	// 不必等到 TTL 到期。纯内部字段，绝不出现在 UserResponse 里。
+	PasswordChangedAt time.Time
 }
 
 func (u User) IsActive() bool { return u.Status == StatusActive }

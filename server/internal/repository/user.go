@@ -35,7 +35,7 @@ type userRepository struct{ db DB }
 
 func NewUserRepository(db DB) UserRepository { return &userRepository{db: db} }
 
-const userColumns = `id, username, password_hash, display_name, role, status, created_at, updated_at`
+const userColumns = `id, username, password_hash, display_name, role, status, created_at, updated_at, password_changed_at`
 
 // rowScanner 同时被 pgx.Row 与 pgx.Rows 满足，
 // 让单行查询和列表循环共用同一份扫描逻辑——
@@ -49,7 +49,7 @@ type rowScanner interface {
 func scanUserRow(row rowScanner, extra ...any) (*usermodel.User, error) {
 	var u usermodel.User
 	dest := append([]any{&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName,
-		&u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt}, extra...)
+		&u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt, &u.PasswordChangedAt}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
@@ -82,9 +82,9 @@ func (r *userRepository) Create(ctx context.Context, u *usermodel.User) error {
 	const q = `
 		INSERT INTO users (username, password_hash, display_name, role, status)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, created_at, updated_at`
+		RETURNING id, created_at, updated_at, password_changed_at`
 	err := r.db.QueryRow(ctx, q, u.Username, u.PasswordHash, u.DisplayName, u.Role, u.Status).
-		Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt)
+		Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt, &u.PasswordChangedAt)
 	if err != nil {
 		if isUniqueViolation(err, "users_username_key") {
 			return apperr.ErrUsernameTaken.Wrap(err)
@@ -162,7 +162,8 @@ func (r *userRepository) Update(ctx context.Context, u *usermodel.User) error {
 
 func (r *userRepository) UpdatePasswordHash(ctx context.Context, id int64, hash string) error {
 	tag, err := r.db.Exec(ctx,
-		`UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, hash, id)
+		`UPDATE users SET password_hash = $1, updated_at = now(), password_changed_at = now() WHERE id = $2`,
+		hash, id)
 	if err != nil {
 		return apperr.ErrInternal.Wrap(fmt.Errorf("更新密码失败: %w", err))
 	}
