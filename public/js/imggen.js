@@ -8,6 +8,10 @@ const imggen = {
 
 // ─── Model definitions (text-to-image only) ─────────────────────
 function getImggenModels() {
+  // t8star serves exactly one image model; DashScope models are not routable there.
+  if (isT8Provider()) {
+    return [{ value: 'gpt-image-2', label: t('imggen.modelGptImage2') }];
+  }
   return [
     { value: 'qwen-image-plus', label: t('imggen.modelQwenPlus') },
     { value: 'qwen-image', label: t('imggen.modelQwen') },
@@ -60,6 +64,15 @@ function updateImggenUI() {
   // Show/hide wan2.7-specific controls
   const wanControls = document.querySelectorAll('[data-imggen-wan]');
   wanControls.forEach(el => el.style.display = isWan ? '' : 'none');
+
+  // gpt-image-2 is a chat API: it has no size/count/seed/watermark parameters.
+  // Read the rebuilt select, not `model` — right after a provider switch that
+  // variable still holds the previous provider's model name.
+  const isT8 = isT8Model(modelSelect.value);
+  document.querySelectorAll('[data-imggen-ds]').forEach(el => el.style.display = isT8 ? 'none' : '');
+  if (isT8) {
+    document.querySelectorAll('[data-imggen-wan]').forEach(el => el.style.display = 'none');
+  }
 }
 
 function updateSizeOptions() {
@@ -98,6 +111,7 @@ function updateCountOptions() {
 // Model change handler
 $('model-imggen').addEventListener('change', updateImggenUI);
 window.addEventListener('localechange', () => { updateImggenUI(); });
+window.addEventListener('providerchange', () => { updateImggenUI(); });
 
 // Sequential checkbox changes count options
 $('sequential-imggen').addEventListener('change', updateCountOptions);
@@ -121,19 +135,20 @@ async function submitImggen() {
     return alert(t('imggen.alertWanRegion', { region: auth.region }));
   }
 
-  // Build params
-  const params = {
-    size: $('size-imggen').value,
-    n: parseInt($('count-imggen').value, 10) || 1,
-    ...collectWatermarkParams('imggen'),
-  };
-  const negPrompt = $('negative-imggen').value.trim();
-  if (negPrompt) params.negative_prompt = negPrompt;
-  const seedVal = $('seed-imggen').value.trim();
-  if (seedVal) params.seed = parseInt(seedVal, 10);
-  if (isWanModel(model)) {
-    params.thinking_mode = $('thinking-imggen').checked;
-    params.enable_sequential = $('sequential-imggen').checked;
+  // Build params — gpt-image-2 is a chat API and takes no generation parameters.
+  const params = {};
+  if (!isT8Model(model)) {
+    params.size = $('size-imggen').value;
+    params.n = parseInt($('count-imggen').value, 10) || 1;
+    Object.assign(params, collectWatermarkParams('imggen'));
+    const negPrompt = $('negative-imggen').value.trim();
+    if (negPrompt) params.negative_prompt = negPrompt;
+    const seedVal = $('seed-imggen').value.trim();
+    if (seedVal) params.seed = parseInt(seedVal, 10);
+    if (isWanModel(model)) {
+      params.thinking_mode = $('thinking-imggen').checked;
+      params.enable_sequential = $('sequential-imggen').checked;
+    }
   }
 
   const log = makeLog('log-imggen');
@@ -182,13 +197,15 @@ async function submitImggen() {
     log(t('imggen.genDone', { count: imageUrls.length, elapsed }), 'ok');
     setStatusHTML('status-imggen', '<span class="pill SUCCEEDED">' + t('common.pillSuccess') + '</span> ' + imageUrls.length + ' · ' + elapsed + 's');
 
-    renderImggenImageResults(imageUrls, data.usage);
+    renderImggenImageResults(imageUrls, data.usage, data.note);
 
     patchHistoryRecord(historyId, {
       status: 'SUCCEEDED',
       imageUrls,
       endTime: Date.now(),
       usage: data.usage || null,
+      // Upstream may echo a more concrete model than we asked for (gpt-image-2-pro).
+      model: data.model || model,
     });
   } catch (e) {
     log(e.message, 'err');
@@ -200,12 +217,21 @@ async function submitImggen() {
 }
 
 // ─── Render image results ───────────────────────────────────────
-function renderImggenImageResults(imageUrls, usage) {
+function renderImggenImageResults(imageUrls, usage, note) {
   const out = $('imageOut-imggen');
   const grid = $('imageGrid-imggen');
   const meta = $('imageMeta-imggen');
+  const noteEl = $('imageNote-imggen');
 
   out.style.display = '';
+  // textContent, not innerHTML: this is untrusted model output.
+  if (note) {
+    noteEl.textContent = t('imggen.noteTitle') + '：' + note;
+    noteEl.style.display = '';
+  } else {
+    noteEl.textContent = '';
+    noteEl.style.display = 'none';
+  }
   const count = imageUrls.length;
   const sizeInfo = usage?.size || '';
   meta.textContent = t('imggen.genMeta', { count, sizeInfo: sizeInfo ? ' · ' + sizeInfo : '' });

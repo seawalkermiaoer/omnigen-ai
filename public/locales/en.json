@@ -20,7 +20,9 @@
     "setupHint": "👋 API Key not configured — configure it to generate videos with AI models.",
     "gotoSettings": "Go to Settings",
     "confirmNoApiKey": "API Key not configured. Go to Settings now?",
-    "confirmWorkspace": "WorkspaceId is required for Frankfurt region. Go to Settings now?"
+    "confirmWorkspace": "WorkspaceId is required for Frankfurt region. Go to Settings now?",
+    "readyT8": "Configured · t8star{epLabel}",
+    "t8NoVideo": "The current endpoint is t8star, which only serves gpt-image-2 image generation. Switch the endpoint back to Official Bailian in Settings to use video."
   },
   "common": {
     "model": "Model",
@@ -197,7 +199,9 @@
     "genImageAlt": "Generated image {n}",
     "statusDefault": "Fill in prompt, then click \"Generate Image\"",
     "negativeLabelFull": "Negative Prompt <span style=\"color: var(--muted)\">(optional, describe what you don't want to see)</span>",
-    "optimizeTitle": "Use LLM to polish prompt"
+    "optimizeTitle": "Use LLM to polish prompt",
+    "modelGptImage2": "gpt-image-2 (t8star, prompt only)",
+    "noteTitle": "Model notes"
   },
   "imgedit": {
     "heading": "Input Images & Prompt",
@@ -228,7 +232,9 @@
     "statusDefault": "Upload images and fill in prompt, then click \"Edit Image\"",
     "inputImageLabelFull": "Input Images <span style=\"color: var(--muted)\">(1~3 images, JPG/PNG/WEBP, ≤50MB)</span>",
     "negativeLabelFull": "Negative Prompt <span style=\"color: var(--muted)\">(optional, describe what you don't want to see)</span>",
-    "optimizeTitle": "Use qwen-vl-max to polish prompt with images"
+    "optimizeTitle": "Use qwen-vl-max to polish prompt with images",
+    "modelGptImage2": "gpt-image-2 (t8star, multi-image input)",
+    "noteTitle": "Model notes"
   },
   "task": {
     "videoMeta": "Duration {duration}s · {sr}P · {ratio} · Video link valid for 24 hours",
@@ -322,7 +328,11 @@
     "endpointCustom": "Custom…",
     "endpointNote": "Official Bailian auto-selects endpoint by region; proxy uses third-party address with potentially different rate limits or billing.",
     "workspaceLabel": "WorkspaceId (Frankfurt only)",
-    "languageLabel": "Language / 语言"
+    "languageLabel": "Language / 语言",
+    "endpointT8star": "t8star Proxy (ai.t8star.org)",
+    "apiKeyLabelT8": "API Key (t8star)",
+    "apiKeyNoteT8": "t8star uses a separate key from DashScope. Both are stored independently and swap when you change endpoint.",
+    "t8OnlyImageNote": "t8star only serves the gpt-image-2 image model — video generation is unavailable."
   },
   "footer": {
     "tip": "API Key and images are transmitted only between your browser and this local service. Video links are valid for 24 hours — download promptly."

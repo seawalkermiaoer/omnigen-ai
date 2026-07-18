@@ -10,6 +10,10 @@ const imgedit = {
 
 // ─── Model definitions (image edit only) ─────────────────────────
 function getImgeditModels() {
+  // t8star serves exactly one image model; DashScope models are not routable there.
+  if (isT8Provider()) {
+    return [{ value: 'gpt-image-2', label: t('imgedit.modelGptImage2') }];
+  }
   return [
     { value: 'qwen-image-edit-plus', label: t('imgedit.modelQwenEditPlus') },
     { value: 'qwen-image-edit', label: t('imgedit.modelQwenEdit') },
@@ -62,6 +66,15 @@ function updateImgeditUI() {
   // Show/hide wan2.7-specific controls
   const wanControls = document.querySelectorAll('[data-imgedit-wan]');
   wanControls.forEach(el => el.style.display = isWan ? '' : 'none');
+
+  // gpt-image-2 is a chat API: it has no size/count/seed/watermark parameters.
+  // Read the rebuilt select, not `model` — right after a provider switch that
+  // variable still holds the previous provider's model name.
+  const isT8 = isT8Model(modelSelect.value);
+  document.querySelectorAll('[data-imgedit-ds]').forEach(el => el.style.display = isT8 ? 'none' : '');
+  if (isT8) {
+    document.querySelectorAll('[data-imgedit-wan]').forEach(el => el.style.display = 'none');
+  }
 }
 
 function updateImgeditSizeOptions() {
@@ -102,6 +115,7 @@ function updateImgeditCountOptions() {
 // Model change handler
 $('model-imgedit').addEventListener('change', updateImgeditUI);
 window.addEventListener('localechange', () => { updateImgeditUI(); });
+window.addEventListener('providerchange', () => { updateImgeditUI(); });
 
 // Sequential checkbox changes count options
 $('sequential-imgedit').addEventListener('change', updateImgeditCountOptions);
@@ -187,18 +201,20 @@ async function submitImgedit() {
   }
 
   // Build params
-  const params = {
-    size: $('size-imgedit').value,
-    n: parseInt($('count-imgedit').value, 10) || 1,
-    ...collectWatermarkParams('imgedit'),
-  };
-  const negPrompt = $('negative-imgedit').value.trim();
-  if (negPrompt) params.negative_prompt = negPrompt;
-  const seedVal = $('seed-imgedit').value.trim();
-  if (seedVal) params.seed = parseInt(seedVal, 10);
-  if (isWanEditModel(model)) {
-    params.thinking_mode = $('thinking-imgedit').checked;
-    params.enable_sequential = $('sequential-imgedit').checked;
+  // gpt-image-2 is a chat API and takes no generation parameters.
+  const params = {};
+  if (!isT8Model(model)) {
+    params.size = $('size-imgedit').value;
+    params.n = parseInt($('count-imgedit').value, 10) || 1;
+    Object.assign(params, collectWatermarkParams('imgedit'));
+    const negPrompt = $('negative-imgedit').value.trim();
+    if (negPrompt) params.negative_prompt = negPrompt;
+    const seedVal = $('seed-imgedit').value.trim();
+    if (seedVal) params.seed = parseInt(seedVal, 10);
+    if (isWanEditModel(model)) {
+      params.thinking_mode = $('thinking-imgedit').checked;
+      params.enable_sequential = $('sequential-imgedit').checked;
+    }
   }
 
   // Build images array
@@ -251,13 +267,15 @@ async function submitImgedit() {
     log(t('imgedit.editDone', { count: imageUrls.length, elapsed }), 'ok');
     setStatusHTML('status-imgedit', '<span class="pill SUCCEEDED">' + t('common.pillSuccess') + '</span> ' + imageUrls.length + ' · ' + elapsed + 's');
 
-    renderImgeditImageResults(imageUrls, data.usage);
+    renderImgeditImageResults(imageUrls, data.usage, data.note);
 
     patchHistoryRecord(historyId, {
       status: 'SUCCEEDED',
       imageUrls,
       endTime: Date.now(),
       usage: data.usage || null,
+      // Upstream may echo a more concrete model than we asked for (gpt-image-2-pro).
+      model: data.model || model,
     });
   } catch (e) {
     log(e.message, 'err');
@@ -269,12 +287,21 @@ async function submitImgedit() {
 }
 
 // ─── Render image results ───────────────────────────────────────
-function renderImgeditImageResults(imageUrls, usage) {
+function renderImgeditImageResults(imageUrls, usage, note) {
   const out = $('imageOut-imgedit');
   const grid = $('imageGrid-imgedit');
   const meta = $('imageMeta-imgedit');
+  const noteEl = $('imageNote-imgedit');
 
   out.style.display = '';
+  // textContent, not innerHTML: this is untrusted model output.
+  if (note) {
+    noteEl.textContent = t('imgedit.noteTitle') + '：' + note;
+    noteEl.style.display = '';
+  } else {
+    noteEl.textContent = '';
+    noteEl.style.display = 'none';
+  }
   const count = imageUrls.length;
   const sizeInfo = usage?.size || '';
   meta.textContent = t('imgedit.editMeta', { count, sizeInfo: sizeInfo ? ' · ' + sizeInfo : '' });

@@ -153,6 +153,11 @@ async function pollTask(ctx, taskId, log) {
 
 // ---------- Submit task ----------
 async function submitTask(ctx, payload) {
+  // t8star speaks only the image chat API; DashScope video endpoints do not exist there.
+  if (isT8Provider()) {
+    alert(t('config.t8NoVideo'));
+    return;
+  }
   const auth = checkAuth();
   if (!auth) return;
 
@@ -308,3 +313,16 @@ function collectParams(kind) {
   if (seedVal) params.seed = parseInt(seedVal, 10);
   return params;
 }
+
+// ---------- Provider gate (video tabs) ----------
+/** Shows the "video unavailable" banner on the video tabs when t8star is selected. */
+function refreshT8VideoWarnings() {
+  const show = isT8Provider();
+  ['t2v', 'i2v', 'r2v'].forEach(kind => {
+    const el = document.getElementById('t8VideoWarn-' + kind);
+    if (el) el.style.display = show ? '' : 'none';
+  });
+}
+window.addEventListener('providerchange', refreshT8VideoWarnings);
+window.addEventListener('localechange', refreshT8VideoWarnings);
+refreshT8VideoWarnings();

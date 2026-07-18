@@ -20,7 +20,9 @@
     "setupHint": "👋 尚未配置 API Key —— 配置后才能调用模型生成视频。",
     "gotoSettings": "前往设置",
     "confirmNoApiKey": "尚未配置 API Key。是否现在去设置？",
-    "confirmWorkspace": "法兰克福地域需提供 WorkspaceId。是否现在去设置？"
+    "confirmWorkspace": "法兰克福地域需提供 WorkspaceId。是否现在去设置？",
+    "readyT8": "已配置 · t8star{epLabel}",
+    "t8NoVideo": "当前接入点是 t8star，只支持 gpt-image-2 图片生成。视频功能请到设置里把接入点切回官方百炼。"
   },
   "common": {
     "model": "模型",
@@ -197,7 +199,9 @@
     "genImageAlt": "生成图片 {n}",
     "statusDefault": "填写 prompt 后点击「生成图片」",
     "negativeLabelFull": "反向提示词 <span style=\"color: var(--muted)\">（可选，描述不希望出现的内容）</span>",
-    "optimizeTitle": "用大模型润色 prompt"
+    "optimizeTitle": "用大模型润色 prompt",
+    "modelGptImage2": "gpt-image-2（t8star，仅支持 Prompt）",
+    "noteTitle": "模型说明"
   },
   "imgedit": {
     "heading": "输入图像与提示词",
@@ -228,7 +232,9 @@
     "statusDefault": "上传图片并填写 prompt 后点击「编辑图片」",
     "inputImageLabelFull": "输入图像 <span style=\"color: var(--muted)\">（1~3 张，JPG/PNG/WEBP，≤50MB）</span>",
     "negativeLabelFull": "反向提示词 <span style=\"color: var(--muted)\">（可选，描述不希望出现的内容）</span>",
-    "optimizeTitle": "用 qwen-vl-max 看图后润色 prompt"
+    "optimizeTitle": "用 qwen-vl-max 看图后润色 prompt",
+    "modelGptImage2": "gpt-image-2（t8star，支持多图输入）",
+    "noteTitle": "模型说明"
   },
   "task": {
     "videoMeta": "时长 {duration}s · {sr}P · {ratio} · 视频链接 24 小时内有效",
@@ -322,7 +328,11 @@
     "endpointCustom": "自定义…",
     "endpointNote": "官方百炼按地域自动选择 Endpoint；中转站使用第三方代理地址，可能有不同的限流或计费策略。",
     "workspaceLabel": "WorkspaceId（仅法兰克福）",
-    "languageLabel": "语言 / Language"
+    "languageLabel": "语言 / Language",
+    "endpointT8star": "t8star 中转站（ai.t8star.org）",
+    "apiKeyLabelT8": "API Key（t8star）",
+    "apiKeyNoteT8": "t8star 用的是另一把 Key，与 DashScope Key 分开保存，切换接入点时会自动切换。",
+    "t8OnlyImageNote": "t8star 只提供 gpt-image-2 图片模型，不支持视频生成。"
   },
   "footer": {
     "tip": "API Key 与图片仅在你的浏览器与本机服务之间传输。视频链接 24 小时内有效，请及时下载。"
