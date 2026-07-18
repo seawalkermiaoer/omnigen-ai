@@ -27,9 +27,9 @@ func (h *HealthHandler) Check(c *gin.Context) {
 	if h.db != nil {
 		if err := h.db.Ping(c.Request.Context()); err != nil {
 			status["database"] = "down"
-			c.JSON(http.StatusServiceUnavailable, common.Response{
-				Code: "HEALTH_DB_UNREACHABLE", Data: status,
-			})
+			resp := common.Err("HEALTH_DB_UNREACHABLE")
+			resp.Data = status
+			c.JSON(http.StatusServiceUnavailable, resp)
 			return
 		}
 		status["database"] = "up"
