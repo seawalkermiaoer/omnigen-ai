@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
@@ -48,11 +49,12 @@ type BootstrapConfig struct {
 }
 
 type Config struct {
-	DB          DBConfig
-	JWT         JWTConfig
-	Bootstrap   BootstrapConfig
-	HTTPPort    int
-	CORSOrigins []string
+	DB               DBConfig
+	JWT              JWTConfig
+	Bootstrap        BootstrapConfig
+	HTTPPort         int
+	CORSOrigins      []string
+	AppEncryptionKey string
 }
 
 // defaultCORSOrigins 是 CORS_ORIGINS 未设置时的默认放行范围。
@@ -134,6 +136,12 @@ func envCORSOrigins(key string, def []string) []string {
 // 不会给按文档生成密钥的正常用法带来不便。
 const minJWTSecretLen = 32
 
+// appEncryptionKeySize 是 APP_ENCRYPTION_KEY 解码后必须满足的字节数，
+// 对应 AES-256 的 32 字节密钥长度。这把密钥用来加密 app_settings 表里的
+// 上游 API Key（详见 internal/pkg/crypto），长度不对会在启动时直接拒绝，
+// 而不是留到第一次调用加解密时才暴露。
+const appEncryptionKeySize = 32
+
 // Load 从环境变量构建配置。
 // JWT_SECRET 与 BOOTSTRAP_ADMIN_PASSWORD 无默认值：缺失时直接失败。
 // 前者若自动生成随机值，每次重启都会使全部 token 失效且极难排查。
@@ -151,6 +159,18 @@ func Load() (*Config, error) {
 	bootstrapPwd := os.Getenv("BOOTSTRAP_ADMIN_PASSWORD")
 	if bootstrapPwd == "" {
 		return nil, fmt.Errorf("BOOTSTRAP_ADMIN_PASSWORD 必须设置，且不得为空")
+	}
+	encryptionKey := os.Getenv("APP_ENCRYPTION_KEY")
+	if encryptionKey == "" {
+		return nil, fmt.Errorf("APP_ENCRYPTION_KEY 必须设置，且不得为空；生成方式：openssl rand -base64 32")
+	}
+	decodedKey, err := base64.StdEncoding.DecodeString(encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("APP_ENCRYPTION_KEY 不是合法的 base64；生成方式：openssl rand -base64 32")
+	}
+	if len(decodedKey) != appEncryptionKeySize {
+		return nil, fmt.Errorf("APP_ENCRYPTION_KEY 解码后必须是 %d 字节，实际 %d 字节；生成方式：openssl rand -base64 32",
+			appEncryptionKeySize, len(decodedKey))
 	}
 
 	dbPort, err := envInt("DB_PORT", 5432)
@@ -175,9 +195,10 @@ func Load() (*Config, error) {
 			Name:     env("DB_NAME", "omnigen"),
 			SSLMode:  env("DB_SSLMODE", "disable"),
 		},
-		JWT:         JWTConfig{Secret: secret, TTL: ttl},
-		Bootstrap:   BootstrapConfig{Username: env("BOOTSTRAP_ADMIN_USERNAME", "admin"), Password: bootstrapPwd},
-		HTTPPort:    httpPort,
-		CORSOrigins: envCORSOrigins("CORS_ORIGINS", defaultCORSOrigins),
+		JWT:              JWTConfig{Secret: secret, TTL: ttl},
+		Bootstrap:        BootstrapConfig{Username: env("BOOTSTRAP_ADMIN_USERNAME", "admin"), Password: bootstrapPwd},
+		HTTPPort:         httpPort,
+		CORSOrigins:      envCORSOrigins("CORS_ORIGINS", defaultCORSOrigins),
+		AppEncryptionKey: encryptionKey,
 	}, nil
 }

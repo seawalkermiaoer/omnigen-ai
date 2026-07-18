@@ -14,9 +14,14 @@ import (
 // testJWTSecret 长度 ≥32 字节，满足 Load() 的最小长度校验。
 const testJWTSecret = "test-secret-value-0123456789abcdef"
 
+// testEncryptionKey 是合法的 APP_ENCRYPTION_KEY：32 原始字节的 base64 编码，
+// 满足 Load() 的 AES-256 密钥长度校验。
+const testEncryptionKey = "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=" // base64(32 bytes)
+
 func setRequired(t *testing.T) {
 	t.Setenv("JWT_SECRET", testJWTSecret)
 	t.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "admin12345")
+	t.Setenv("APP_ENCRYPTION_KEY", testEncryptionKey)
 }
 
 func TestLoad_AppliesDefaults(t *testing.T) {
@@ -32,6 +37,7 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 	assert.Equal(t, 8080, cfg.HTTPPort)
 	assert.Equal(t, 168*time.Hour, cfg.JWT.TTL)
 	assert.Equal(t, "admin", cfg.Bootstrap.Username)
+	assert.Equal(t, testEncryptionKey, cfg.AppEncryptionKey)
 }
 
 func TestLoad_FailsWithoutJWTSecret(t *testing.T) {
@@ -59,6 +65,34 @@ func TestLoad_FailsOnShortJWTSecret(t *testing.T) {
 	_, err := config.Load()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "JWT_SECRET")
+}
+
+func TestLoad_FailsWithoutEncryptionKey(t *testing.T) {
+	setRequired(t)
+	t.Setenv("APP_ENCRYPTION_KEY", "")
+
+	_, err := config.Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "APP_ENCRYPTION_KEY")
+}
+
+func TestLoad_FailsOnInvalidBase64EncryptionKey(t *testing.T) {
+	setRequired(t)
+	t.Setenv("APP_ENCRYPTION_KEY", "not-valid-base64!!!")
+
+	_, err := config.Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "APP_ENCRYPTION_KEY")
+}
+
+func TestLoad_FailsOnWrongLengthEncryptionKey(t *testing.T) {
+	setRequired(t)
+	// 合法 base64，但解码后只有 16 字节而非 AES-256 要求的 32 字节。
+	t.Setenv("APP_ENCRYPTION_KEY", "MDEyMzQ1Njc4OTAxMjM0NQ==")
+
+	_, err := config.Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "APP_ENCRYPTION_KEY")
 }
 
 func TestLoad_ReadsOverrides(t *testing.T) {
