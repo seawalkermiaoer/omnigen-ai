@@ -1,0 +1,163 @@
+/*
+ * 色值均通过 CSS 变量（由 AppShell.tsx 注入，来源为 @/theme 的 colors）传入。
+ * 唯一例外：Logo 色块渐变（.shell-logo__mark）是装饰性品牌标记，非 UI 主色。
+ */
+
+.shell-logo {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--omnigen-border);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.shell-logo__mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  /* 装饰性品牌色块，不受主题色约束（见文件头注释）。 */
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  flex-shrink: 0;
+}
+
+.shell-logo__text {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--omnigen-text-base);
+}
+
+/* 侧栏导航项：内嵌圆角胶囊，而非贴边高亮——呼应 Linear/Vercel 式暗色控制台观感。 */
+.shell-nav.ant-menu {
+  border-inline-end: none !important;
+  padding: 8px;
+}
+
+.shell-nav.ant-menu-inline-collapsed {
+  padding: 8px 4px;
+}
+
+.shell-nav .ant-menu-item {
+  margin: 2px 0 !important;
+  width: 100% !important;
+  border-radius: 8px;
+  transition:
+    background-color 150ms ease-out,
+    color 150ms ease-out;
+}
+
+.shell-header {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--omnigen-border);
+  line-height: 1;
+}
+
+.shell-header__left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.shell-header__title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--omnigen-text-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-header__right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+/* 折叠触发器：独立可交互元素，需要清晰的悬浮/按下/键盘焦点反馈。 */
+.shell-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--omnigen-text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  transition:
+    background-color 150ms ease-out,
+    color 150ms ease-out;
+}
+
+.shell-toggle:hover {
+  background: var(--omnigen-bg-elevated);
+  color: var(--omnigen-text-base);
+}
+
+.shell-toggle:active {
+  transform: scale(0.96);
+}
+
+.shell-toggle:focus-visible {
+  outline: 2px solid var(--omnigen-primary);
+  outline-offset: 2px;
+}
+
+/* 用户菜单触发区：整体作为一个悬浮/焦点单元，而非裸文本+头像。 */
+.shell-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 4px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 150ms ease-out;
+}
+
+.shell-user:hover {
+  background: var(--omnigen-bg-elevated);
+}
+
+.shell-user:focus-visible {
+  outline: 2px solid var(--omnigen-primary);
+  outline-offset: 2px;
+}
+
+.shell-user__name {
+  font-size: 13px;
+  color: var(--omnigen-text-base);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-content {
+  padding: 20px;
+  overflow: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell-toggle,
+  .shell-user,
+  .shell-nav .ant-menu-item {
+    transition: none;
+  }
+}
