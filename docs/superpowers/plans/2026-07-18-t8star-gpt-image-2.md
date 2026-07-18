@@ -72,7 +72,7 @@
 - Create: `lib/providers/t8star.js`
 - Test: `tests/t8star.test.js`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 创建 `tests/t8star.test.js`：
 
@@ -190,12 +190,12 @@ describe('resolveBaseUrl', () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 Run: `node --test tests/t8star.test.js`
 Expected: FAIL —— `Cannot find module '../lib/providers/t8star'`
 
-- [ ] **Step 3: 实现模块**
+- [x] **Step 3: 实现模块**
 
 创建 `lib/providers/t8star.js`：
 
@@ -264,17 +264,17 @@ function resolveBaseUrl(input) {
 module.exports = { buildPayload, parseResponse, resolveBaseUrl, T8STAR_DEFAULT_BASE };
 ```
 
-- [ ] **Step 4: 跑测试，确认通过**
+- [x] **Step 4: 跑测试，确认通过**
 
 Run: `node --test tests/t8star.test.js`
 Expected: PASS，19 个断言全绿
 
-- [ ] **Step 5: 确认没弄坏现有测试**
+- [x] **Step 5: 确认没弄坏现有测试**
 
 Run: `npm test`
 Expected: 全部 PASS
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add lib/providers/t8star.js tests/t8star.test.js
@@ -290,7 +290,7 @@ git commit -m "feat: 新增 t8star gpt-image-2 协议模块（拼包与解析）
 - Modify: `public/locales/zh-CN.json`、`public/locales/en.json`（`server` 段新增一个 key）
 - Test: `tests/server-utils.test.js`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 在 `tests/server-utils.test.js` 末尾追加：
 
@@ -308,12 +308,12 @@ describe('MODELS.IMAGE_OPENAI', () => {
 });
 ```
 
-- [ ] **Step 2: 跑测试，确认失败**
+- [x] **Step 2: 跑测试，确认失败**
 
 Run: `node --test tests/server-utils.test.js`
 Expected: FAIL —— `Cannot read properties of undefined (reading 'includes')`
 
-- [ ] **Step 3: 加 MODELS 条目与模块引用**
+- [x] **Step 3: 加 MODELS 条目与模块引用**
 
 在 `server.js` 顶部 require 区（`const multer = require('multer');` 之后）加：
 
@@ -328,12 +328,12 @@ const t8star = require('./lib/providers/t8star');
   IMAGE_OPENAI: ['gpt-image-2'],
 ```
 
-- [ ] **Step 4: 跑测试，确认通过**
+- [x] **Step 4: 跑测试，确认通过**
 
 Run: `node --test tests/server-utils.test.js`
 Expected: PASS
 
-- [ ] **Step 5: 改造 `/api/generate-image`**
+- [x] **Step 5: 改造 `/api/generate-image`**
 
 不需要新增 i18n 错误文案 —— t8star 复用 `apiKey` 字段，缺 Key 时现有的
 `server.missingApiKey` 文案就是对的。
@@ -396,7 +396,7 @@ Expected: PASS
 否则 t8star 请求会白算一次 DashScope endpoint，region 为空时还可能抛错。
 该行以下的原有 DashScope 逻辑（拼 payload、调用、解析）保持不变。
 
-- [ ] **Step 6: 起服务做一次真实冒烟**
+- [x] **Step 6: 起服务做一次真实冒烟**
 
 用你自己的 t8star Key 替换 `<YOUR_KEY>`。注意 `endpoint` 与 `apiKey` 就是 t8star 的：
 
@@ -442,7 +442,7 @@ Expected: `{"error":"缺少 API Key"}`
 
 跑完记得停掉服务：`kill %1`
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add server.js tests/server-utils.test.js
@@ -461,7 +461,7 @@ git commit -m "feat: /api/generate-image 支持 OpenAI 协议分流"
 - Modify: `public/js/app.js`（约 27-99 行）
 - Modify: `public/locales/zh-CN.json`、`public/locales/en.json`
 
-- [ ] **Step 1: 加 i18n 文案**
+- [x] **Step 1: 加 i18n 文案**
 
 `zh-CN.json` 的 `settings` 段追加：
 
@@ -493,7 +493,7 @@ git commit -m "feat: /api/generate-image 支持 OpenAI 协议分流"
 "readyT8": "Configured · t8star{epLabel}"
 ```
 
-- [ ] **Step 2: HTML —— 下拉加选项，地域块加包裹层**
+- [x] **Step 2: HTML —— 下拉加选项，地域块加包裹层**
 
 在 `public/index.html` 里，Endpoint 下拉的蓝星那一项之后插入：
 
@@ -528,7 +528,7 @@ git commit -m "feat: /api/generate-image 支持 OpenAI 协议分流"
         <div id="t8OnlyImageNote" style="display:none;font-size:11px;color:var(--warn,#c90);margin-top:4px" data-i18n="settings.t8OnlyImageNote">t8star 只提供 gpt-image-2 图片模型，不支持视频生成。</div>
 ```
 
-- [ ] **Step 3: app.js —— provider 判定与双 Key 槽**
+- [x] **Step 3: app.js —— provider 判定与双 Key 槽**
 
 把 `public/js/app.js` 里元素引用与初始化那一段（约 27-43 行）改为：
 
@@ -572,7 +572,7 @@ workspaceIdEl.value = localStorage.getItem('hh_ws_id') || '';
 toggleCustomEndpoint();
 ```
 
-- [ ] **Step 4: app.js —— 切换接入点时换 Key 槽与显隐**
+- [x] **Step 4: app.js —— 切换接入点时换 Key 槽与显隐**
 
 把现有的 `endpointEl.addEventListener('change', toggleCustomEndpoint);` 换成：
 
@@ -609,7 +609,7 @@ applyProviderFields();
 `toggleWorkspace()` 里的法兰克福判断保持不变，但把调用点收敛进 `applyProviderFields()`，
 避免 t8star 下地域仍是法兰克福时把 WorkspaceId 框漏出来。
 
-- [ ] **Step 5: app.js —— 保存、配置条、providerchange 广播**
+- [x] **Step 5: app.js —— 保存、配置条、providerchange 广播**
 
 把保存设置的处理器改为：
 
@@ -652,12 +652,12 @@ window.addEventListener('localechange', () => {
 });
 ```
 
-- [ ] **Step 6: getAuth 不动**
+- [x] **Step 6: getAuth 不动**
 
 `getAuth()` 保持原样 —— `apiKey` 与 `endpoint` 已经承载了 t8star 所需的全部信息。
 这是方案 B 的红利：所有提交路径的 `JSON.stringify({ ...auth, ... })` 一行都不用改。
 
-- [ ] **Step 7: 手动回归（重点）**
+- [x] **Step 7: 手动回归（重点）**
 
 Run: `node server.js`，浏览器打开 http://localhost:3000 → 设置页
 
@@ -674,7 +674,7 @@ Run: `node server.js`，浏览器打开 http://localhost:3000 → 设置页
 6. 地域选「德国（法兰克福）」→ 接入点切 t8star
    Expected: WorkspaceId 框不出现（不是只隐藏地域却漏出 Workspace）
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
 ```bash
 git add public/index.html public/js/app.js public/locales/zh-CN.json public/locales/en.json
@@ -691,7 +691,7 @@ git commit -m "feat: 接入点下拉新增 t8star，按服务商切换 Key 与�
 - Modify: `public/index.html`（三个视频页顶部提示条）
 - Modify: `public/locales/zh-CN.json`、`public/locales/en.json`
 
-- [ ] **Step 1: 加 i18n 文案**
+- [x] **Step 1: 加 i18n 文案**
 
 `zh-CN.json` 的 `config` 段追加：
 
@@ -705,7 +705,7 @@ git commit -m "feat: 接入点下拉新增 t8star，按服务商切换 Key 与�
 "t8NoVideo": "The current endpoint is t8star, which only serves gpt-image-2 image generation. Switch the endpoint back to Official Bailian in Settings to use video."
 ```
 
-- [ ] **Step 2: checkAuth 跳过 t8star 无关的校验**
+- [x] **Step 2: checkAuth 跳过 t8star 无关的校验**
 
 把 `public/js/app.js` 的 `checkAuth` 改为：
 
@@ -728,7 +728,7 @@ function checkAuth(needsWs = true) {
 签名不变 —— provider 从 endpoint 推导，不需要调用方传模型。
 所有现有调用点（`checkAuth()` / `checkAuth(false)`）零改动。
 
-- [ ] **Step 3: 视频提交闸门**
+- [x] **Step 3: 视频提交闸门**
 
 `task.js` 的 `submitTask()` 是 t2v / i2v / r2v 三个视频页的**唯一**提交入口，
 一道闸门就能全挡住。把开头改为：
@@ -747,7 +747,7 @@ async function submitTask(ctx, payload) {
 同一文件里轮询用的 `checkAuth()`（约 234 行）不用加闸门 ——
 提交都进不去，就不会有待轮询的任务。
 
-- [ ] **Step 4: 视频页常驻提示条**
+- [x] **Step 4: 视频页常驻提示条**
 
 点了才被拒的体验不好。在 `public/index.html` 的 t2v、i2v、r2v 三个面板里，
 各自的 `<h2>` 之后插入一条默认隐藏的提示（`KIND` 分别替换为 `t2v` / `i2v` / `r2v`）：
@@ -772,7 +772,7 @@ window.addEventListener('localechange', refreshT8VideoWarnings);
 refreshT8VideoWarnings();
 ```
 
-- [ ] **Step 5: 手动验证**
+- [x] **Step 5: 手动验证**
 
 Run: `node server.js`，浏览器打开 http://localhost:3000
 
@@ -785,7 +785,7 @@ Run: `node server.js`，浏览器打开 http://localhost:3000
 4. 地域设法兰克福、不填 WorkspaceId，接入点为百炼，提交视频
    Expected: 仍弹出原来的 WorkspaceId 提示（这条老校验没被误伤）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add public/js/app.js public/js/task.js public/index.html public/locales/zh-CN.json public/locales/en.json
@@ -801,7 +801,7 @@ git commit -m "feat: t8star 接入点下跳过地域校验并挡住视频提交"
 - Modify: `public/js/imggen.js`
 - Modify: `public/locales/zh-CN.json`、`public/locales/en.json`
 
-- [ ] **Step 1: 加 i18n 文案**
+- [x] **Step 1: 加 i18n 文案**
 
 `zh-CN.json` 的 `imggen` 段追加：
 
@@ -817,7 +817,7 @@ git commit -m "feat: t8star 接入点下跳过地域校验并挡住视频提交"
 "noteTitle": "Model notes"
 ```
 
-- [ ] **Step 2: HTML 标记不支持的控件 + 加 note 容器**
+- [x] **Step 2: HTML 标记不支持的控件 + 加 note 容器**
 
 在 `public/index.html` 的 imggen 面板中：
 
@@ -846,7 +846,7 @@ git commit -m "feat: t8star 接入点下跳过地域校验并挡住视频提交"
         </div>
 ```
 
-- [ ] **Step 3: 模型列表按 provider 切换**
+- [x] **Step 3: 模型列表按 provider 切换**
 
 不是追加一项 —— t8star 不认 qwen/wan 模型名，列出来全是必然报错的选项。
 把 `public/js/imggen.js` 的 `getImggenModels()` 改为：
@@ -887,7 +887,7 @@ window.addEventListener('providerchange', () => { updateImggenUI(); });
 而 `models.some(m => m.value === prevValue)` 判不中时会落到列表第一项 ——
 provider 切换后旧模型名自然被丢弃，这个行为正是我们要的，不用额外处理。
 
-- [ ] **Step 4: 控件联动**
+- [x] **Step 4: 控件联动**
 
 在 `updateImggenUI()` 函数体末尾（`wanControls.forEach(...)` 那行之后）追加。
 注意要用**重建后的**下拉当前值，不能用函数开头那个 `model` 变量 ——
@@ -902,7 +902,7 @@ provider 刚切换时它还是旧模型名：
   }
 ```
 
-- [ ] **Step 5: 提交时跳过不支持的参数**
+- [x] **Step 5: 提交时跳过不支持的参数**
 
 `submitImggen()` 开头的 `checkAuth()` 调用**保持原样** ——
 provider 从 endpoint 推导，不需要传模型进去。
@@ -945,7 +945,7 @@ provider 从 endpoint 推导，不需要传模型进去。
     });
 ```
 
-- [ ] **Step 6: 渲染 note**
+- [x] **Step 6: 渲染 note**
 
 把 `renderImggenImageResults` 的签名与开头改为：
 
@@ -968,7 +968,7 @@ function renderImggenImageResults(imageUrls, usage, note) {
 
 （函数其余部分不变。用 `textContent` 而非 `innerHTML`，避免上游文本被当作 HTML 注入。）
 
-- [ ] **Step 7: 手动验证**
+- [x] **Step 7: 手动验证**
 
 Run: `node server.js`，浏览器打开 http://localhost:3000
 
@@ -984,7 +984,7 @@ Run: `node server.js`，浏览器打开 http://localhost:3000
 5. 用 `qwen-image` 生成一次
    Expected: 行为与改动前一致
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
 ```bash
 git add public/index.html public/js/imggen.js public/locales/zh-CN.json public/locales/en.json
@@ -1002,7 +1002,7 @@ git commit -m "feat: 图片生成模块接入 gpt-image-2"
 
 做法与 Task 5 完全对称，但**不要跳读**——以下是这个模块自己的完整改动。
 
-- [ ] **Step 1: 加 i18n 文案**
+- [x] **Step 1: 加 i18n 文案**
 
 `zh-CN.json` 的 `imgedit` 段追加：
 
@@ -1018,7 +1018,7 @@ git commit -m "feat: 图片生成模块接入 gpt-image-2"
 "noteTitle": "Model notes"
 ```
 
-- [ ] **Step 2: HTML 标记控件 + note 容器**
+- [x] **Step 2: HTML 标记控件 + note 容器**
 
 给反向提示词的 `<label>` 与 `<textarea id="negative-imgedit">` 加 `data-imgedit-ds`：
 
@@ -1043,7 +1043,7 @@ note 容器：
         </div>
 ```
 
-- [ ] **Step 3: 模型列表按 provider 切换**
+- [x] **Step 3: 模型列表按 provider 切换**
 
 把 `public/js/imgedit.js` 的 `getImgeditModels()` 改为：
 
@@ -1068,7 +1068,7 @@ function getImgeditModels() {
 window.addEventListener('providerchange', () => { updateImgeditUI(); });
 ```
 
-- [ ] **Step 4: 控件联动**
+- [x] **Step 4: 控件联动**
 
 在 `updateImgeditUI()` 函数体末尾（`wanControls.forEach(...)` 之后）追加。
 同 Task 5，用重建后的下拉当前值：
@@ -1082,7 +1082,7 @@ window.addEventListener('providerchange', () => { updateImgeditUI(); });
   }
 ```
 
-- [ ] **Step 5: 提交时跳过不支持的参数**
+- [x] **Step 5: 提交时跳过不支持的参数**
 
 `submitImgedit()` 开头的 `checkAuth()` 调用**保持原样**。
 
@@ -1124,7 +1124,7 @@ window.addEventListener('providerchange', () => { updateImgeditUI(); });
     });
 ```
 
-- [ ] **Step 6: 渲染 note**
+- [x] **Step 6: 渲染 note**
 
 把 `renderImgeditImageResults` 的签名与开头改为：
 
@@ -1147,7 +1147,7 @@ function renderImgeditImageResults(imageUrls, usage, note) {
 
 （其余部分不变。）
 
-- [ ] **Step 7: 手动验证**
+- [x] **Step 7: 手动验证**
 
 Run: `node server.js`，浏览器打开 http://localhost:3000 → 设置页切 t8star → 图片编辑
 
@@ -1163,7 +1163,7 @@ Run: `node server.js`，浏览器打开 http://localhost:3000 → 设置页切 t
    Expected: t8star 那两条记录的模型显示为 `gpt-image-2-pro`，
    且与 DashScope 的记录混排显示正常（历史记录不区分 provider，这是有意的）
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
 ```bash
 git add public/index.html public/js/imgedit.js public/locales/zh-CN.json public/locales/en.json
@@ -1177,7 +1177,7 @@ git commit -m "feat: 图片编辑模块接入 gpt-image-2"
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: 更新模型表**
+- [x] **Step 1: 更新模型表**
 
 在 README「支持的模型」表格里，`wan2.7-image` 那一行之后插入：
 
@@ -1185,7 +1185,7 @@ git commit -m "feat: 图片编辑模块接入 gpt-image-2"
 | `gpt-image-2` | 文生图 / 图片编辑（t8star） | OpenAI 兼容 ✅ |
 ```
 
-- [ ] **Step 2: 更新配置说明**
+- [x] **Step 2: 更新配置说明**
 
 在 README「### 4. 配置」小节的列表末尾追加：
 
@@ -1197,7 +1197,7 @@ git commit -m "feat: 图片编辑模块接入 gpt-image-2"
   - 图片模型只有 `gpt-image-2`；视频生成不可用
 ```
 
-- [ ] **Step 3: 更新接口协议说明**
+- [x] **Step 3: 更新接口协议说明**
 
 在 README「### 图片生成」小节末尾追加：
 
@@ -1209,7 +1209,7 @@ git commit -m "feat: 图片编辑模块接入 gpt-image-2"
   - 不支持 `size` / `n` / `seed` / `watermark` / `negative_prompt` 等参数，选中该模型时相关控件自动隐藏
 ```
 
-- [ ] **Step 4: 全量回归**
+- [x] **Step 4: 全量回归**
 
 Run: `npm test`
 Expected: 全部 PASS
@@ -1217,7 +1217,7 @@ Expected: 全部 PASS
 Run: `node -e "require('./server.js')"`
 Expected: 无报错退出（语法与加载检查）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add README.md
