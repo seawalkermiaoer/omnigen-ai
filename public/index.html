@@ -20,7 +20,7 @@
       <button class="sidebar-item" data-tab="t2v" data-i18n="nav.t2v">✍️ 文生视频</button>
       <button class="sidebar-item" data-tab="imggen" data-i18n="nav.imggen">🎨 图片生成</button>
       <button class="sidebar-item" data-tab="imgedit" data-i18n="nav.imgedit">✂️ 图片编辑</button>
-      <button class="sidebar-item" data-tab="history" data-i18n="nav.history">🕑 历史记录 <span class="tab-badge" id="historyBadge" style="display:none">0</span></button>
+      <button class="sidebar-item" data-tab="history"><span data-i18n="nav.history">🕑 历史记录</span> <span class="tab-badge" id="historyBadge" style="display:none">0</span></button>
       <button class="sidebar-item" data-tab="settings" data-i18n="nav.settings">⚙️ 设置</button>
     </nav>
     <div class="sidebar-footer">
@@ -45,6 +45,7 @@
     <div class="grid">
       <div class="panel">
         <h2><span class="dot"></span><span data-i18n="common.materials">素材与提示词</span></h2>
+        <div class="meta" id="t8VideoWarn-r2v" style="display:none;color:#c90;margin-bottom:8px" data-i18n="config.t8NoVideo">当前接入点是 t8star，只支持 gpt-image-2 图片生成。视频功能请到设置里把接入点切回官方百炼。</div>
 
         <label class="first" data-i18n="common.model">模型</label>
         <select id="model-r2v">
@@ -156,6 +157,7 @@
     <div class="grid">
       <div class="panel">
         <h2><span class="dot"></span><span data-i18n="common.materials">素材与提示词</span></h2>
+        <div class="meta" id="t8VideoWarn-i2v" style="display:none;color:#c90;margin-bottom:8px" data-i18n="config.t8NoVideo">当前接入点是 t8star，只支持 gpt-image-2 图片生成。视频功能请到设置里把接入点切回官方百炼。</div>
 
         <label class="first" data-i18n="common.model">模型</label>
         <select id="model-i2v">
@@ -296,6 +298,7 @@
     <div class="grid">
       <div class="panel">
         <h2><span class="dot"></span><span data-i18n="t2v.heading">提示词</span></h2>
+        <div class="meta" id="t8VideoWarn-t2v" style="display:none;color:#c90;margin-bottom:8px" data-i18n="config.t8NoVideo">当前接入点是 t8star，只支持 gpt-image-2 图片生成。视频功能请到设置里把接入点切回官方百炼。</div>
         <div class="prompt-head">
           <label class="first">Prompt <span style="color: var(--muted)" data-i18n="t2v.promptLabelHint">（详细描述要生成的视频内容、镜头、运动）</span></label>
           <div class="prompt-tools">
@@ -403,13 +406,13 @@
         <textarea id="prompt-imggen" data-i18n-placeholder="imggen.promptPlaceholder" placeholder="示例：一只坐着的橘黄色的猫，表情愉悦，活泼可爱，逼真准确"></textarea>
         <div class="optimize-hint" id="optimizeHint-imggen"></div>
 
-        <label data-i18n-html="imggen.negativeLabelFull">反向提示词 <span style="color: var(--muted)">（可选，描述不希望出现的内容）</span></label>
-        <textarea id="negative-imggen" rows="2" data-i18n-placeholder="imggen.negativePlaceholder" placeholder="例：低分辨率、模糊、多余的手指、错误比例…" style="min-height:60px"></textarea>
+        <label data-imggen-ds data-i18n-html="imggen.negativeLabelFull">反向提示词 <span style="color: var(--muted)">（可选，描述不希望出现的内容）</span></label>
+        <textarea data-imggen-ds id="negative-imggen" rows="2" data-i18n-placeholder="imggen.negativePlaceholder" placeholder="例：低分辨率、模糊、多余的手指、错误比例…" style="min-height:60px"></textarea>
       </div>
 
       <div class="panel">
         <h2><span class="dot"></span><span data-i18n="common.genParams">生成参数</span></h2>
-        <div class="row-2">
+        <div class="row-2" data-imggen-ds>
           <div>
             <label class="first" data-i18n="common.size">尺寸</label>
             <select id="size-imggen">
@@ -423,7 +426,7 @@
             </select>
           </div>
         </div>
-        <div class="row-2">
+        <div class="row-2" data-imggen-ds>
           <div>
             <label data-i18n="common.seed">Seed（可选，0-2147483647）</label>
             <input type="number" id="seed-imggen" data-i18n-placeholder="common.seedPlaceholder" placeholder="留空随机" min="0" max="2147483647" />
@@ -459,6 +462,7 @@
         <div class="image-out" id="imageOut-imggen" style="display:none">
           <div class="meta" id="imageMeta-imggen"></div>
           <div class="image-grid" id="imageGrid-imggen"></div>
+          <div class="meta" id="imageNote-imggen" style="display:none;white-space:pre-wrap;margin-top:8px"></div>
         </div>
         <div class="log" id="log-imggen"></div>
       </div>
@@ -496,13 +500,13 @@
         <textarea id="prompt-imgedit" data-i18n-placeholder="imgedit.promptPlaceholder" placeholder="示例：将图1中的背景替换为海滩日落场景，保持人物不变"></textarea>
         <div class="optimize-hint" id="optimizeHint-imgedit"></div>
 
-        <label data-i18n-html="imgedit.negativeLabelFull">反向提示词 <span style="color: var(--muted)">（可选，描述不希望出现的内容）</span></label>
-        <textarea id="negative-imgedit" rows="2" data-i18n-placeholder="imgedit.negativePlaceholder" placeholder="例：低分辨率、模糊、多余的手指、错误比例…" style="min-height:60px"></textarea>
+        <label data-imgedit-ds data-i18n-html="imgedit.negativeLabelFull">反向提示词 <span style="color: var(--muted)">（可选，描述不希望出现的内容）</span></label>
+        <textarea data-imgedit-ds id="negative-imgedit" rows="2" data-i18n-placeholder="imgedit.negativePlaceholder" placeholder="例：低分辨率、模糊、多余的手指、错误比例…" style="min-height:60px"></textarea>
       </div>
 
       <div class="panel">
         <h2><span class="dot"></span><span data-i18n="common.genParams">生成参数</span></h2>
-        <div class="row-2">
+        <div class="row-2" data-imgedit-ds>
           <div>
             <label class="first" data-i18n="common.size">尺寸</label>
             <select id="size-imgedit">
@@ -516,7 +520,7 @@
             </select>
           </div>
         </div>
-        <div class="row-2">
+        <div class="row-2" data-imgedit-ds>
           <div>
             <label data-i18n="common.seed">Seed（可选，0-2147483647）</label>
             <input type="number" id="seed-imgedit" data-i18n-placeholder="common.seedPlaceholder" placeholder="留空随机" min="0" max="2147483647" />
@@ -552,6 +556,7 @@
         <div class="image-out" id="imageOut-imgedit" style="display:none">
           <div class="meta" id="imageMeta-imgedit"></div>
           <div class="image-grid" id="imageGrid-imgedit"></div>
+          <div class="meta" id="imageNote-imgedit" style="display:none;white-space:pre-wrap;margin-top:8px"></div>
         </div>
         <div class="log" id="log-imgedit"></div>
       </div>
@@ -575,29 +580,33 @@
     <div class="panel" style="max-width:520px">
       <h2><span class="dot"></span><span data-i18n="settings.title">设置</span></h2>
       <div class="settings-form">
-        <label class="first" data-i18n="settings.apiKeyLabel">API Key（DashScope）</label>
+        <label class="first" id="apiKeyLabel" data-i18n="settings.apiKeyLabel">API Key（DashScope）</label>
         <input type="password" id="apiKey" placeholder="sk-xxxxxxxxxxxxxxxx" autocomplete="off" />
-        <div style="font-size:11px;color:var(--muted);margin-top:4px" data-i18n="settings.apiKeyNote">仅保存在你浏览器的 localStorage 里，不会上传到任何第三方。</div>
+        <div id="apiKeyNote" style="font-size:11px;color:var(--muted);margin-top:4px" data-i18n="settings.apiKeyNote">仅保存在你浏览器的 localStorage 里，不会上传到任何第三方。</div>
 
-        <label data-i18n="settings.regionLabel">地域</label>
-        <select id="region">
-          <option value="cn-beijing" data-i18n="settings.regionBeijing">华北2（北京）</option>
-          <option value="ap-southeast-1" data-i18n="settings.regionSingapore">新加坡</option>
-          <option value="us-east-1" data-i18n="settings.regionVirginia">美国（弗吉尼亚）</option>
-          <option value="eu-central-1" data-i18n="settings.regionFrankfurt">德国（法兰克福）</option>
-        </select>
-        <div style="font-size:11px;color:var(--muted);margin-top:4px" data-i18n="settings.regionNote">注意：API Key、模型、Endpoint 必须同地域，跨地域调用会失败。</div>
+        <div id="regionWrap">
+          <label data-i18n="settings.regionLabel">地域</label>
+          <select id="region">
+            <option value="cn-beijing" data-i18n="settings.regionBeijing">华北2（北京）</option>
+            <option value="ap-southeast-1" data-i18n="settings.regionSingapore">新加坡</option>
+            <option value="us-east-1" data-i18n="settings.regionVirginia">美国（弗吉尼亚）</option>
+            <option value="eu-central-1" data-i18n="settings.regionFrankfurt">德国（法兰克福）</option>
+          </select>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px" data-i18n="settings.regionNote">注意：API Key、模型、Endpoint 必须同地域，跨地域调用会失败。</div>
+        </div>
 
         <label data-i18n="settings.endpointLabel">接入点（Endpoint）</label>
         <select id="endpoint">
           <option value="" data-i18n="settings.endpointOfficial">官方百炼（自动按地域选择）</option>
           <option value="https://openapi.bsutopia.com" data-i18n="settings.endpointProxy">蓝星纪元中转站（openapi.bsutopia.com）</option>
+          <option value="https://ai.t8star.org" data-i18n="settings.endpointT8star">t8star 中转站（ai.t8star.org）</option>
           <option value="custom" data-i18n="settings.endpointCustom">自定义…</option>
         </select>
         <div id="customEndpointWrap" style="display:none;margin-top:8px">
           <input type="text" id="customEndpoint" placeholder="https://your-proxy.example.com" />
         </div>
         <div style="font-size:11px;color:var(--muted);margin-top:4px" data-i18n="settings.endpointNote">官方百炼按地域自动选择 Endpoint；中转站使用第三方代理地址，可能有不同的限流或计费策略。</div>
+        <div id="t8OnlyImageNote" style="display:none;font-size:11px;color:#c90;margin-top:4px" data-i18n="settings.t8OnlyImageNote">t8star 只提供 gpt-image-2 图片模型，不支持视频生成。</div>
 
         <div id="workspaceWrap" style="display:none">
           <label data-i18n="settings.workspaceLabel">WorkspaceId（仅法兰克福）</label>
