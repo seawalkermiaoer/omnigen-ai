@@ -19,6 +19,58 @@ import (
 // 不是合法 URL 时才回落到官方地址），不需要额外的 stub provider：这正是
 // "复用 provider/t8star 的 Client" 的字面意思。
 
+// 探测请求发的是哨兵模型名 t8starProbeModel，不是真实模型 gpt-image-2。
+// 这是本次改动的核心：用真实模型探测时空 prompt 不会被提前拒绝，会真的
+// 生成一张图并计费（见 t8starProbeModel 定义处记录的实测数据：29.2s、
+// HTTP 200、扣费 1155 tokens）。哨兵模型名让上游在鉴权之后、真正路由到
+// 某个模型之前就返回错误——快、免费、不出图。
+func TestT8starTester_SendsSentinelModelNotRealModel(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"code":    "invalid_request",
+				"message": "所有分组对于模型 __omnigen_credential_probe__ 无可用渠道，请检查模型是否存在或联系管理员",
+				"type":    "new_api_error",
+			},
+		})
+	}))
+	defer server.Close()
+
+	tester := newT8starConnectionTester()
+	err := tester.Test(context.Background(), UpstreamCredentials{APIKey: "sk-valid", Endpoint: server.URL})
+
+	require.NoError(t, err)
+	require.NotNil(t, gotBody["model"])
+	assert.Equal(t, t8starProbeModel, gotBody["model"])
+	assert.NotEqual(t, "gpt-image-2", gotBody["model"], "must never probe with the real billable model")
+}
+
+// 上游对哨兵模型名返回 503 业务错误（"无可用渠道"）→ 判定为凭证有效。
+// 这正是用真实 Key 实测时观测到的响应——鉴权先于模型路由完成，一个不存在
+// 的模型名不会被拒在鉴权之前。这条最容易写反：直觉上"上游报错了"应该判
+// 失败，但测试连接验证的是凭证能不能通过鉴权，不是这次调用本身成不成功。
+func TestT8starTester_503BusinessErrorMeansCredentialValid(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"code":    "invalid_request",
+				"message": "所有分组对于模型 __omnigen_credential_probe__ 无可用渠道，请检查模型是否存在或联系管理员",
+				"type":    "new_api_error",
+			},
+		})
+	}))
+	defer server.Close()
+
+	tester := newT8starConnectionTester()
+	err := tester.Test(context.Background(), UpstreamCredentials{APIKey: "sk-valid", Endpoint: server.URL})
+
+	require.NoError(t, err, "503 业务错误（无可用渠道）应当被判定为凭证有效（成功），不是失败")
+}
+
 // 上游 401/403 → apperr.ErrUpstreamAuthFailed。这是唯一让测试连接判定
 // "凭证无效"的两个状态码。
 func TestT8starTester_AuthFailure(t *testing.T) {
@@ -79,8 +131,9 @@ func TestT8starTester_200WithEmbeddedError_MeansCredentialValid(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// 200 OK、解析干净、但没有任何图片链接（探测用的空 prompt 大概率走到这
-// 里）——依然是凭证有效：拿到了一个可信的响应。
+// 200 OK、解析干净、但没有任何图片链接——依然是凭证有效：拿到了一个可信
+// 的响应。（用哨兵模型名探测时这个分支实际上打不到——上游会在鉴权之后就
+// 因为模型不存在而报错，走不到 200——但分类逻辑本身仍要覆盖这个响应形状。）
 func TestT8starTester_200NoImage_MeansCredentialValid(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -99,8 +152,9 @@ func TestT8starTester_200NoImage_MeansCredentialValid(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// 200 OK 且真的解析出一张图——最贵的分支，但同样只证明凭证有效，不代表
-// 测试连接应该以"图生成成功"为目标（这正是本方案要避免的语义）。
+// 200 OK 且真的解析出一张图——同样只证明凭证有效，不代表测试连接应该以
+// "图生成成功"为目标（这正是本方案要避免的语义）。用哨兵模型名探测时这
+// 个分支不会在真实上游出现，但分类逻辑不应该假设它不会出现。
 func TestT8starTester_200WithImage_MeansCredentialValid(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

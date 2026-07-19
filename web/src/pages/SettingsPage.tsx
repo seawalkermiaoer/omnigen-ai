@@ -460,13 +460,14 @@ export default function SettingsPage() {
           </div>
 
           {/*
-            这句话是本卡片存在的理由，不是可有可无的说明：t8star 唯一的
-            端点就是出图接口，没有独立的鉴权探测路径，测试连接会真的向
-            上游发一次请求。百炼卡片没有这句话，因为它探测的是文本模型，
-            成本可以忽略——这个不对称是真实的，藏起来才是误导。
+            t8star 唯一的端点就是出图接口，但测试连接不会真的调用它去出图：
+            探测用的是一个刻意不存在的哨兵模型名（见
+            server/internal/service/t8star_tester.go 里 t8starProbeModel
+            上的实测数据），上游在鉴权之后、路由到具体模型之前就会报错。
+            所以这里是一句如实的说明，不是费用警告——不再用 warning 语气。
           */}
-          <Paragraph type="warning" style={{ marginTop: 8, marginBottom: 0 }} data-testid="settings-t8star-test-cost-note">
-            {t('settings.t8starTestCostNote')}
+          <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }} data-testid="settings-t8star-test-note">
+            {t('settings.t8starTestNote')}
           </Paragraph>
 
           {t8starTestResult && (

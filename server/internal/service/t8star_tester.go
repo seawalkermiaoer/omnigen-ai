@@ -11,10 +11,28 @@ import (
 	"github.com/chenhao/omnigen-ai/server/internal/provider/t8star"
 )
 
-// t8starProbeModel is the only model t8star's chat-completions endpoint
-// understands — there is no cheaper probe target (see the design doc's
-// "为什么这不对称" section).
-const t8starProbeModel = "gpt-image-2"
+// t8starProbeModel is a deliberately nonexistent model name used only to
+// probe credentials. It must never be changed to a real model name — doing
+// so silently reintroduces a slow, billed call. Measured against the real
+// t8star endpoint with a valid key (2026-07-19), see
+// docs/superpowers/specs/2026-07-19-t8star-connection-test-design.md:
+//
+//   - correct key + "gpt-image-2" + empty prompt: HTTP 200 in 29.2s. The
+//     empty prompt is NOT rejected early — t8star generates a real image and
+//     bills 1155 tokens. connectionTestTimeout (10s) fires long before that
+//     returns, so the button used to always fail with ErrUpstreamFailed
+//     *and still charge the user*. This disproved the original design doc's
+//     assumption that t8star has no credential-only probe.
+//   - correct key + t8starProbeModel: HTTP 503 in 0.7s,
+//     {"error":{"code":"invalid_request","message":"所有分组对于模型 ...
+//     无可用渠道，请检查模型是否存在或联系管理员"}} — no image, no charge.
+//   - bad key + t8starProbeModel: HTTP 401 in 0.2s,
+//     {"error":{"code":"invalid_request","message":"令牌不合法"}}
+//
+// Auth is checked before model routing, so a bogus model name is a genuine,
+// free, sub-second credential probe: any HTTP response (however "wrong" the
+// model) proves the key was accepted; 401/403 proves it wasn't.
+const t8starProbeModel = "__omnigen_credential_probe__"
 
 // T8starImageProviderFactory constructs a provider.ImageProvider bound to a
 // specific apiKey/endpoint pair. Production always passes t8star.New; tests
@@ -29,16 +47,17 @@ func newT8starImageProviderFactory() T8starImageProviderFactory {
 	}
 }
 
-// t8starConnectionTester probes t8star credentials by sending a minimal
-// (empty-prompt) GenerateImage request and classifying the outcome by HTTP
-// status rather than by whether an image came back — see
-// docs/superpowers/specs/2026-07-19-t8star-connection-test-design.md for why
-// t8star can't be probed the cheap way DashScope is.
+// t8starConnectionTester probes t8star credentials by sending a
+// GenerateImage request for the nonexistent t8starProbeModel and classifying
+// the outcome by HTTP status rather than by whether an image came back — see
+// docs/superpowers/specs/2026-07-19-t8star-connection-test-design.md for the
+// measurements behind this (and why the original "no cheap probe exists"
+// assumption in that doc was wrong).
 //
 //   - 401 / 403                                  -> apperr.ErrUpstreamAuthFailed
-//   - any other response (4xx business error,
-//     200 with no image, or a real generated
-//     image)                                     -> nil (credentials valid)
+//   - any other response (the expected case is a
+//     4xx/5xx "model not found" business error,
+//     since the probe model never exists)        -> nil (credentials valid)
 //   - transport-level failure (no response ever
 //     received)                                  -> apperr.ErrUpstreamFailed
 type t8starConnectionTester struct {
@@ -58,10 +77,11 @@ func (t t8starConnectionTester) Test(ctx context.Context, creds UpstreamCredenti
 	p := t.factory(creds.APIKey, creds.Endpoint)
 	_, err := p.GenerateImage(reqCtx, provider.ImageRequest{Model: t8starProbeModel, Prompt: ""})
 	if err == nil {
-		// A real response came back and even parsed into an image — that
-		// spends real money, but it unambiguously proves the credential
-		// works. See the design doc: the test verifies the credential, not
-		// the ability to generate for free.
+		// t8starProbeModel doesn't exist, so a nil error here would mean
+		// t8star somehow parsed an image out of a response to a bogus model
+		// — vanishingly unlikely, but if it ever happens that still
+		// unambiguously proves the credential works. See the design doc:
+		// the test verifies the credential, not the ability to generate.
 		return nil
 	}
 

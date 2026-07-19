@@ -321,18 +321,20 @@ describe('SettingsPage', () => {
     expect(settingApi.test).toHaveBeenNthCalledWith(2, 't8star')
   })
 
-  it('t8star 按钮带费用说明，百炼按钮不带', async () => {
+  it('t8star 按钮带探测说明（不再是费用警告），百炼按钮不带', async () => {
     renderPage()
     await screen.findByText(/sk-ab...wxyz/)
 
+    // 探测改用哨兵模型名后不再产生真实调用/费用，说明文案随之改成如实的
+    // "不会生成图片、不会产生费用"，不再是 warning 语气的费用提醒。
     const t8starCard = screen.getByText(i18n.t('settings.cardT8starTitle')).closest('.ant-card') as HTMLElement
-    expect(t8starCard.querySelector('[data-testid="settings-t8star-test-cost-note"]')).toHaveTextContent(
-      i18n.t('settings.t8starTestCostNote'),
+    expect(t8starCard.querySelector('[data-testid="settings-t8star-test-note"]')).toHaveTextContent(
+      i18n.t('settings.t8starTestNote'),
     )
 
     const dashscopeCard = screen.getByText(i18n.t('settings.cardDashscopeTitle')).closest('.ant-card') as HTMLElement
-    expect(dashscopeCard.textContent).not.toContain(i18n.t('settings.t8starTestCostNote'))
-    expect(dashscopeCard.querySelector('[data-testid="settings-t8star-test-cost-note"]')).toBeNull()
+    expect(dashscopeCard.textContent).not.toContain(i18n.t('settings.t8starTestNote'))
+    expect(dashscopeCard.querySelector('[data-testid="settings-t8star-test-note"]')).toBeNull()
   })
 
   it('t8star 卡片不渲染地域或 WorkspaceId 控件', async () => {
