@@ -1,7 +1,9 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -302,6 +304,32 @@ func TestUserService_EnsureBootstrapAdmin_CreatesWhenNone(t *testing.T) {
 	// 首个管理员必须保持不限量，不能被 Create 的「默认 100」逻辑意外限额——
 	// 否则每次全新部署引导出来的 admin 会莫名其妙只有 100 次额度。
 	assert.Nil(t, created.QuotaTotal, "bootstrap admin 应为不限量")
+}
+
+// 已存在 admin 时必须**说出来**，而不是静默跳过。
+//
+// 真实踩坑：用户改了 config.yaml 的 bootstrap.admin_password、重建容器后
+// 发现登录不上。原因是 pgdata 卷还在、老 admin 还在，于是这段逻辑直接
+// return nil，配置里的新密码一个字都没被用到——而日志里**什么都没有**，
+// 表现和"密码填错了"完全一样，只能靠读源码才能想明白。
+//
+// 这条测试钉住的是那行日志本身：跳过时必须留下痕迹，说明跳过了、以及为什么。
+func TestUserService_EnsureBootstrapAdmin_LogsWhenSkipping(t *testing.T) {
+	svc, repo := newUserService(t)
+	seedUser(t, repo, "admin", "originalpass", usermodel.RoleAdmin, usermodel.StatusActive)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	require.NoError(t, svc.EnsureBootstrapAdmin(context.Background(), "root", "rootpassword"))
+
+	logged := buf.String()
+	assert.Contains(t, logged, "bootstrap.admin_password",
+		"日志必须点名是哪个配置项被忽略了，否则等于没说")
+	assert.NotContains(t, logged, "rootpassword",
+		"绝不能把密码明文写进日志")
 }
 
 // 已存在 admin 时不得覆盖——否则每次重启都会重置密码。

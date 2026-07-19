@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	usermodel "github.com/chenhao/omnigen-ai/server/internal/model/user"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/apperr"
@@ -171,6 +172,18 @@ func (s *UserService) EnsureBootstrapAdmin(ctx context.Context, username, plainP
 		return err
 	}
 	if n > 0 {
+		// 必须说出来，不能静默返回。
+		//
+		// 踩过的坑：改了 config.yaml 的 bootstrap.admin_password、重建容器后
+		// 登录不上。原因是 pgdata 卷还在、老 admin 还在，这里直接返回，
+		// 配置里的新密码一个字都没被用到——而日志里什么都没有，表现和
+		// "密码填错了"一模一样，只能靠读源码才想得明白。
+		//
+		// 只记事实与后续动作，绝不记密码本身：启动日志经常被贴进工单、
+		// 聊天窗口和公开的构建输出里。
+		slog.Info("已存在活跃管理员，本次跳过自举，bootstrap.admin_password 未被使用；"+
+			"如需改密请登录后在用户管理里修改，或直接更新数据库中的 password_hash",
+			"activeAdmins", n)
 		return nil
 	}
 	// 走内部 create(..., false)，不经过 Create 的默认限额逻辑——
