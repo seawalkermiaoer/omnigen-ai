@@ -86,9 +86,12 @@ func (r *statsRepository) overview(ctx context.Context, q statsmodel.Query) (*st
 	return &o, nil
 }
 
-// byModel 按 (model, mode) 分组，按调用数降序——GROUP BY 产出的每一组
-// 天然至少有一行，bool_or 在组内不会是 NULL，因此这里不需要像 overview
-// 那样过 *bool 中转。
+// byModel 按 (model, mode) 分组，按调用数降序。GROUP BY 产出的每一组
+// 天然至少有一行，但组内所有行的 usage 仍可能全部是 NULL（例如任务在
+// 提交给上游之前就失败，从未拿到 usage）——bool_or 在这种情况下对该组
+// 返回 SQL NULL，而不是 false，跟 overview 在空结果集上遇到的情况是
+// 同一件事。因此这里同样要用 *bool 中转、扫描后再归一化成 false，不能
+// 直接扫进非指针 bool。
 func (r *statsRepository) byModel(ctx context.Context, q statsmodel.Query) ([]statsmodel.ByModel, error) {
 	const query = `
 		SELECT
@@ -112,10 +115,12 @@ func (r *statsRepository) byModel(ctx context.Context, q statsmodel.Query) ([]st
 	items := make([]statsmodel.ByModel, 0)
 	for rows.Next() {
 		var m statsmodel.ByModel
+		var tokensAvailable *bool
 		if err := rows.Scan(&m.Model, &m.Mode, &m.Calls, &m.Succeeded, &m.Failed,
-			&m.Tokens, &m.TokensAvailable, &m.VideoSeconds); err != nil {
+			&m.Tokens, &tokensAvailable, &m.VideoSeconds); err != nil {
 			return nil, apperr.ErrInternal.Wrap(fmt.Errorf("扫描按模型用量失败: %w", err))
 		}
+		m.TokensAvailable = tokensAvailable != nil && *tokensAvailable
 		items = append(items, m)
 	}
 	if err := rows.Err(); err != nil {

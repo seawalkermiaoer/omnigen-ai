@@ -227,6 +227,46 @@ func TestStatsRepo_VideoHasNoTokenData(t *testing.T) {
 	})
 }
 
+// byModel 分组内可能整组的 usage 都是 NULL——一个从未到达上游就失败的
+// 任务（例如参数校验/配额检查在提交给上游之前就失败）不会有 usage 数据。
+// bool_or(usage ? 'total_tokens') 在这种整组全 NULL 的分组上返回 SQL
+// NULL，而不是 false；如果 byModel 把它直接扫进非指针 bool，pgx 会在扫描
+// 阶段报错，整个 /api/stats 请求 500。这个用例只造一个「全组 usage 皆
+// NULL」的 (model, mode)，断言 byModel 能正常返回且 TokensAvailable 是
+// false，而不是让请求出错。
+func TestStatsRepo_ByModelAllNullUsageDoesNotError(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("stats-all-null-usage", usermodel.RoleUser)
+		require.NoError(t, userRepo.Create(ctx, u))
+
+		taskRepo := repository.NewTaskRepository(tx)
+
+		// 两条同一 (model, mode) 分组的任务，都是提交前就失败、从未拿到
+		// 上游响应，usage 全 NULL——整组没有任何一行 usage 非 NULL。
+		for i := 0; i < 2; i++ {
+			task := sampleTask(u.ID)
+			task.Model = "never-reached-upstream"
+			task.Mode = generationmodel.TaskModeImgGen
+			task.Status = generationmodel.StatusFailed
+			task.Usage = nil
+			require.NoError(t, taskRepo.Create(ctx, task))
+		}
+
+		statsRepo := repository.NewStatsRepository(tx)
+		report, err := statsRepo.GetReport(ctx, statsmodel.Query{UserID: &u.ID})
+		require.NoError(t, err, "整组 usage 皆 NULL 时 byModel 不应报错（bool_or 返回 NULL 时不能扫进非指针 bool）")
+
+		require.Len(t, report.ByModel, 1)
+		row := report.ByModel[0]
+		assert.Equal(t, "never-reached-upstream", row.Model)
+		assert.Equal(t, int64(2), row.Calls)
+		assert.Equal(t, int64(2), row.Failed)
+		assert.False(t, row.TokensAvailable, "整组 usage 皆 NULL，必须归一化成 false 而不是报错或读成 true")
+		assert.Equal(t, int64(0), row.Tokens)
+	})
+}
+
 // 空数据集返回结构完整的零值，不是 nil slice——前端要能直接渲染
 // report.byModel.map(...) / report.byDay.map(...) 而不必先判空。
 func TestStatsRepo_EmptyReturnsZeroValuesNotNil(t *testing.T) {

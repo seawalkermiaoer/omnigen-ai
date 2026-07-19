@@ -182,6 +182,36 @@ describe('StatsPanel', () => {
     expect(within(select).getByText(i18n.t('stats.allUsers'))).toBeInTheDocument()
   })
 
+  // 回归测试：server/internal/model/user/request.go 的 ListQuery.PageSize
+  // 上限是 100（binding:"max=100"），超过就整个请求 422。这里直接断言
+  // 组件实际发出的 pageSize 落在后端能接受的范围内——之前发的是 200，
+  // 422 被 catch 悄悄吞掉，用户选择器永远只有「全部用户」一个选项，
+  // 页面上完全看不出请求失败了。
+  it('拉取用户列表的 pageSize 必须在后端接受的范围内（<= 100）', async () => {
+    useAuthStore.setState({ token: 'tok', user: admin, initializing: false })
+    renderPanel()
+
+    await screen.findByText('qwen-image-plus')
+    await waitFor(() => expect(userApi.list).toHaveBeenCalled())
+    const call = vi.mocked(userApi.list).mock.calls[0][0]
+    expect(call.page).toBe(1)
+    expect(call.pageSize).toBeLessThanOrEqual(100)
+  })
+
+  // 用户总数超过一次能拉到的上限时，选择器不能装作已经显示了全部用户——
+  // 必须有可见提示告诉管理员"只看到前 N 个"，否则会误以为筛选不到的
+  // 用户是因为该用户不存在，而不是因为分页上限。
+  it('用户总数超过选择器上限时，显示「仅显示前 N 位」提示', async () => {
+    vi.mocked(userApi.list).mockResolvedValue({ total: 150, items: [admin, normalUser] })
+    useAuthStore.setState({ token: 'tok', user: admin, initializing: false })
+    renderPanel()
+
+    await screen.findByText('qwen-image-plus')
+    const hint = await screen.findByTestId('stats-user-select-truncated-hint')
+    expect(hint).toHaveTextContent('2')
+    expect(hint).toHaveTextContent('150')
+  })
+
   it('切换时间预设会重新请求', async () => {
     useAuthStore.setState({ token: 'tok', user: normalUser, initializing: false })
     const user = userEvent.setup()

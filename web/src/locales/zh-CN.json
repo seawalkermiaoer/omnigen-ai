@@ -291,6 +291,8 @@
     "presetAll": "全部",
     "presetCustom": "自定义",
     "allUsers": "全部用户",
+    "userSelectorTruncated": "仅显示前 {{shown}} 位（共 {{total}} 位）",
+    "userSelectorTruncatedTooltip": "用户下拉框最多显示 {{shown}} 位，当前共有 {{total}} 位用户，未列出的用户暂时无法在此单独筛选",
     "totalCalls": "总调用数",
     "succeededCalls": "成功数",
     "failedCalls": "失败数",

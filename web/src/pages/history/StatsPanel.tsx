@@ -294,17 +294,28 @@ export default function StatsPanel() {
   const [customRange, setCustomRange] = useState<[Dayjs, Dayjs] | null>(null)
   const [selectedUserId, setSelectedUserId] = useState<number | 'all'>('all')
   const [users, setUsers] = useState<User[]>([])
+  const [userTotal, setUserTotal] = useState(0)
 
   const [report, setReport] = useState<StatsReport>(EMPTY_REPORT)
   const [loading, setLoading] = useState(false)
 
   // 用户下拉框只有管理员用得上，非管理员完全不渲染这个选择器，也就不需要
   // 拉全部用户列表——避免普通用户的报表页多打一个只有管理员用得上的接口。
+  //
+  // pageSize 必须 <= 100：server/internal/model/user/request.go 的
+  // ListQuery.PageSize 上限是 100（binding:"max=100"），这是一个刻意设的
+  // 后端上限，不是这里要绕过或提高的东西。选择器本身也只是个便利工具，
+  // 不是要在这里重新做成分页/搜索——请求 100（上限本身）而不是更大的数，
+  // 同时把 total 记下来：如果实际用户数超过 100，下面会提示"仅显示前
+  // 100 位"，不能让下拉框在超过上限时悄悄表现得像是显示了全部用户。
   useEffect(() => {
     if (!admin) return
     userApi
-      .list({ page: 1, pageSize: 200 })
-      .then((res) => setUsers(res.items))
+      .list({ page: 1, pageSize: 100 })
+      .then((res) => {
+        setUsers(res.items)
+        setUserTotal(res.total)
+      })
       .catch((err) => notify(err))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [admin])
@@ -411,13 +422,25 @@ export default function StatsPanel() {
           />
         )}
         {admin && (
-          <Select<number | 'all'>
-            value={selectedUserId}
-            onChange={(v) => setSelectedUserId(v)}
-            style={{ minWidth: 200 }}
-            data-testid="stats-user-select"
-            options={[{ label: t('stats.allUsers'), value: 'all' }, ...users.map((u) => ({ label: u.displayName || u.username, value: u.id }))]}
-          />
+          <Space size={6} align="center">
+            <Select<number | 'all'>
+              value={selectedUserId}
+              onChange={(v) => setSelectedUserId(v)}
+              style={{ minWidth: 200 }}
+              showSearch
+              optionFilterProp="label"
+              data-testid="stats-user-select"
+              options={[{ label: t('stats.allUsers'), value: 'all' }, ...users.map((u) => ({ label: u.displayName || u.username, value: u.id }))]}
+            />
+            {userTotal > users.length && (
+              <Tooltip title={t('stats.userSelectorTruncatedTooltip', { shown: users.length, total: userTotal })}>
+                <Text type="secondary" data-testid="stats-user-select-truncated-hint" style={{ fontSize: 12 }}>
+                  <InfoCircleOutlined aria-hidden style={{ marginRight: 4 }} />
+                  {t('stats.userSelectorTruncated', { shown: users.length, total: userTotal })}
+                </Text>
+              </Tooltip>
+            )}
+          </Space>
         )}
       </Flex>
 

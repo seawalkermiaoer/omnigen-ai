@@ -291,6 +291,8 @@
     "presetAll": "All time",
     "presetCustom": "Custom",
     "allUsers": "All users",
+    "userSelectorTruncated": "Showing first {{shown}} of {{total}}",
+    "userSelectorTruncatedTooltip": "The user selector shows at most {{shown}} users; there are {{total}} in total. Users beyond that cannot be individually selected here yet",
     "totalCalls": "Total calls",
     "succeededCalls": "Succeeded",
     "failedCalls": "Failed",

@@ -296,8 +296,18 @@ func (s *SettingService) testT8starConnection(ctx context.Context) error {
 //
 // connectionTestTimeout 比正常生成请求短得多：探测只发一个最小 ping 请求，
 // 用来确认凭证有效，不是要等一次完整生成/优化。
-
-const connectionTestTimeout = 15 * time.Second
+//
+// 刻意比 web/src/api/client.ts 的 axios 全局超时（15s）短出至少几秒的
+// headroom：这两个超时曾经都是 15s，上游一旦挂起，服务端和浏览器几乎在
+// 同一时刻超时，谁先触发纯属竞态——输的那次用户看到的就是客户端兜底的
+// 通用"网络连接失败"，而不是服务端本该分类好、翻译好的错误（凭证无效/
+// 端点不可达/上游超时……）。改小服务端这一侧而不是调大客户端的全局
+// 超时：客户端超时是所有请求共用的一个全局值，为了这一个"测试连接"接口
+// 把它调大会连带放宽所有其它接口的超时；服务端这个常量只作用于凭证探测
+// 这一条路径，改小它不影响生成/优化等其它请求各自的超时设置。10s 对一次
+// 最小 ping 请求绰绰有余，也留出了让服务端来得及分类并把响应写回去的
+// 窗口。
+const connectionTestTimeout = 10 * time.Second
 
 // dashscopeConnectionTester 用 ProviderFactory（optimize.go 定义，与
 // OptimizeService 共用同一个生产实现 NewDashScopeOptimizeProviderFactory）

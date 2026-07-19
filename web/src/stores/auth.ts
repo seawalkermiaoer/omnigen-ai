@@ -12,6 +12,7 @@ interface AuthState {
   login: (req: LoginRequest) => Promise<void>
   logout: () => Promise<void>
   initialize: () => Promise<void>
+  refreshUser: () => Promise<void>
   clear: () => void
   isAdmin: () => boolean
 }
@@ -53,6 +54,26 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ token, user, initializing: false })
     } catch {
       get().clear()
+    }
+  },
+
+  // 补一次 GET /api/auth/me，把 topbar 剩余额度这类"服务端状态一直是对的，
+  // 只是本地缓存的 user 没跟着变"的字段刷新回来——配额的权威数据永远在
+  // 服务端（ConsumeQuota/RefundQuota 都是数据库事务），user 只是登录/
+  // initialize 时缓存的一份快照。调用方是"生成成功后""删除任务后"这类
+  // 会改变配额的动作，不是每次渲染都调，也不是搭一层通用缓存失效机制。
+  //
+  // 没有 token 时是空操作：调用方（生成/删除后）本来就要求已登录，这里
+  // 只是防御一下时序上的极端情况。请求失败（例如网络抖动）时静默忽略、
+  // 保留旧的 user 不动——这只是一次"顺带刷新"，不应该因为这一次请求
+  // 失败就把用户登出；真正的 401 会经由 setUnauthorizedHandler 统一处理。
+  refreshUser: async () => {
+    if (!get().token) return
+    try {
+      const user = await authApi.me()
+      set({ user })
+    } catch {
+      // 忽略：保留当前缓存的 user，不影响调用方（生成/删除）本身已经成功。
     }
   },
 

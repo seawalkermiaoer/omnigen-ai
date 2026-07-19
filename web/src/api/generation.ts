@@ -1,4 +1,5 @@
 import { client, unwrap } from './client'
+import { useAuthStore } from '@/stores/auth'
 import type { ApiResponse } from '@/types/common'
 import type {
   CatalogResponse,
@@ -39,12 +40,39 @@ function downloadPath(taskId: number, index: number): string {
   return `/download/${taskId}/${index}`
 }
 
+/**
+ * 配额相关动作成功后，顺带把 authStore 缓存的 user 刷新一遍——topbar
+ * 剩余额度显示的是 user.quotaTotal/quotaUsed 这份登录时的快照，生成一次
+ * 或删掉一条任务都会在服务端改变 quota_used（ConsumeQuota/
+ * RefundQuotaForTask），但本地快照不会跟着自动变，不刷新就要等到下次
+ * 整页刷新或重新登录才会更新，中途一直显示旧数字。
+ *
+ * 不在这里 await：这只是"顺带"刷新，不应该让调用方多等一次网络往返才
+ * 能拿到生成/删除本身的结果；refreshUser 内部失败也是静默忽略的，不会
+ * 抛出来打断调用方的 then/catch 链。也不放进 client.ts 的拦截器统一处理
+ * ——那样等于给"所有请求"都建一层配额缓存失效机制，而只有生成与删除
+ * 这两类动作真的会改配额，见 stores/auth.ts 里 refreshUser 的注释。
+ */
+function refreshQuota(): void {
+  void useAuthStore.getState().refreshUser()
+}
+
 export const generationApi = {
   generateImage: (req: GenerateImageRequest) =>
-    unwrap<GenerationTask>(client.post<ApiResponse<GenerationTask>>('/generate/image', req)),
+    unwrap<GenerationTask>(client.post<ApiResponse<GenerationTask>>('/generate/image', req)).then(
+      (result) => {
+        refreshQuota()
+        return result
+      },
+    ),
 
   generateVideo: (req: GenerateVideoRequest) =>
-    unwrap<GenerationTask>(client.post<ApiResponse<GenerationTask>>('/generate/video', req)),
+    unwrap<GenerationTask>(client.post<ApiResponse<GenerationTask>>('/generate/video', req)).then(
+      (result) => {
+        refreshQuota()
+        return result
+      },
+    ),
 
   getTask: (id: number) =>
     unwrap<GenerationTask>(client.get<ApiResponse<GenerationTask>>(`/tasks/${id}`)),
@@ -54,11 +82,19 @@ export const generationApi = {
 
   /** DELETE /api/tasks/:id——按 id 删一条，服务端已按当前用户过滤，不存在/别人的任务一律 TASK_NOT_FOUND。 */
   deleteTask: (id: number) =>
-    unwrap<null>(client.delete<ApiResponse<null>>(`/tasks/${id}`)),
+    unwrap<null>(client.delete<ApiResponse<null>>(`/tasks/${id}`)).then((result) => {
+      refreshQuota()
+      return result
+    }),
 
   /** DELETE /api/tasks——清空当前用户的全部历史，返回删除行数供"清空全部"确认。 */
   deleteAllTasks: () =>
-    unwrap<TaskDeleteAllResponse>(client.delete<ApiResponse<TaskDeleteAllResponse>>('/tasks')),
+    unwrap<TaskDeleteAllResponse>(client.delete<ApiResponse<TaskDeleteAllResponse>>('/tasks')).then(
+      (result) => {
+        refreshQuota()
+        return result
+      },
+    ),
 
   optimizePrompt: (req: OptimizePromptRequest) =>
     unwrap<OptimizePromptResponse>(
