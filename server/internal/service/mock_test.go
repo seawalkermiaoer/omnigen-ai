@@ -2,7 +2,12 @@ package service_test
 
 import (
 	"context"
+	"errors"
+	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	usermodel "github.com/chenhao/omnigen-ai/server/internal/model/user"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/apperr"
@@ -135,10 +140,16 @@ func (f *fakeUserRepo) CountActiveAdmins(_ context.Context) (int64, error) {
 // ConsumeQuota/RefundQuota 忠实复刻真实 repository 的语义（见
 // internal/repository/user.go）：QuotaTotal 为 nil 表示不限量，不拦但仍计数；
 // 退回不会把 QuotaUsed 减到负数，且没扣过就退是无操作，不是错误。
+//
+// 用户不存在时也返回 ErrQuotaExceeded 而不是 ErrUserNotFound——这不是疏忽，
+// 是刻意对齐真实实现：真实 SQL 用一条 UPDATE 的 RowsAffected==0 同时覆盖
+// "用户不存在"与"额度耗尽"两种情况，两者在那一层无法区分，也不需要区分。
+// 这里若返回 ErrUserNotFound，会让针对本 double 写的测试断言出一个真实系统
+// 根本不会产生的错误码——测试绿了，但绿得没有意义。别把这行"修"回去。
 func (f *fakeUserRepo) ConsumeQuota(_ context.Context, id int64) error {
 	u, ok := f.users[id]
 	if !ok {
-		return apperr.ErrUserNotFound
+		return apperr.ErrQuotaExceeded
 	}
 	if u.QuotaTotal != nil && u.QuotaUsed >= *u.QuotaTotal {
 		return apperr.ErrQuotaExceeded
@@ -156,4 +167,20 @@ func (f *fakeUserRepo) RefundQuota(_ context.Context, id int64) error {
 	u.QuotaUsed--
 	u.UpdatedAt = time.Now()
 	return nil
+}
+
+// TestFakeUserRepo_ConsumeQuota_MissingUserMatchesRealSemantics pins the
+// double to the real repository's collapsed error: a nonexistent user ID
+// must surface as QUOTA_EXCEEDED, not USER_NOT_FOUND. Without this test the
+// double can silently drift back to the "obvious" mapping and start passing
+// tests for a code path the real system can't produce
+// (see repository.userRepository.ConsumeQuota).
+func TestFakeUserRepo_ConsumeQuota_MissingUserMatchesRealSemantics(t *testing.T) {
+	repo := newFakeRepo()
+
+	err := repo.ConsumeQuota(context.Background(), 999999)
+	require.Error(t, err)
+	var appErr *apperr.AppError
+	require.True(t, errors.As(err, &appErr))
+	assert.Equal(t, "QUOTA_EXCEEDED", appErr.Code())
 }

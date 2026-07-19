@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -225,8 +226,12 @@ func (r *userRepository) ConsumeQuota(ctx context.Context, id int64) error {
 	}
 	if tag.RowsAffected() == 0 {
 		// 0 行有两种可能：用户不存在，或额度已用尽。
-		// 用户不存在在本系统里不可达（调用方来自已认证的中间件），
-		// 所以统一报额度耗尽。
+		// 用户不存在对 ConsumeQuota 的调用方而言不可达——这条方法只从
+		// 请求路径调用，而请求路径上的用户由已认证的中间件加载，走到
+		// 这里时一定存在。这个假设只覆盖 ConsumeQuota 自己的调用方；
+		// RefundQuota 还会被 Task 3 的后台轮询 worker 调用，那条路径
+		// 跑在认证中间件之外，同样的假设在那里不成立（RefundQuota 因此
+		// 不对"用户不存在"报错，见其函数注释）。
 		return apperr.ErrQuotaExceeded
 	}
 	return nil
@@ -237,9 +242,20 @@ func (r *userRepository) RefundQuota(ctx context.Context, id int64) error {
 	const q = `
 		UPDATE users SET quota_used = quota_used - 1, updated_at = now()
 		WHERE id = $1 AND quota_used > 0`
-	if _, err := r.db.Exec(ctx, q, id); err != nil {
+	tag, err := r.db.Exec(ctx, q, id)
+	if err != nil {
 		return apperr.ErrInternal.Wrap(fmt.Errorf("退回额度失败: %w", err))
 	}
-	// 0 行不是错误：没扣过就退（例如重复退款）应当是无操作。
+	if tag.RowsAffected() == 0 {
+		// 0 行有两种预期之外都可能发生的情况，且无法在这里区分：
+		// (a) 幂等重试——同一笔退款被再调用一次，属于正常路径，不是错误；
+		// (b) 传入的 userID 有误或对应用户已被删除——尤其是 Task 3
+		// 接入后台轮询 worker 之后，调用方不再经过认证中间件，"用户
+		// 一定存在"的假设不再成立（对照 ConsumeQuota 的同一段注释）。
+		// 不能把它变成错误：那样会打断一次已经在补偿的失败重试。
+		// 但也不能完全沉默：记一条 debug 日志，让"预期内的重复退款"与
+		// "退款静默丢失"在日志里至少能被人工区分开。
+		slog.Debug("退回额度未影响任何行", "userID", id)
+	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -121,10 +122,18 @@ func (m *memRepo) CountActiveAdmins(_ context.Context) (int64, error) {
 // internal/repository/user.go): unlimited (QuotaTotal == nil) never blocks
 // but still counts; refund never goes below zero and is a no-op if nothing
 // was charged.
+//
+// A missing user also returns ErrQuotaExceeded, not ErrUserNotFound — this is
+// deliberate, matching the real implementation: the real SQL is a single
+// UPDATE whose RowsAffected==0 covers both "user gone" and "quota exhausted"
+// indistinguishably, by design. Returning ErrUserNotFound here would let a
+// test against this double assert an error code the real system can never
+// produce from this call — green for the wrong reason. Do not "fix" this
+// back to ErrUserNotFound.
 func (m *memRepo) ConsumeQuota(_ context.Context, id int64) error {
 	u, ok := m.users[id]
 	if !ok {
-		return apperr.ErrUserNotFound
+		return apperr.ErrQuotaExceeded
 	}
 	if u.QuotaTotal != nil && u.QuotaUsed >= *u.QuotaTotal {
 		return apperr.ErrQuotaExceeded
@@ -144,6 +153,22 @@ func (m *memRepo) RefundQuota(_ context.Context, id int64) error {
 }
 
 var _ repository.UserRepository = (*memRepo)(nil)
+
+// TestMemRepo_ConsumeQuota_MissingUserMatchesRealSemantics pins the double
+// to the real repository's collapsed error: a nonexistent user ID must
+// surface as QUOTA_EXCEEDED, not USER_NOT_FOUND. Without this test the
+// double can silently drift back to the "obvious" mapping and start passing
+// tests for a code path the real system can't produce
+// (see repository.userRepository.ConsumeQuota).
+func TestMemRepo_ConsumeQuota_MissingUserMatchesRealSemantics(t *testing.T) {
+	repo := newMemRepo()
+
+	err := repo.ConsumeQuota(context.Background(), 999999)
+	require.Error(t, err)
+	var appErr *apperr.AppError
+	require.True(t, errors.As(err, &appErr))
+	assert.Equal(t, "QUOTA_EXCEEDED", appErr.Code())
+}
 
 type testEnv struct {
 	r            *gin.Engine
