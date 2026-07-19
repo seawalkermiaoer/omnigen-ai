@@ -1,6 +1,8 @@
 package router
 
 import (
+	"strings"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 
@@ -29,14 +31,30 @@ func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, cors
 	r.Use(gin.Logger(), middleware.Recovery(), middleware.ErrorHandler())
 
 	// 开发期允许 Vite dev server 跨域；生产由同源部署或反向代理承担。
-	// 允许的 origin 列表来自 config.Config.CORSOrigins（CORS_ORIGINS 环境变量），
-	// 而非写死在这里——见 config.defaultCORSOrigins 的注释。
-	r.Use(cors.New(cors.Config{
-		AllowOrigins:     corsOrigins,
+	// 允许的 origin 列表来自 config.Config.CORSOrigins（config.yaml 的
+	// cors.origins），而非写死在这里——见 config.defaultCORSOrigins 的注释。
+	corsCfg := cors.Config{
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		AllowCredentials: true,
-	}))
+	}
+	if hasWildcard(corsOrigins) {
+		// 放行全部来源时**不能**把 "*" 塞进 AllowOrigins。
+		//
+		// CORS 规范禁止 `Access-Control-Allow-Origin: *` 与
+		// `Access-Control-Allow-Credentials: true` 同时出现，浏览器会直接
+		// 拒绝整个响应。而 gin-contrib/cors 在 AllowOrigins 含 "*" 时正是
+		// 回字面量 "*"，配上这里的 AllowCredentials 就构成那个非法组合——
+		// 症状是跨域请求在浏览器侧全部失败，服务端日志却一切正常，
+		// 极难定位（router_test.go 里有一条专门钉住这一点）。
+		//
+		// 用 AllowOriginFunc 恒真代替：库会把请求自带的 Origin 原样回显，
+		// 效果同样是"谁都放行"，但和 AllowCredentials 不冲突。
+		corsCfg.AllowOriginFunc = func(string) bool { return true }
+	} else {
+		corsCfg.AllowOrigins = corsOrigins
+	}
+	r.Use(cors.New(corsCfg))
 
 	api := r.Group("/api")
 	api.GET("/health", h.Health.Check)
@@ -69,4 +87,18 @@ func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, cors
 	admin.POST("/settings/test", h.Setting.TestConnection)
 
 	return r
+}
+
+// hasWildcard 判断 cors.origins 是否要求放行全部来源。
+//
+// 只认独占一项的 "*"：写成 "*.example.com" 这类子域通配不在支持范围内
+// （gin-contrib/cors 本身也不做子域匹配），把它当成全放行会大幅超出配置者
+// 的本意。
+func hasWildcard(origins []string) bool {
+	for _, o := range origins {
+		if strings.TrimSpace(o) == "*" {
+			return true
+		}
+	}
+	return false
 }
