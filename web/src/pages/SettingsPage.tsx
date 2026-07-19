@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Alert, App, Button, Card, Form, Input, Popconfirm, Select, Space, Spin, Typography } from 'antd'
+import { Alert, App, Button, Card, Form, Input, Popconfirm, Radio, Select, Space, Spin, Typography } from 'antd'
 import { DeleteOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 
@@ -20,13 +20,11 @@ const SECRET_KEYS: SettingKey[] = [
 // 其余非 secret 项：GET 直接拿明文，PUT 时"清空"与"未修改"要靠对比原值区分
 // （见 buildItems），不能像 secret 项那样靠一个独立的清除开关。
 //
-// dashscope_endpoint / t8star_endpoint 是两个独立的键，不是一个共享的
-// "endpoint"——两个上游协议各自独立生效（按模型选择，不再是旧系统那种
-// "同一时刻只有一个上游"的全局开关），合用一个地址会让配置其中一个时
-// 连带影响另一个协议的请求。
+// dashscope_endpoint 不在这里——它不是用户直接编辑的一个文本框，而是由
+// "接入方式"（官方/蓝星纪元/自定义）三选一推导出来的，见 buildItems 里的
+// 专门处理。t8star_endpoint 仍然是普通文本框，走这里的通用 diff 逻辑。
 const PLAIN_KEYS: SettingKey[] = [
   'region',
-  'dashscope_endpoint',
   't8star_endpoint',
   'workspace_id',
   'oss_bucket',
@@ -41,13 +39,33 @@ const REGION_OPTIONS: { value: string; labelKey: string }[] = [
   { value: 'eu-central-1', labelKey: 'settings.regionEuCentral1' },
 ]
 
+// 蓝星纪元中转站的固定地址——选中这个接入方式时，dashscope_endpoint 恒等于
+// 这个值，用户不能编辑它（也没有编辑的必要，见 public/index.html 旧版
+// #endpoint 下拉框里同一个 <option value>）。
+const BSUTOPIA_ENDPOINT = 'https://openapi.bsutopia.com'
+
+type AccessMode = 'official' | 'bsutopia' | 'custom'
+
+// 接入方式是从 dashscope_endpoint 的当前值反推出来的派生状态，不是数据库里
+// 独立存在的一个字段：空值只可能来自"官方"，等于蓝星纪元固定地址只可能来自
+// 那个选项，其余任何非空值都只可能是用户填过的自定义地址。三种情况互斥、
+// 穷尽，因此可以在加载时无损地反推、保存时无损地还原。
+function deriveAccessMode(dashscopeEndpoint: string): AccessMode {
+  if (!dashscopeEndpoint) return 'official'
+  if (dashscopeEndpoint === BSUTOPIA_ENDPOINT) return 'bsutopia'
+  return 'custom'
+}
+
 interface FormValues {
   dashscope_api_key?: string
-  t8star_api_key?: string
+  accessMode?: AccessMode
   region?: string
+  // 只在 accessMode === 'custom' 时被当作 dashscope_endpoint 的来源；官方/
+  // 蓝星纪元两种模式下这个字段的值会被 buildItems 忽略，改用推导出的固定值。
   dashscope_endpoint?: string
-  t8star_endpoint?: string
   workspace_id?: string
+  t8star_api_key?: string
+  t8star_endpoint?: string
   oss_bucket?: string
   oss_region?: string
   oss_role_arn?: string
@@ -64,10 +82,14 @@ type TestResult = { ok: true } | { ok: false; message: string }
  * 真要清空必须走显式的"清除"操作（见 secretExtra），不能靠删空文本框
  * 这种容易误触的方式——这是 UpdateItem.Clear 存在的唯一理由。
  *
- * 非 secret 字段（region/dashscope_endpoint/t8star_endpoint/workspace_id/oss_*）不是 secret，
+ * 非 secret 字段（region/t8star_endpoint/workspace_id/oss_*）不是 secret，
  * GET 直接给明文，因此表单里天然带着原值：真把它删空提交时，对比原值
  * 就能判断出这是"用户主动清空"而非"没碰过"，自动补上 clear:true，
- * 不需要额外的清除按钮。
+ * 不需要额外的清除按钮。dashscope_endpoint 是例外，见下面 buildItems 的注释。
+ *
+ * 三张卡片对应三套互不相干的凭证体系（DashScope / t8star / OSS）——按
+ * server/internal/model/catalog/catalog.go 的 Protocol 字段，生成页面上
+ * 选的模型决定实际使用哪张卡片的凭证，不是"只能配一个"的全局开关。
  */
 export default function SettingsPage() {
   const { t } = useTranslation()
@@ -82,6 +104,7 @@ export default function SettingsPage() {
   const [settingsByKey, setSettingsByKey] = useState<Record<string, SettingItem>>({})
   const [clearedKeys, setClearedKeys] = useState<Set<SettingKey>>(new Set())
 
+  const accessMode: AccessMode = Form.useWatch('accessMode', form) ?? 'official'
   const region = Form.useWatch('region', form)
 
   const load = useCallback(async () => {
@@ -94,9 +117,16 @@ export default function SettingsPage() {
       })
       setSettingsByKey(byKey)
       setClearedKeys(new Set())
+
+      const dashscopeEndpoint = byKey.dashscope_endpoint?.value || ''
+      const mode = deriveAccessMode(dashscopeEndpoint)
+
       form.setFieldsValue({
+        accessMode: mode,
         region: byKey.region?.value || undefined,
-        dashscope_endpoint: byKey.dashscope_endpoint?.value || '',
+        // 只有自定义模式下这个字段才代表真实值；官方/蓝星纪元模式下它不会
+        // 被渲染也不会被提交，留空即可。
+        dashscope_endpoint: mode === 'custom' ? dashscopeEndpoint : '',
         t8star_endpoint: byKey.t8star_endpoint?.value || '',
         workspace_id: byKey.workspace_id?.value || '',
         oss_bucket: byKey.oss_bucket?.value || '',
@@ -143,12 +173,12 @@ export default function SettingsPage() {
       // 未点"清除"时，无论输入框是否为空都原样发送 value:'', clear:false——
       // 空值命中后端"空值=不修改"分支，原密钥不受影响。
       const raw = values[key as keyof FormValues]
-      items.push({ key, value: (raw ?? '').trim(), clear: false })
+      items.push({ key, value: (typeof raw === 'string' ? raw : '').trim(), clear: false })
     })
 
     PLAIN_KEYS.forEach((key) => {
       const raw = values[key as keyof FormValues]
-      const newValue = (raw ?? '').trim()
+      const newValue = (typeof raw === 'string' ? raw : '').trim()
       const original = settingsByKey[key]?.value ?? ''
       if (newValue === '' && original !== '') {
         // 之前有值、现在被删空并提交——这是明确的"清空"意图。
@@ -158,18 +188,43 @@ export default function SettingsPage() {
       }
     })
 
+    // dashscope_endpoint 不是自由文本框，而是由 accessMode 推导出的三选一：
+    // 官方 → 空（按地域自动推导，见后端 dashscopeConnectionTester）；
+    // 蓝星纪元 → 固定地址；自定义 → 用户填的文本框。切到官方/蓝星纪元时，
+    // 用户在自定义框里曾经填过的内容不会被清空——它仍然留在表单的
+    // dashscope_endpoint 字段里（antd Form 默认 preserve，字段隐藏不等于
+    // 清空），只是这次提交不会用到它；用户切回"自定义"时会看到原样内容。
+    let effectiveDashscopeEndpoint = ''
+    if (values.accessMode === 'bsutopia') {
+      effectiveDashscopeEndpoint = BSUTOPIA_ENDPOINT
+    } else if (values.accessMode === 'custom') {
+      effectiveDashscopeEndpoint = (values.dashscope_endpoint ?? '').trim()
+    }
+    const originalDashscopeEndpoint = settingsByKey.dashscope_endpoint?.value ?? ''
+    if (effectiveDashscopeEndpoint === '' && originalDashscopeEndpoint !== '') {
+      items.push({ key: 'dashscope_endpoint', value: '', clear: true })
+    } else {
+      items.push({ key: 'dashscope_endpoint', value: effectiveDashscopeEndpoint, clear: false })
+    }
+
     return items
   }
 
   const handleSave = async () => {
-    let values: FormValues
     try {
-      values = await form.validateFields()
+      await form.validateFields()
     } catch {
       // 校验失败：antd 已经把错误信息渲染在对应字段下方，这里只需要吞掉
       // 这个 rejection（不吞会变成未处理的 promise rejection），不用再弹一次提示。
       return
     }
+    // 用 getFieldsValue(true) 而不是 validateFields() 的返回值：地域 select、
+    // 自定义接入地址、workspace_id 这几个字段会随 accessMode/region 变化而
+    // 隐藏/显示，隐藏时它们不会出现在当次校验范围里；但它们的值仍然留在
+    // 表单内部状态中（antd Form 默认 preserve），getFieldsValue(true) 才能
+    // 完整取到——否则被隐藏的地域字段会在这里读成 undefined，buildItems
+    // 会误判成"用户把地域删空了"，把已保存的地域连带清掉。
+    const values = form.getFieldsValue(true) as FormValues
     setSaving(true)
     setTestResult(null)
     try {
@@ -252,14 +307,15 @@ export default function SettingsPage() {
   }
 
   return (
-    <div style={{ maxWidth: 720 }}>
+    <div style={{ maxWidth: 760 }}>
       <Title level={3} style={{ marginBottom: 16 }}>
         {t('settings.title')}
       </Title>
 
       <Form form={form} layout="vertical" requiredMark={false}>
-        <Card title={t('settings.sectionCredentials')} style={{ marginBottom: 16 }}>
-          <Paragraph type="secondary">{t('settings.sectionCredentialsDesc')}</Paragraph>
+        {/* ── Card 1: 阿里云百炼（DashScope） ────────────────────────── */}
+        <Card title={t('settings.cardDashscopeTitle')} style={{ marginBottom: 16 }}>
+          <Paragraph type="secondary">{t('settings.cardDashscopeDesc')}</Paragraph>
 
           <Form.Item
             name="dashscope_api_key"
@@ -273,6 +329,100 @@ export default function SettingsPage() {
             />
           </Form.Item>
 
+          <Form.Item name="accessMode" label={t('settings.accessMode')} extra={t('settings.accessModeHint')}>
+            <Radio.Group
+              data-testid="settings-access-mode"
+              options={[
+                { value: 'official', label: t('settings.accessModeOfficial') },
+                { value: 'bsutopia', label: t('settings.accessModeBsutopia') },
+                { value: 'custom', label: t('settings.accessModeCustom') },
+              ]}
+            />
+          </Form.Item>
+
+          {/* 地域只在"官方"模式下有意义——蓝星纪元是固定地址、自定义地址是
+              用户自己指定，两者都不走"按地域推导接入点"这条路径。 */}
+          {accessMode === 'official' && (
+            <Form.Item
+              name="region"
+              label={t('settings.region')}
+              rules={[{ required: true, message: t('settings.regionRequired') }]}
+            >
+              <Select
+                data-testid="settings-region-select"
+                placeholder={t('settings.regionPlaceholder')}
+                options={REGION_OPTIONS.map((opt) => ({ value: opt.value, label: t(opt.labelKey) }))}
+              />
+            </Form.Item>
+          )}
+
+          {accessMode === 'bsutopia' && (
+            <Alert
+              type="info"
+              showIcon
+              message={t('settings.bsutopiaFixedUrlHint')}
+              style={{ marginBottom: 24 }}
+              data-testid="settings-bsutopia-hint"
+            />
+          )}
+
+          {accessMode === 'custom' && (
+            <Form.Item
+              name="dashscope_endpoint"
+              label={t('settings.customEndpointLabel')}
+              rules={[{ required: true, message: t('settings.customEndpointRequired') }]}
+            >
+              <Input
+                data-testid="settings-custom-endpoint"
+                placeholder={t('settings.customEndpointPlaceholder')}
+                autoComplete="off"
+              />
+            </Form.Item>
+          )}
+
+          {/* WorkspaceId 只在"官方 + 法兰克福"这一种组合下才有意义：其余
+              地域、以及蓝星纪元/自定义两种接入方式都不需要它——法兰克福没有
+              固定的官方接入点，见下面 workspaceIdExplain 的解释。 */}
+          {accessMode === 'official' && region === 'eu-central-1' && (
+            <Form.Item
+              name="workspace_id"
+              label={t('settings.workspaceId')}
+              extra={t('settings.workspaceIdExplain')}
+              rules={[{ required: true, message: t('settings.workspaceIdRequiredHint') }]}
+            >
+              <Input
+                data-testid="settings-workspace-id"
+                placeholder={t('settings.workspaceIdPlaceholder')}
+                autoComplete="off"
+              />
+            </Form.Item>
+          )}
+
+          <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }} data-testid="settings-dashscope-models">
+            {t('settings.dashscopeApplicableModels')}
+          </Paragraph>
+
+          <div style={{ marginTop: 16 }}>
+            <Button onClick={handleTest} loading={testing} data-testid="settings-test-connection">
+              {t('settings.testConnection')}
+            </Button>
+          </div>
+
+          {testResult && (
+            <Alert
+              style={{ marginTop: 16 }}
+              type={testResult.ok ? 'success' : 'error'}
+              showIcon
+              data-testid="settings-test-result"
+              message={testResult.ok ? t('settings.testSuccess') : `${t('settings.testFailedPrefix')}${testResult.message}`}
+            />
+          )}
+        </Card>
+
+        {/* ── Card 2: t8star ─────────────────────────────────────────── */}
+        <Card title={t('settings.cardT8starTitle')} style={{ marginBottom: 16 }}>
+          <Paragraph type="secondary">{t('settings.cardT8starDesc')}</Paragraph>
+
           <Form.Item name="t8star_api_key" label={t('settings.t8starApiKey')} extra={secretExtra('t8star_api_key')}>
             <Input.Password
               autoComplete="off"
@@ -280,61 +430,19 @@ export default function SettingsPage() {
               placeholder={secretPlaceholder('t8star_api_key')}
             />
           </Form.Item>
+
+          <Form.Item name="t8star_endpoint" label={t('settings.t8starEndpoint')} extra={t('settings.t8starEndpointHint')}>
+            <Input placeholder={t('settings.t8starEndpointPlaceholder')} autoComplete="off" />
+          </Form.Item>
+
+          <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }} data-testid="settings-t8star-models">
+            {t('settings.t8starApplicableModels')}
+          </Paragraph>
         </Card>
 
-        <Card title={t('settings.sectionEndpoint')} style={{ marginBottom: 16 }}>
-          <Paragraph type="secondary">{t('settings.sectionEndpointDesc')}</Paragraph>
-
-          <Form.Item
-            name="region"
-            label={t('settings.region')}
-            rules={[{ required: true, message: t('settings.regionRequired') }]}
-          >
-            <Select
-              data-testid="settings-region-select"
-              placeholder={t('settings.regionPlaceholder')}
-              options={REGION_OPTIONS.map((opt) => ({ value: opt.value, label: t(opt.labelKey) }))}
-            />
-          </Form.Item>
-
-          <Form.Item
-            name="dashscope_endpoint"
-            label={t('settings.dashscopeEndpoint')}
-            extra={t('settings.dashscopeEndpointHint')}
-          >
-            <Input placeholder={t('settings.endpointPlaceholder')} autoComplete="off" />
-          </Form.Item>
-
-          <Form.Item
-            name="t8star_endpoint"
-            label={t('settings.t8starEndpoint')}
-            extra={t('settings.t8starEndpointHint')}
-          >
-            <Input placeholder={t('settings.endpointPlaceholder')} autoComplete="off" />
-          </Form.Item>
-
-          <Form.Item
-            name="workspace_id"
-            label={t('settings.workspaceId')}
-            dependencies={['region']}
-            extra={region === 'eu-central-1' ? t('settings.workspaceIdRequiredHint') : undefined}
-            rules={[
-              {
-                validator: (_, value: string | undefined) => {
-                  if (region === 'eu-central-1' && !value?.trim()) {
-                    return Promise.reject(new Error(t('settings.workspaceIdRequiredHint')))
-                  }
-                  return Promise.resolve()
-                },
-              },
-            ]}
-          >
-            <Input placeholder={t('settings.workspaceIdPlaceholder')} autoComplete="off" />
-          </Form.Item>
-        </Card>
-
-        <Card title={t('settings.sectionOSS')} style={{ marginBottom: 16 }}>
-          <Paragraph type="secondary">{t('settings.sectionOSSDesc')}</Paragraph>
+        {/* ── Card 3: 对象存储 OSS（可选） ───────────────────────────── */}
+        <Card title={t('settings.cardOSSTitle')} style={{ marginBottom: 16 }}>
+          <Paragraph type="secondary">{t('settings.cardOSSDesc')}</Paragraph>
 
           <Form.Item
             name="oss_access_key_id"
@@ -373,24 +481,9 @@ export default function SettingsPage() {
           </Form.Item>
         </Card>
 
-        <Space>
-          <Button type="primary" onClick={handleSave} loading={saving} data-testid="settings-save">
-            {t('settings.save')}
-          </Button>
-          <Button onClick={handleTest} loading={testing} data-testid="settings-test-connection">
-            {t('settings.testConnection')}
-          </Button>
-        </Space>
-
-        {testResult && (
-          <Alert
-            style={{ marginTop: 16 }}
-            type={testResult.ok ? 'success' : 'error'}
-            showIcon
-            data-testid="settings-test-result"
-            message={testResult.ok ? t('settings.testSuccess') : `${t('settings.testFailedPrefix')}${testResult.message}`}
-          />
-        )}
+        <Button type="primary" onClick={handleSave} loading={saving} data-testid="settings-save">
+          {t('settings.save')}
+        </Button>
       </Form>
     </div>
   )

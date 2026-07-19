@@ -15,9 +15,12 @@ vi.mock('@/api/setting', () => ({
   settingApi: { get: vi.fn(), update: vi.fn(), test: vi.fn() },
 }))
 
+const BSUTOPIA_ENDPOINT = 'https://openapi.bsutopia.com'
+
 // 一份"部分已配置"的响应：dashscope_api_key 已配置（脱敏展示），其余密钥
-// 未配置；region 已选 cn-beijing；其余非 secret 项均为空——覆盖两种起始
-// 状态（已配置 / 未配置），不是所有字段都同一种状态。
+// 未配置；region 已选 cn-beijing、dashscope_endpoint 为空（对应"官方"接入
+// 方式）；其余非 secret 项均为空——覆盖两种起始状态（已配置 / 未配置），
+// 不是所有字段都同一种状态。
 const baseResponse: SettingsResponse = {
   items: [
     { key: 'dashscope_api_key', isSecret: true, configured: true, masked: 'sk-ab...wxyz' },
@@ -32,6 +35,12 @@ const baseResponse: SettingsResponse = {
     { key: 'oss_access_key_id', isSecret: true, configured: false, masked: '' },
     { key: 'oss_access_key_secret', isSecret: true, configured: false, masked: '' },
   ],
+}
+
+function withDashscopeEndpoint(value: string): SettingsResponse {
+  return {
+    items: baseResponse.items.map((item) => (item.key === 'dashscope_endpoint' ? { ...item, value } : item)),
+  }
 }
 
 function renderPage() {
@@ -147,5 +156,130 @@ describe('SettingsPage', () => {
     expect(result).toHaveTextContent(i18n.t('errors.SETTING_TEST_FAILED'))
     expect(result.textContent).not.toMatch(/^SETTING_TEST_FAILED$/)
     expect(result.textContent).not.toContain('SETTING_TEST_FAILED')
+  })
+
+  describe('接入方式：从 dashscope_endpoint 派生', () => {
+    it('dashscope_endpoint 为空 → 派生为"官方"，展示地域选择', async () => {
+      vi.mocked(settingApi.get).mockResolvedValue(withDashscopeEndpoint(''))
+      renderPage()
+      await screen.findByText(/sk-ab...wxyz/)
+
+      expect(screen.getByRole('radio', { name: i18n.t('settings.accessModeOfficial') })).toBeChecked()
+      expect(screen.getByTestId('settings-region-select')).toBeInTheDocument()
+      expect(screen.queryByTestId('settings-custom-endpoint')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('settings-bsutopia-hint')).not.toBeInTheDocument()
+    })
+
+    it('dashscope_endpoint 等于蓝星纪元固定地址 → 派生为"蓝星纪元中转"，隐藏地域', async () => {
+      vi.mocked(settingApi.get).mockResolvedValue(withDashscopeEndpoint(BSUTOPIA_ENDPOINT))
+      renderPage()
+      await screen.findByText(/sk-ab...wxyz/)
+
+      expect(screen.getByRole('radio', { name: i18n.t('settings.accessModeBsutopia') })).toBeChecked()
+      expect(screen.queryByTestId('settings-region-select')).not.toBeInTheDocument()
+      expect(screen.getByTestId('settings-bsutopia-hint')).toBeInTheDocument()
+    })
+
+    it('dashscope_endpoint 为其他值 → 派生为"自定义"，回填到文本框，隐藏地域', async () => {
+      vi.mocked(settingApi.get).mockResolvedValue(withDashscopeEndpoint('https://my-custom-relay.example.com'))
+      renderPage()
+      await screen.findByText(/sk-ab...wxyz/)
+
+      expect(screen.getByRole('radio', { name: i18n.t('settings.accessModeCustom') })).toBeChecked()
+      expect(screen.queryByTestId('settings-region-select')).not.toBeInTheDocument()
+      const customInput = screen.getByTestId('settings-custom-endpoint') as HTMLInputElement
+      expect(customInput.value).toBe('https://my-custom-relay.example.com')
+    })
+  })
+
+  it('选择"蓝星纪元中转"后隐藏地域，提交时携带固定地址', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText(/sk-ab...wxyz/)
+
+    expect(screen.getByTestId('settings-region-select')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('radio', { name: i18n.t('settings.accessModeBsutopia') }))
+
+    expect(screen.queryByTestId('settings-region-select')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('settings-save'))
+
+    await waitFor(() => expect(settingApi.update).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(settingApi.update).mock.calls[0][0]
+    const endpointItem = payload.items.find((i) => i.key === 'dashscope_endpoint')
+    expect(endpointItem).toEqual({ key: 'dashscope_endpoint', value: BSUTOPIA_ENDPOINT, clear: false })
+  })
+
+  it('切回"官方"时地域选择重新出现，此前保存的地域没有被清空', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText(/sk-ab...wxyz/)
+
+    await user.click(screen.getByRole('radio', { name: i18n.t('settings.accessModeBsutopia') }))
+    expect(screen.queryByTestId('settings-region-select')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('radio', { name: i18n.t('settings.accessModeOfficial') }))
+
+    // 切回官方后地域选择器重新出现，且仍然显示切换前的地域（cn-beijing），
+    // 没有因为中途隐藏而被清空。
+    expect(screen.getByTestId('settings-region-select')).toHaveTextContent(i18n.t('settings.regionCnBeijing'))
+
+    await user.click(screen.getByTestId('settings-save'))
+
+    await waitFor(() => expect(settingApi.update).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(settingApi.update).mock.calls[0][0]
+    const regionItem = payload.items.find((i) => i.key === 'region')
+    expect(regionItem).toEqual({ key: 'region', value: 'cn-beijing', clear: false })
+    const endpointItem = payload.items.find((i) => i.key === 'dashscope_endpoint')
+    expect(endpointItem).toEqual({ key: 'dashscope_endpoint', value: '', clear: false })
+  })
+
+  it('地域选择只在"官方"接入方式下可见', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText(/sk-ab...wxyz/)
+
+    expect(screen.getByTestId('settings-region-select')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('radio', { name: i18n.t('settings.accessModeCustom') }))
+    expect(screen.queryByTestId('settings-region-select')).not.toBeInTheDocument()
+    expect(screen.getByTestId('settings-custom-endpoint')).toBeInTheDocument()
+  })
+
+  it('WorkspaceId 只在"官方 + eu-central-1"下出现，其余三个地域都不显示，且说明文字存在', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByText(/sk-ab...wxyz/)
+
+    // baseResponse 里 region 起始值就是 cn-beijing——先验证起始状态本身就
+    // 不显示 workspace_id，不需要再点一次选择同一个值（antd Select 已选中
+    // 的那一项与下拉框选项会共用同一个 title，重复点击会导致定位到两个
+    // 元素）。
+    expect(screen.queryByTestId('settings-workspace-id')).not.toBeInTheDocument()
+
+    const otherNonFrankfurtRegions = [i18n.t('settings.regionApSoutheast1'), i18n.t('settings.regionUsEast1')]
+    for (const label of otherNonFrankfurtRegions) {
+      await user.click(screen.getByTestId('settings-region-select'))
+      await user.click(await screen.findByTitle(label))
+      expect(screen.queryByTestId('settings-workspace-id')).not.toBeInTheDocument()
+    }
+
+    await user.click(screen.getByTestId('settings-region-select'))
+    await user.click(await screen.findByTitle(i18n.t('settings.regionEuCentral1')))
+
+    expect(screen.getByTestId('settings-workspace-id')).toBeInTheDocument()
+    expect(screen.getByText(i18n.t('settings.workspaceIdExplain'))).toBeInTheDocument()
+  })
+
+  it('t8star 卡片不渲染地域或 WorkspaceId 控件', async () => {
+    renderPage()
+    await screen.findByText(/sk-ab...wxyz/)
+
+    const t8starCard = screen.getByText(i18n.t('settings.cardT8starTitle')).closest('.ant-card') as HTMLElement
+    expect(t8starCard).toBeTruthy()
+    expect(t8starCard.querySelector('[data-testid="settings-region-select"]')).toBeNull()
+    expect(t8starCard.querySelector('[data-testid="settings-workspace-id"]')).toBeNull()
+    expect(t8starCard.textContent).not.toContain(i18n.t('settings.accessMode'))
   })
 })
