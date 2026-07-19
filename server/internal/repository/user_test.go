@@ -3,6 +3,9 @@ package repository_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -219,4 +222,118 @@ func TestUserRepo_UpdatePasswordHash(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, newHash, got.PasswordHash)
 	})
+}
+
+func TestUserRepo_ConsumeQuota_DeductsOne(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		repo := repository.NewUserRepository(tx)
+		u := sampleUser("quota1", usermodel.RoleUser)
+		total := 3
+		u.QuotaTotal = &total
+		require.NoError(t, repo.Create(ctx, u))
+
+		require.NoError(t, repo.ConsumeQuota(ctx, u.ID))
+
+		got, err := repo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 1, got.QuotaUsed)
+	})
+}
+
+func TestUserRepo_ConsumeQuota_ExhaustedReturnsError(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		repo := repository.NewUserRepository(tx)
+		u := sampleUser("quota2", usermodel.RoleUser)
+		total := 1
+		u.QuotaTotal = &total
+		require.NoError(t, repo.Create(ctx, u))
+
+		require.NoError(t, repo.ConsumeQuota(ctx, u.ID))
+
+		err := repo.ConsumeQuota(ctx, u.ID)
+		require.Error(t, err)
+		var appErr *apperr.AppError
+		require.True(t, errors.As(err, &appErr))
+		assert.Equal(t, "QUOTA_EXCEEDED", appErr.Code())
+	})
+}
+
+// quota_total 为 NULL 的用户永远不该被拦。
+func TestUserRepo_ConsumeQuota_UnlimitedNeverBlocked(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		repo := repository.NewUserRepository(tx)
+		u := sampleUser("unlimited", usermodel.RoleAdmin) // QuotaTotal 留 nil
+		require.NoError(t, repo.Create(ctx, u))
+
+		for i := 0; i < 50; i++ {
+			require.NoError(t, repo.ConsumeQuota(ctx, u.ID))
+		}
+		got, err := repo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 50, got.QuotaUsed, "不限量用户仍然计数，只是不拦")
+	})
+}
+
+func TestUserRepo_RefundQuota_RestoresOne(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		repo := repository.NewUserRepository(tx)
+		u := sampleUser("refund1", usermodel.RoleUser)
+		total := 5
+		u.QuotaTotal = &total
+		require.NoError(t, repo.Create(ctx, u))
+
+		require.NoError(t, repo.ConsumeQuota(ctx, u.ID))
+		require.NoError(t, repo.RefundQuota(ctx, u.ID))
+
+		got, err := repo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 0, got.QuotaUsed)
+	})
+}
+
+// quota_used 不能被退成负数。
+func TestUserRepo_RefundQuota_NeverGoesNegative(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		repo := repository.NewUserRepository(tx)
+		u := sampleUser("refund2", usermodel.RoleUser)
+		require.NoError(t, repo.Create(ctx, u))
+
+		require.NoError(t, repo.RefundQuota(ctx, u.ID)) // 没扣过就退
+		got, err := repo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 0, got.QuotaUsed)
+	})
+}
+
+// 20 个 goroutine 抢 5 个额度，必须恰好 5 个成功。
+// 先查后写的实现会在这里超发——这正是要防的。
+func TestUserRepo_ConsumeQuota_ConcurrentNeverOverdraws(t *testing.T) {
+	ctx := context.Background()
+	repo := repository.NewUserRepository(testPool)
+
+	u := sampleUser(fmt.Sprintf("race-%d", time.Now().UnixNano()), usermodel.RoleUser)
+	total := 5
+	u.QuotaTotal = &total
+	require.NoError(t, repo.Create(ctx, u))
+	defer func() { _ = repo.Delete(ctx, u.ID) }()
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	var okCount int64
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			if err := repo.ConsumeQuota(ctx, u.ID); err == nil {
+				atomic.AddInt64(&okCount, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	assert.Equal(t, int64(5), atomic.LoadInt64(&okCount), "恰好 5 次成功，多一次就是超发")
+
+	got, err := repo.GetByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 5, got.QuotaUsed)
 }

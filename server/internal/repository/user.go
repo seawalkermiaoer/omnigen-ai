@@ -29,13 +29,21 @@ type UserRepository interface {
 	UpdatePasswordHash(ctx context.Context, id int64, hash string) error
 	Delete(ctx context.Context, id int64) error
 	CountActiveAdmins(ctx context.Context) (int64, error)
+
+	// ConsumeQuota 原子扣减一次算力额度，用单条带条件的 UPDATE 而非
+	// "先查余额再写入"（并发下会超发，见方法内注释）。额度耗尽返回
+	// apperr.ErrQuotaExceeded。
+	ConsumeQuota(ctx context.Context, id int64) error
+	// RefundQuota 退回一次算力额度。0 行受影响不是错误——
+	// 退一个没扣过的用户应当是无操作，因为退款调用会被重试。
+	RefundQuota(ctx context.Context, id int64) error
 }
 
 type userRepository struct{ db DB }
 
 func NewUserRepository(db DB) UserRepository { return &userRepository{db: db} }
 
-const userColumns = `id, username, password_hash, display_name, role, status, created_at, updated_at, password_changed_at`
+const userColumns = `id, username, password_hash, display_name, role, status, created_at, updated_at, password_changed_at, quota_total, quota_used`
 
 // rowScanner 同时被 pgx.Row 与 pgx.Rows 满足，
 // 让单行查询和列表循环共用同一份扫描逻辑——
@@ -49,7 +57,8 @@ type rowScanner interface {
 func scanUserRow(row rowScanner, extra ...any) (*usermodel.User, error) {
 	var u usermodel.User
 	dest := append([]any{&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName,
-		&u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt, &u.PasswordChangedAt}, extra...)
+		&u.Role, &u.Status, &u.CreatedAt, &u.UpdatedAt, &u.PasswordChangedAt,
+		&u.QuotaTotal, &u.QuotaUsed}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
@@ -80,11 +89,11 @@ func isUniqueViolation(err error, constraint string) bool {
 
 func (r *userRepository) Create(ctx context.Context, u *usermodel.User) error {
 	const q = `
-		INSERT INTO users (username, password_hash, display_name, role, status)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, created_at, updated_at, password_changed_at`
-	err := r.db.QueryRow(ctx, q, u.Username, u.PasswordHash, u.DisplayName, u.Role, u.Status).
-		Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt, &u.PasswordChangedAt)
+		INSERT INTO users (username, password_hash, display_name, role, status, quota_total)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, created_at, updated_at, password_changed_at, quota_used`
+	err := r.db.QueryRow(ctx, q, u.Username, u.PasswordHash, u.DisplayName, u.Role, u.Status, u.QuotaTotal).
+		Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt, &u.PasswordChangedAt, &u.QuotaUsed)
 	if err != nil {
 		if isUniqueViolation(err, "users_username_key") {
 			return apperr.ErrUsernameTaken.Wrap(err)
@@ -197,4 +206,40 @@ func (r *userRepository) CountActiveAdmins(ctx context.Context) (int64, error) {
 		return 0, apperr.ErrInternal.Wrap(fmt.Errorf("统计活跃管理员失败: %w", err))
 	}
 	return n, nil
+}
+
+// ConsumeQuota 扣减一次额度。
+//
+// 用单条带条件的 UPDATE 而不是"先查余额再写入"：后者在两个并发请求
+// 都读到"还剩 1"时会双双通过检查、双双扣减，即超发。单条语句由
+// Postgres 保证行级原子，不需要事务也不需要显式锁。
+//
+// quota_total 为 NULL 表示不限量，此时只累加 quota_used 不做上限判断。
+func (r *userRepository) ConsumeQuota(ctx context.Context, id int64) error {
+	const q = `
+		UPDATE users SET quota_used = quota_used + 1, updated_at = now()
+		WHERE id = $1 AND (quota_total IS NULL OR quota_used < quota_total)`
+	tag, err := r.db.Exec(ctx, q, id)
+	if err != nil {
+		return apperr.ErrInternal.Wrap(fmt.Errorf("扣减额度失败: %w", err))
+	}
+	if tag.RowsAffected() == 0 {
+		// 0 行有两种可能：用户不存在，或额度已用尽。
+		// 用户不存在在本系统里不可达（调用方来自已认证的中间件），
+		// 所以统一报额度耗尽。
+		return apperr.ErrQuotaExceeded
+	}
+	return nil
+}
+
+// RefundQuota 退回一次额度。quota_used > 0 是守卫，防止退成负数。
+func (r *userRepository) RefundQuota(ctx context.Context, id int64) error {
+	const q = `
+		UPDATE users SET quota_used = quota_used - 1, updated_at = now()
+		WHERE id = $1 AND quota_used > 0`
+	if _, err := r.db.Exec(ctx, q, id); err != nil {
+		return apperr.ErrInternal.Wrap(fmt.Errorf("退回额度失败: %w", err))
+	}
+	// 0 行不是错误：没扣过就退（例如重复退款）应当是无操作。
+	return nil
 }

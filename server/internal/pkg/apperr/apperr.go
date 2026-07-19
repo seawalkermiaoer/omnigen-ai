@@ -56,6 +56,10 @@ var (
 	ErrModifySelf      = New("USER_CANNOT_MODIFY_SELF", http.StatusUnprocessableEntity)
 	ErrLastAdmin       = New("USER_LAST_ADMIN", http.StatusUnprocessableEntity)
 	ErrPasswordTooLong = New("USER_PASSWORD_TOO_LONG", http.StatusUnprocessableEntity)
+	// ErrQuotaExceeded：用户的算力额度已用尽（quota_total 非 NULL 且
+	// quota_used >= quota_total）。403 而非 402——本系统没有计费概念，
+	// 这是管理员设定的用量上限，语义更接近"权限用尽"而非"需要付款"。
+	ErrQuotaExceeded = New("QUOTA_EXCEEDED", http.StatusForbidden)
 
 	ErrValidation = New("VALIDATION_FAILED", http.StatusUnprocessableEntity)
 	ErrInternal   = New("INTERNAL_ERROR", http.StatusInternalServerError)

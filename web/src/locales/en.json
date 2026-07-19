@@ -309,6 +309,7 @@
     "T8STAR_UPSTREAM_HTTP_ERROR": "t8star returned an error — go to Settings and check the API key and endpoint, or try again later",
     "T8STAR_UPSTREAM_ERROR": "t8star rejected this request — go to Settings and check the API key, or try again later",
     "T8STAR_NO_IMAGE_RESULT": "t8star did not return a usable image result, please try again later",
+    "QUOTA_EXCEEDED": "You have used up your quota. Contact an administrator to increase it.",
     "UNKNOWN": "Action failed, please try again later"
   }
 }

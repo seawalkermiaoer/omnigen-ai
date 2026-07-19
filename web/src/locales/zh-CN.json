@@ -309,6 +309,7 @@
     "T8STAR_UPSTREAM_HTTP_ERROR": "t8star 服务返回错误，请前往设置检查 API Key 与接入点配置，或稍后重试",
     "T8STAR_UPSTREAM_ERROR": "t8star 服务拒绝了本次请求，请前往设置检查 API Key，或稍后重试",
     "T8STAR_NO_IMAGE_RESULT": "t8star 未返回可用的图片结果，请稍后重试",
+    "QUOTA_EXCEEDED": "算力额度已用尽，请联系管理员增加额度",
     "UNKNOWN": "操作失败，请稍后重试"
   }
 }

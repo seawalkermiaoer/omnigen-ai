@@ -42,6 +42,8 @@ describe('语言文件', () => {
       'USER_USERNAME_TAKEN', 'USER_CANNOT_MODIFY_SELF', 'USER_LAST_ADMIN',
       'USER_PASSWORD_TOO_LONG', 'SETTING_NOT_FOUND', 'SETTING_INCOMPLETE', 'SETTING_TEST_FAILED',
       'VALIDATION_FAILED', 'INTERNAL_ERROR', 'UNKNOWN',
+      // 算力配额耗尽（server/internal/repository/user.go ConsumeQuota）。
+      'QUOTA_EXCEEDED',
       'TASK_NOT_FOUND', 'TASK_POLL_FAILED', 'TASK_TIMEOUT', 'DOWNLOAD_FAILED',
       // 生成类接口（图片/视频/prompt 优化）的上游错误归一化产物——见
       // server/internal/pkg/apperr/apperr.go 与

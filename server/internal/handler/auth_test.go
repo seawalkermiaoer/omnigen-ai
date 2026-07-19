@@ -117,6 +117,32 @@ func (m *memRepo) CountActiveAdmins(_ context.Context) (int64, error) {
 	return n, nil
 }
 
+// ConsumeQuota/RefundQuota mirror the real repository's semantics (see
+// internal/repository/user.go): unlimited (QuotaTotal == nil) never blocks
+// but still counts; refund never goes below zero and is a no-op if nothing
+// was charged.
+func (m *memRepo) ConsumeQuota(_ context.Context, id int64) error {
+	u, ok := m.users[id]
+	if !ok {
+		return apperr.ErrUserNotFound
+	}
+	if u.QuotaTotal != nil && u.QuotaUsed >= *u.QuotaTotal {
+		return apperr.ErrQuotaExceeded
+	}
+	u.QuotaUsed++
+	u.UpdatedAt = time.Now()
+	return nil
+}
+func (m *memRepo) RefundQuota(_ context.Context, id int64) error {
+	u, ok := m.users[id]
+	if !ok || u.QuotaUsed == 0 {
+		return nil
+	}
+	u.QuotaUsed--
+	u.UpdatedAt = time.Now()
+	return nil
+}
+
 var _ repository.UserRepository = (*memRepo)(nil)
 
 type testEnv struct {

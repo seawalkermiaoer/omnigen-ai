@@ -131,3 +131,29 @@ func (f *fakeUserRepo) CountActiveAdmins(_ context.Context) (int64, error) {
 	}
 	return n, nil
 }
+
+// ConsumeQuota/RefundQuota 忠实复刻真实 repository 的语义（见
+// internal/repository/user.go）：QuotaTotal 为 nil 表示不限量，不拦但仍计数；
+// 退回不会把 QuotaUsed 减到负数，且没扣过就退是无操作，不是错误。
+func (f *fakeUserRepo) ConsumeQuota(_ context.Context, id int64) error {
+	u, ok := f.users[id]
+	if !ok {
+		return apperr.ErrUserNotFound
+	}
+	if u.QuotaTotal != nil && u.QuotaUsed >= *u.QuotaTotal {
+		return apperr.ErrQuotaExceeded
+	}
+	u.QuotaUsed++
+	u.UpdatedAt = time.Now()
+	return nil
+}
+
+func (f *fakeUserRepo) RefundQuota(_ context.Context, id int64) error {
+	u, ok := f.users[id]
+	if !ok || u.QuotaUsed == 0 {
+		return nil
+	}
+	u.QuotaUsed--
+	u.UpdatedAt = time.Now()
+	return nil
+}
