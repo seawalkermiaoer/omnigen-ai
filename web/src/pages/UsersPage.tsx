@@ -129,10 +129,12 @@ export default function UsersPage() {
   const USERNAME_COL_WIDTH = 140
   const ROLE_COL_WIDTH = 100
   const STATUS_COL_WIDTH = 100
+  const QUOTA_COL_WIDTH = 110
   const CREATED_COL_WIDTH = 170
   const USERS_ACTIONS_COL_WIDTH = 260
   const USERS_TABLE_SCROLL_X =
-    USERNAME_COL_WIDTH + ROLE_COL_WIDTH + STATUS_COL_WIDTH + CREATED_COL_WIDTH + USERS_ACTIONS_COL_WIDTH + 160
+    USERNAME_COL_WIDTH + ROLE_COL_WIDTH + STATUS_COL_WIDTH + QUOTA_COL_WIDTH +
+    CREATED_COL_WIDTH + USERS_ACTIONS_COL_WIDTH + 160
 
   const columns: ColumnsType<User> = [
     { title: t('users.username'), dataIndex: 'username', key: 'username', width: USERNAME_COL_WIDTH },
@@ -158,6 +160,20 @@ export default function UsersPage() {
           {status === 'active' ? t('users.statusActive') : t('users.statusDisabled')}
         </Tag>
       ),
+    },
+    {
+      title: t('users.quota'),
+      key: 'quota',
+      width: QUOTA_COL_WIDTH,
+      // 用等宽数字（tabular-nums）避免额度列的数字随每行位数不同而抖动对齐。
+      render: (_, record) =>
+        record.quotaTotal === null ? (
+          <Typography.Text type="secondary">{t('users.quotaUnlimited')}</Typography.Text>
+        ) : (
+          <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+            {record.quotaUsed}/{record.quotaTotal}
+          </span>
+        ),
     },
     {
       title: t('users.createdAt'),

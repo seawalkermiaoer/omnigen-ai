@@ -21,8 +21,9 @@ vi.mock('@/api/user', () => ({
 const admin: User = {
   id: 1, username: 'admin', displayName: '管理员', role: 'admin',
   status: 'active', createdAt: '2026-07-18T00:00:00Z', updatedAt: '2026-07-18T00:00:00Z',
+  quotaTotal: null, quotaUsed: 0,
 }
-const bob: User = { ...admin, id: 2, username: 'bob', displayName: 'Bob', role: 'user' }
+const bob: User = { ...admin, id: 2, username: 'bob', displayName: 'Bob', role: 'user', quotaTotal: 50, quotaUsed: 12 }
 
 function renderPage() {
   return render(
@@ -69,6 +70,15 @@ describe('UsersPage', () => {
 
     await waitFor(() => expect(userApi.create).toHaveBeenCalled())
     await waitFor(() => expect(userApi.list).toHaveBeenCalledTimes(2))
+  })
+
+  // 额度列：限量用户显示「已用/总量」，不限量用户显示翻译后的「不限」文案。
+  it('额度列渲染已用/总量，不限量显示「不限」', async () => {
+    renderPage()
+    await screen.findByText('admin')
+
+    expect(screen.getByText('12/50')).toBeInTheDocument()
+    expect(screen.getAllByText(i18n.t('users.quotaUnlimited')).length).toBeGreaterThan(0)
   })
 
   // 后端已有护栏，前端也要藏起来，避免用户点了才被拒绝。

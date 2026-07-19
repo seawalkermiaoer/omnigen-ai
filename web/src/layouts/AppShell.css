@@ -140,6 +140,14 @@
   outline-offset: 2px;
 }
 
+/* 剩余额度指示：纯文本徽标，不做成按钮——它不可点击，视觉上应比
+   可交互的用户菜单更轻。等宽数字（tabular-nums）避免次数变化时抖动宽度。 */
+.shell-quota {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .shell-user__name {
   font-size: 13px;
   color: var(--omnigen-text-base);

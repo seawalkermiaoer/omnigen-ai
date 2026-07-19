@@ -11,6 +11,7 @@ vi.mock('@/api/auth', () => ({
 const fakeUser: User = {
   id: 1, username: 'alice', displayName: 'Alice', role: 'admin',
   status: 'active', createdAt: '2026-07-18T00:00:00Z', updatedAt: '2026-07-18T00:00:00Z',
+  quotaTotal: null, quotaUsed: 0,
 }
 
 describe('auth store', () => {

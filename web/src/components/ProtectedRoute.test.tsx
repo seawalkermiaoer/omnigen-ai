@@ -10,6 +10,7 @@ import type { User } from '@/types/user'
 const adminUser: User = {
   id: 1, username: 'admin', displayName: 'Admin', role: 'admin',
   status: 'active', createdAt: '', updatedAt: '',
+  quotaTotal: null, quotaUsed: 0,
 }
 const plainUser: User = { ...adminUser, id: 2, username: 'bob', role: 'user' }
 

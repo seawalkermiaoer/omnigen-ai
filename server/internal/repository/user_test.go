@@ -127,6 +127,35 @@ func TestUserRepo_Update(t *testing.T) {
 	assert.Equal(t, originalHash, got.PasswordHash, "Update 不应改动 password_hash")
 }
 
+// Update 现在也写 quota_total（Task 4）：既要能把额度改成一个具体值，
+// 也要能把它改成 NULL（不限量）——这条 SQL 之前只覆盖 display_name/role/status，
+// 漏了 quota_total 会让「改成不限量」在数据库里悄悄失效。
+func TestUserRepo_Update_QuotaTotal(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		repo := repository.NewUserRepository(tx)
+		u := sampleUser("quota-update", usermodel.RoleUser)
+		total := 10
+		u.QuotaTotal = &total
+		require.NoError(t, repo.Create(ctx, u))
+
+		newTotal := 250
+		u.QuotaTotal = &newTotal
+		require.NoError(t, repo.Update(ctx, u))
+
+		got, err := repo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		require.NotNil(t, got.QuotaTotal)
+		assert.Equal(t, 250, *got.QuotaTotal)
+
+		u.QuotaTotal = nil
+		require.NoError(t, repo.Update(ctx, u))
+
+		got, err = repo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Nil(t, got.QuotaTotal, "quota_total 应能被 Update 改回 NULL（不限量）")
+	})
+}
+
 func TestUserRepo_Delete(t *testing.T) {
 	withTx(t, func(ctx context.Context, tx repository.DB) {
 		repo := repository.NewUserRepository(tx)

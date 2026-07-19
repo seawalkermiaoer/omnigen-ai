@@ -87,8 +87,8 @@ func (f *fakeUserRepo) List(_ context.Context, offset, limit int) ([]usermodel.U
 	return all[offset:end], total, nil
 }
 
-// Update 只写 display_name/role/status/updated_at，
-// 与真实 SQL（UPDATE users SET display_name=…, role=…, status=…, updated_at=now()）保持一致。
+// Update 只写 display_name/role/status/quota_total/updated_at，
+// 与真实 SQL（UPDATE users SET display_name=…, role=…, status=…, quota_total=…, updated_at=now()）保持一致。
 // 不能整体替换存储的 struct：调用方传入的 u 若是半成品（例如 PasswordHash 为空），
 // 整体替换会悄悄冲掉真实 SQL 根本不会触碰的字段，掩盖 bug。
 func (f *fakeUserRepo) Update(_ context.Context, u *usermodel.User) error {
@@ -99,6 +99,7 @@ func (f *fakeUserRepo) Update(_ context.Context, u *usermodel.User) error {
 	stored.DisplayName = u.DisplayName
 	stored.Role = u.Role
 	stored.Status = u.Status
+	stored.QuotaTotal = u.QuotaTotal
 	stored.UpdatedAt = time.Now()
 	u.UpdatedAt = stored.UpdatedAt
 	return nil

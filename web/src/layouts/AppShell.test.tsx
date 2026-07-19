@@ -5,7 +5,7 @@ import { App as AntdApp, ConfigProvider } from 'antd'
 import { I18nextProvider } from 'react-i18next'
 
 import i18n from '@/i18n'
-import { omnigenTheme } from '@/theme'
+import { colors, omnigenTheme } from '@/theme'
 import AppShell from './AppShell'
 import { useAuthStore } from '@/stores/auth'
 import type { User } from '@/types/user'
@@ -13,6 +13,7 @@ import type { User } from '@/types/user'
 const admin: User = {
   id: 1, username: 'admin', displayName: '管理员', role: 'admin',
   status: 'active', createdAt: '2026-07-19T00:00:00Z', updatedAt: '2026-07-19T00:00:00Z',
+  quotaTotal: null, quotaUsed: 0,
 }
 const bob: User = { ...admin, id: 2, username: 'bob', displayName: 'Bob', role: 'user' }
 
@@ -71,5 +72,42 @@ describe('AppShell 导航', () => {
 
     const menuItems = screen.getAllByRole('menuitem')
     expect(menuItems.map((el) => el.textContent)).toEqual(expectedOrder)
+  })
+})
+
+describe('AppShell 剩余额度', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  it('不限量用户不显示剩余次数', () => {
+    useAuthStore.setState({ token: 'tok', user: admin, initializing: false })
+    renderShell()
+    expect(screen.queryByTestId('quota-remaining')).not.toBeInTheDocument()
+  })
+
+  it('限量用户显示剩余次数', () => {
+    const limited: User = { ...bob, quotaTotal: 100, quotaUsed: 30 }
+    useAuthStore.setState({ token: 'tok', user: limited, initializing: false })
+    renderShell()
+    expect(screen.getByTestId('quota-remaining')).toHaveTextContent(
+      i18n.t('users.quotaRemaining', { count: 70 }),
+    )
+  })
+
+  // 剩余 <=10 时用警告色，颜色是唯一区分手段之外还有数字本身可读——
+  // 不是纯用颜色传达信息（数字文案已经说明了剩余多少）。
+  it('剩余额度 <=10 时使用警告色', () => {
+    const nearlyExhausted: User = { ...bob, quotaTotal: 100, quotaUsed: 95 }
+    useAuthStore.setState({ token: 'tok', user: nearlyExhausted, initializing: false })
+    renderShell()
+    expect(screen.getByTestId('quota-remaining')).toHaveStyle({ color: colors.warning })
+  })
+
+  it('剩余额度充足时不使用警告色', () => {
+    const plenty: User = { ...bob, quotaTotal: 100, quotaUsed: 10 }
+    useAuthStore.setState({ token: 'tok', user: plenty, initializing: false })
+    renderShell()
+    expect(screen.getByTestId('quota-remaining')).toHaveStyle({ color: colors.textMuted })
   })
 })

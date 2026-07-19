@@ -24,10 +24,30 @@ func NewUserService(users repository.UserRepository) *UserService {
 	return &UserService{users: users}
 }
 
+// defaultQuotaTotal 是新建用户在未显式指定额度时的默认算力配额。默认给
+// 一个有限值而不是 nil（不限量）——留空表示不限量会让每个新账号都能无限
+// 使用，与配额功能的初衷相悖。管理员创建时可以传 CreateRequest.QuotaTotal
+// 覆盖它。EnsureBootstrapAdmin 引导的首个管理员是唯一例外：那条路径不走
+// 这条默认逻辑，保持不限量，见该方法注释。
+const defaultQuotaTotal = 100
+
 func (s *UserService) Create(ctx context.Context, req usermodel.CreateRequest) (*usermodel.UserResponse, error) {
+	return s.create(ctx, req, true)
+}
+
+// create 是 Create 与 EnsureBootstrapAdmin 共用的内部实现。
+// applyDefaultQuota 控制 req.QuotaTotal 为 nil 时是否补上 defaultQuotaTotal：
+// 普通创建（Create）走 true；EnsureBootstrapAdmin 走 false，
+// 让首个管理员保持不限量，不被这条默认逻辑意外限额。
+func (s *UserService) create(ctx context.Context, req usermodel.CreateRequest, applyDefaultQuota bool) (*usermodel.UserResponse, error) {
 	hash, err := password.Hash(req.Password)
 	if err != nil {
 		return nil, mapHashError(err)
+	}
+	quotaTotal := req.QuotaTotal
+	if quotaTotal == nil && applyDefaultQuota {
+		def := defaultQuotaTotal
+		quotaTotal = &def
 	}
 	u := &usermodel.User{
 		Username:     req.Username,
@@ -35,6 +55,7 @@ func (s *UserService) Create(ctx context.Context, req usermodel.CreateRequest) (
 		DisplayName:  req.DisplayName,
 		Role:         req.Role,
 		Status:       usermodel.StatusActive,
+		QuotaTotal:   quotaTotal,
 	}
 	if err := s.users.Create(ctx, u); err != nil {
 		return nil, err
@@ -80,6 +101,16 @@ func (s *UserService) Update(ctx context.Context, actorID, targetID int64, req u
 	}
 	if req.Status != nil {
 		target.Status = *req.Status
+	}
+	// QuotaUnlimited 优先于 QuotaTotal：两者同时出现在一次请求里时，
+	// "改成不限量"的意图应当赢，而不是被同一请求里可能一并传来的
+	// 具体额度值悄悄覆盖回去。
+	switch {
+	case req.QuotaUnlimited != nil && *req.QuotaUnlimited:
+		target.QuotaTotal = nil
+	case req.QuotaTotal != nil:
+		q := *req.QuotaTotal
+		target.QuotaTotal = &q
 	}
 
 	if err := s.users.Update(ctx, target); err != nil {
@@ -142,12 +173,15 @@ func (s *UserService) EnsureBootstrapAdmin(ctx context.Context, username, plainP
 	if n > 0 {
 		return nil
 	}
-	_, err = s.Create(ctx, usermodel.CreateRequest{
+	// 走内部 create(..., false)，不经过 Create 的默认限额逻辑——
+	// 首个管理员必须保持不限量，否则每次全新部署引导出来的 admin
+	// 会莫名其妙只有 100 次额度。
+	_, err = s.create(ctx, usermodel.CreateRequest{
 		Username:    username,
 		Password:    plainPassword,
 		DisplayName: username,
 		Role:        usermodel.RoleAdmin,
-	})
+	}, false)
 	if err != nil {
 		return fmt.Errorf("播种首个管理员失败（检查 BOOTSTRAP_ADMIN_USERNAME / BOOTSTRAP_ADMIN_PASSWORD，密码上限 72 字节）: %w", err)
 	}

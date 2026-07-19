@@ -49,6 +49,7 @@ vi.stubGlobal('URL', {
 const admin = {
   id: 1, username: 'admin', displayName: '管理员', role: 'admin' as const,
   status: 'active' as const, createdAt: '2026-07-19T00:00:00Z', updatedAt: '2026-07-19T00:00:00Z',
+  quotaTotal: null, quotaUsed: 0,
 }
 
 const happyhorseR2V: CatalogModel = {

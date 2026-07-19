@@ -157,10 +157,10 @@ func (r *userRepository) List(ctx context.Context, offset, limit int) ([]usermod
 func (r *userRepository) Update(ctx context.Context, u *usermodel.User) error {
 	const q = `
 		UPDATE users
-		SET display_name = $1, role = $2, status = $3, updated_at = now()
-		WHERE id = $4
+		SET display_name = $1, role = $2, status = $3, quota_total = $4, updated_at = now()
+		WHERE id = $5
 		RETURNING updated_at`
-	err := r.db.QueryRow(ctx, q, u.DisplayName, u.Role, u.Status, u.ID).Scan(&u.UpdatedAt)
+	err := r.db.QueryRow(ctx, q, u.DisplayName, u.Role, u.Status, u.QuotaTotal, u.ID).Scan(&u.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return apperr.ErrUserNotFound.Wrap(err)

@@ -332,6 +332,22 @@ func TestMe_ReturnsCurrentUser(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `"username":"alice"`)
 }
 
+// /auth/me 与登录响应都复用 UserResponse，额度字段应自动带出——
+// 这条测试锁定的是 handler/service 没有另外裁剪掉这两个字段。
+func TestMe_ReturnsQuotaFields(t *testing.T) {
+	e := newTestEnv(t)
+	victim := e.seed(t, "quotauser", "password123", usermodel.RoleUser)
+	total := 30
+	victim.QuotaTotal = &total
+	victim.QuotaUsed = 5
+	token := e.login(t, "quotauser", "password123")
+
+	w := e.request(t, http.MethodGet, "/api/auth/me", token, nil)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"quotaTotal":30`)
+	assert.Contains(t, w.Body.String(), `"quotaUsed":5`)
+}
+
 func TestChangePassword_Flow(t *testing.T) {
 	e := newTestEnv(t)
 	e.seed(t, "alice", "password123", usermodel.RoleUser)
@@ -357,6 +373,29 @@ func TestUsers_PlainUserForbidden(t *testing.T) {
 	w := e.request(t, http.MethodGet, "/api/users", token, nil)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	assert.Equal(t, "AUTH_FORBIDDEN", respCode(t, w))
+}
+
+// PUT /api/users/:id 是 quota 改动唯一的写入口，且整条路由都挂在
+// RequireAdmin 之后（见 newTestEnv）。这条测试专门锁定"改额度"这个
+// 具体场景，而不是泛泛地信任 RequireAdmin 对其它字段生效就顺带覆盖了它——
+// 额度值本身是攻击者最有动机去绕过的字段。
+func TestUsers_PlainUserCannotChangeQuota(t *testing.T) {
+	e := newTestEnv(t)
+	e.seed(t, "admin", "password123", usermodel.RoleAdmin)
+	victim := e.seed(t, "plain", "password123", usermodel.RoleUser)
+	original := 50
+	victim.QuotaTotal = &original
+	token := e.login(t, "plain", "password123")
+
+	w := e.request(t, http.MethodPut, "/api/users/"+strconv.FormatInt(victim.ID, 10), token,
+		gin.H{"quotaTotal": 999999})
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Equal(t, "AUTH_FORBIDDEN", respCode(t, w))
+
+	stored, err := e.repo.GetByID(context.Background(), victim.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored.QuotaTotal)
+	assert.Equal(t, 50, *stored.QuotaTotal, "被拒绝的请求不应改动额度")
 }
 
 func TestUsers_AdminCanCreateAndList(t *testing.T) {

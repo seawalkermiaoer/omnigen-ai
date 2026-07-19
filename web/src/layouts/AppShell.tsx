@@ -18,6 +18,9 @@ const { Header, Sider, Content } = Layout
 const { Text } = Typography
 
 const COLLAPSE_KEY = 'omnigen_sider_collapsed'
+// 剩余额度不高于这个阈值时，topbar 的剩余次数改用警告色——纯粹的视觉提醒，
+// 不阻断任何操作，真正的拦截发生在后端 ConsumeQuota。
+const QUOTA_WARNING_THRESHOLD = 10
 
 interface NavItem {
   key: string
@@ -77,6 +80,9 @@ export default function AppShell() {
       return !prev
     })
   }
+
+  // quotaTotal 为 null 表示不限量，此时不展示剩余次数——见下方渲染处的说明。
+  const quotaRemaining = user?.quotaTotal == null ? null : user.quotaTotal - user.quotaUsed
 
   const effectiveCollapsed = collapsed || autoCollapsed
   const visibleItems = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin())
@@ -149,6 +155,21 @@ export default function AppShell() {
                 { label: 'EN', value: 'en' },
               ]}
             />
+            {/* quotaRemaining 为 null 时（不限量）整块不渲染——一个裸数字配不上
+                分母会让人误以为额度快用完了，不如干脆不显示。 */}
+            {quotaRemaining !== null && (
+              <Tooltip title={t('users.quotaRemainingTooltip')}>
+                <span
+                  className="shell-quota"
+                  data-testid="quota-remaining"
+                  style={{
+                    color: quotaRemaining <= QUOTA_WARNING_THRESHOLD ? colors.warning : colors.textMuted,
+                  }}
+                >
+                  {t('users.quotaRemaining', { count: quotaRemaining })}
+                </span>
+              </Tooltip>
+            )}
             <Dropdown
               menu={{
                 items: [
