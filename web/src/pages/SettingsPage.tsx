@@ -19,7 +19,20 @@ const SECRET_KEYS: SettingKey[] = [
 
 // 其余非 secret 项：GET 直接拿明文，PUT 时"清空"与"未修改"要靠对比原值区分
 // （见 buildItems），不能像 secret 项那样靠一个独立的清除开关。
-const PLAIN_KEYS: SettingKey[] = ['region', 'endpoint', 'workspace_id', 'oss_bucket', 'oss_region', 'oss_role_arn']
+//
+// dashscope_endpoint / t8star_endpoint 是两个独立的键，不是一个共享的
+// "endpoint"——两个上游协议各自独立生效（按模型选择，不再是旧系统那种
+// "同一时刻只有一个上游"的全局开关），合用一个地址会让配置其中一个时
+// 连带影响另一个协议的请求。
+const PLAIN_KEYS: SettingKey[] = [
+  'region',
+  'dashscope_endpoint',
+  't8star_endpoint',
+  'workspace_id',
+  'oss_bucket',
+  'oss_region',
+  'oss_role_arn',
+]
 
 const REGION_OPTIONS: { value: string; labelKey: string }[] = [
   { value: 'cn-beijing', labelKey: 'settings.regionCnBeijing' },
@@ -32,7 +45,8 @@ interface FormValues {
   dashscope_api_key?: string
   t8star_api_key?: string
   region?: string
-  endpoint?: string
+  dashscope_endpoint?: string
+  t8star_endpoint?: string
   workspace_id?: string
   oss_bucket?: string
   oss_region?: string
@@ -50,7 +64,7 @@ type TestResult = { ok: true } | { ok: false; message: string }
  * 真要清空必须走显式的"清除"操作（见 secretExtra），不能靠删空文本框
  * 这种容易误触的方式——这是 UpdateItem.Clear 存在的唯一理由。
  *
- * 非 secret 字段（region/endpoint/workspace_id/oss_*）不是 secret，
+ * 非 secret 字段（region/dashscope_endpoint/t8star_endpoint/workspace_id/oss_*）不是 secret，
  * GET 直接给明文，因此表单里天然带着原值：真把它删空提交时，对比原值
  * 就能判断出这是"用户主动清空"而非"没碰过"，自动补上 clear:true，
  * 不需要额外的清除按钮。
@@ -82,7 +96,8 @@ export default function SettingsPage() {
       setClearedKeys(new Set())
       form.setFieldsValue({
         region: byKey.region?.value || undefined,
-        endpoint: byKey.endpoint?.value || '',
+        dashscope_endpoint: byKey.dashscope_endpoint?.value || '',
+        t8star_endpoint: byKey.t8star_endpoint?.value || '',
         workspace_id: byKey.workspace_id?.value || '',
         oss_bucket: byKey.oss_bucket?.value || '',
         oss_region: byKey.oss_region?.value || '',
@@ -282,7 +297,19 @@ export default function SettingsPage() {
             />
           </Form.Item>
 
-          <Form.Item name="endpoint" label={t('settings.endpoint')} extra={t('settings.endpointHint')}>
+          <Form.Item
+            name="dashscope_endpoint"
+            label={t('settings.dashscopeEndpoint')}
+            extra={t('settings.dashscopeEndpointHint')}
+          >
+            <Input placeholder={t('settings.endpointPlaceholder')} autoComplete="off" />
+          </Form.Item>
+
+          <Form.Item
+            name="t8star_endpoint"
+            label={t('settings.t8starEndpoint')}
+            extra={t('settings.t8starEndpointHint')}
+          >
             <Input placeholder={t('settings.endpointPlaceholder')} autoComplete="off" />
           </Form.Item>
 

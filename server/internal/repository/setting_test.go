@@ -101,7 +101,7 @@ func TestSettingRepo_GetAll_ReturnsEverythingInStableOrder(t *testing.T) {
 	withTx(t, func(ctx context.Context, tx repository.DB) {
 		repo := repository.NewSettingRepository(tx)
 		require.NoError(t, repo.Upsert(ctx, &settingmodel.Setting{Key: string(settingmodel.KeyRegion), Value: "cn-beijing"}))
-		require.NoError(t, repo.Upsert(ctx, &settingmodel.Setting{Key: string(settingmodel.KeyEndpoint), Value: "https://example.com"}))
+		require.NoError(t, repo.Upsert(ctx, &settingmodel.Setting{Key: string(settingmodel.KeyDashscopeEndpoint), Value: "https://example.com"}))
 		require.NoError(t, repo.Upsert(ctx, &settingmodel.Setting{Key: string(settingmodel.KeyWorkspaceID), Value: "ws-1"}))
 
 		all, err := repo.GetAll(ctx)
@@ -109,7 +109,7 @@ func TestSettingRepo_GetAll_ReturnsEverythingInStableOrder(t *testing.T) {
 		require.Len(t, all, 3)
 
 		// 稳定顺序：按 key 字母序（repository 实现里 ORDER BY key ASC）。
-		assert.Equal(t, string(settingmodel.KeyEndpoint), all[0].Key)
+		assert.Equal(t, string(settingmodel.KeyDashscopeEndpoint), all[0].Key)
 		assert.Equal(t, string(settingmodel.KeyRegion), all[1].Key)
 		assert.Equal(t, string(settingmodel.KeyWorkspaceID), all[2].Key)
 
@@ -151,7 +151,7 @@ func TestSettingRepo_UpsertMany_IsAtomic(t *testing.T) {
 		badUserID := int64(999999999) // 不存在的用户，触发 FK 违反
 		items := []settingmodel.Setting{
 			{Key: string(settingmodel.KeyRegion), Value: "cn-beijing"},
-			{Key: string(settingmodel.KeyEndpoint), Value: "https://example.com", UpdatedBy: &badUserID},
+			{Key: string(settingmodel.KeyDashscopeEndpoint), Value: "https://example.com", UpdatedBy: &badUserID},
 		}
 
 		upsertErr := repo.UpsertMany(ctx, items)
@@ -169,7 +169,7 @@ func TestSettingRepo_UpsertMany_IsAtomic(t *testing.T) {
 		require.Error(t, getErr)
 		assert.True(t, errors.Is(getErr, apperr.ErrSettingNotFound))
 
-		_, getErr2 := repo.Get(ctx, string(settingmodel.KeyEndpoint))
+		_, getErr2 := repo.Get(ctx, string(settingmodel.KeyDashscopeEndpoint))
 		require.Error(t, getErr2)
 		assert.True(t, errors.Is(getErr2, apperr.ErrSettingNotFound))
 	})
@@ -184,7 +184,7 @@ func TestSettingRepo_UpsertMany_AllSucceed(t *testing.T) {
 		repo := repository.NewSettingRepository(tx)
 		items := []settingmodel.Setting{
 			{Key: string(settingmodel.KeyRegion), Value: "cn-beijing", UpdatedBy: &u.ID},
-			{Key: string(settingmodel.KeyEndpoint), Value: "https://example.com", UpdatedBy: &u.ID},
+			{Key: string(settingmodel.KeyDashscopeEndpoint), Value: "https://example.com", UpdatedBy: &u.ID},
 			{Key: string(settingmodel.KeyWorkspaceID), Value: "ws-1", UpdatedBy: &u.ID},
 		}
 		require.NoError(t, repo.UpsertMany(ctx, items))

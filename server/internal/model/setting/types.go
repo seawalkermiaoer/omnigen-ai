@@ -9,10 +9,20 @@ import "time"
 type Key string
 
 const (
-	KeyDashscopeAPIKey    Key = "dashscope_api_key"
-	KeyT8starAPIKey       Key = "t8star_api_key"
-	KeyRegion             Key = "region"
-	KeyEndpoint           Key = "endpoint"
+	KeyDashscopeAPIKey Key = "dashscope_api_key"
+	KeyT8starAPIKey    Key = "t8star_api_key"
+	KeyRegion          Key = "region"
+	// KeyDashscopeEndpoint and KeyT8starEndpoint used to be a single shared
+	// KeyEndpoint ("endpoint") key. That was fine as long as the old system
+	// only ever had one upstream provider active at a time (a single global
+	// switch), but the new per-model protocol selection (generation_image.go
+	// picks t8star for openai-protocol models, dashscope for everything
+	// else) makes the two providers independent — a t8star relay address
+	// must never leak into a DashScope call and vice versa. See migration
+	// 000005_split_endpoint_setting for how an existing "endpoint" row is
+	// carried forward (into dashscope_endpoint, the old default meaning).
+	KeyDashscopeEndpoint  Key = "dashscope_endpoint"
+	KeyT8starEndpoint     Key = "t8star_endpoint"
 	KeyWorkspaceID        Key = "workspace_id"
 	KeyOSSBucket          Key = "oss_bucket"
 	KeyOSSRegion          Key = "oss_region"
@@ -27,7 +37,8 @@ var AllKeys = []Key{
 	KeyDashscopeAPIKey,
 	KeyT8starAPIKey,
 	KeyRegion,
-	KeyEndpoint,
+	KeyDashscopeEndpoint,
+	KeyT8starEndpoint,
 	KeyWorkspaceID,
 	KeyOSSBucket,
 	KeyOSSRegion,

@@ -197,7 +197,10 @@ func (s *SettingService) TestConnection(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	endpoint, err := s.GetDecrypted(ctx, settingmodel.KeyEndpoint)
+	// dashscopeConnectionTester always probes DashScope (it reuses
+	// OptimizeService's compatible-mode/chat-completions path), so this
+	// reads dashscope_endpoint specifically — never t8star_endpoint.
+	endpoint, err := s.GetDecrypted(ctx, settingmodel.KeyDashscopeEndpoint)
 	if err != nil {
 		return err
 	}

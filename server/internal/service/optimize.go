@@ -112,7 +112,9 @@ func (s *OptimizeService) Optimize(ctx context.Context, req OptimizeRequest) (te
 	if err != nil {
 		return "", "", err
 	}
-	endpoint, err := s.settings.GetDecrypted(ctx, settingmodel.KeyEndpoint)
+	// optimize 服务始终只对接 DashScope（文本/视觉两族优化模型都是 DashScope
+	// 模型），所以只读 dashscope_endpoint。
+	endpoint, err := s.settings.GetDecrypted(ctx, settingmodel.KeyDashscopeEndpoint)
 	if err != nil {
 		return "", "", err
 	}

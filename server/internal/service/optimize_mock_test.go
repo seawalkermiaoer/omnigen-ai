@@ -16,6 +16,12 @@ import (
 type fakeOptimizeSettings struct {
 	values map[settingmodel.Key]string
 	err    error
+	// keyErr, when set, fails GetDecrypted only for the listed keys —
+	// distinct from err (which fails every key uniformly). This exists to
+	// prove a negative: "this code path never even reads key X" is only
+	// testable by making X blow up if touched and asserting the call still
+	// succeeds. See TestGenerateImage_GPTImage2_SucceedsEvenWhenRegionLookupErrors.
+	keyErr map[settingmodel.Key]error
 }
 
 func newFakeOptimizeSettings(values map[settingmodel.Key]string) *fakeOptimizeSettings {
@@ -25,6 +31,9 @@ func newFakeOptimizeSettings(values map[settingmodel.Key]string) *fakeOptimizeSe
 func (f *fakeOptimizeSettings) GetDecrypted(_ context.Context, key settingmodel.Key) (string, error) {
 	if f.err != nil {
 		return "", f.err
+	}
+	if e, ok := f.keyErr[key]; ok {
+		return "", e
 	}
 	return f.values[key], nil
 }

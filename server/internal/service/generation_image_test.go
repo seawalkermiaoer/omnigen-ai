@@ -26,11 +26,12 @@ const fakeT8starKey = "sk-t8star-seeded-plaintext-0987654321"
 
 func dashscopeSettings(overrides map[settingmodel.Key]string) *fakeOptimizeSettings {
 	values := map[settingmodel.Key]string{
-		settingmodel.KeyDashscopeAPIKey: fakeDashscopeKey,
-		settingmodel.KeyT8starAPIKey:    fakeT8starKey,
-		settingmodel.KeyRegion:          "cn-beijing",
-		settingmodel.KeyEndpoint:        "",
-		settingmodel.KeyWorkspaceID:     "",
+		settingmodel.KeyDashscopeAPIKey:   fakeDashscopeKey,
+		settingmodel.KeyT8starAPIKey:      fakeT8starKey,
+		settingmodel.KeyRegion:            "cn-beijing",
+		settingmodel.KeyDashscopeEndpoint: "",
+		settingmodel.KeyT8starEndpoint:    "",
+		settingmodel.KeyWorkspaceID:       "",
 	}
 	for k, v := range overrides {
 		values[k] = v
@@ -210,6 +211,109 @@ func TestGenerateImage_Wan27_USEast1_Rejected_CNBeijing_Accepted(t *testing.T) {
 	})
 	require.NoError(t, err, "cn-beijing 在白名单内应该被接受")
 	assert.Equal(t, 1, okFactory.calls)
+}
+
+// ── dashscope_endpoint / t8star_endpoint 是两个独立的键 ──────────────────
+//
+// 在旧的共享 endpoint 设计下，这四个测试里至少前两个会失败：
+// generation_image.go 无论协议是什么都只读 settingmodel.KeyEndpoint 一个
+// 键，t8star 请求会拿到本该只属于 dashscope 的地址，反之亦然。
+
+// TestGenerateImage_T8star_NeverReceivesDashscopeEndpoint 是本次修复的
+// 回归测试：只配置 dashscope_endpoint、不配置 t8star_endpoint 时，
+// gpt-image-2（t8star/openai 协议）请求传给 provider 工厂的 endpoint 必须
+// 是空字符串（=> t8star.ResolveBaseURL 会把它解析成默认地址
+// https://ai.t8star.org，见 t8star.go），绝不能是 dashscope_endpoint 那个
+// 值——旧代码合用一个 KeyEndpoint 时，这里断言会失败，factory.lastEndpoint
+// 会等于 dashscopeOnlyEndpoint。
+func TestGenerateImage_T8star_NeverReceivesDashscopeEndpoint(t *testing.T) {
+	const dashscopeOnlyEndpoint = "https://dashscope-relay.example.com"
+	settings := dashscopeSettings(map[settingmodel.Key]string{
+		settingmodel.KeyDashscopeEndpoint: dashscopeOnlyEndpoint,
+		settingmodel.KeyT8starEndpoint:    "",
+	})
+	factory := &recordingImageFactory{result: &provider.ImageResult{Images: []string{"x"}, Model: "gpt-image-2"}}
+	svc, _ := newImageService(t, settings, factory)
+
+	_, err := svc.GenerateImage(context.Background(), 1, service.GenerateImageRequest{
+		Model:  "gpt-image-2",
+		Prompt: "x",
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, factory.calls)
+	assert.Equal(t, catalog.ProtocolOpenAI, factory.lastProtocol)
+	assert.Empty(t, factory.lastEndpoint, "t8star 请求不应该收到 dashscope_endpoint 的值")
+	assert.NotEqual(t, dashscopeOnlyEndpoint, factory.lastEndpoint)
+}
+
+// TestGenerateImage_Dashscope_NeverReceivesT8starEndpoint 是上一条的镜像
+// 场景：只配置 t8star_endpoint 时，qwen-image（dashscope 协议）请求不能
+// 拿到那个地址。
+func TestGenerateImage_Dashscope_NeverReceivesT8starEndpoint(t *testing.T) {
+	const t8starOnlyEndpoint = "https://ai.t8star.org"
+	settings := dashscopeSettings(map[settingmodel.Key]string{
+		settingmodel.KeyDashscopeEndpoint: "",
+		settingmodel.KeyT8starEndpoint:    t8starOnlyEndpoint,
+	})
+	factory := &recordingImageFactory{result: &provider.ImageResult{Images: []string{"x"}, Model: "qwen-image"}}
+	svc, _ := newImageService(t, settings, factory)
+
+	_, err := svc.GenerateImage(context.Background(), 1, service.GenerateImageRequest{
+		Model:  "qwen-image",
+		Prompt: "x",
+		Params: provider.ImageParams{N: ptr(1)},
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, factory.calls)
+	assert.Equal(t, catalog.ProtocolDashScope, factory.lastProtocol)
+	assert.Empty(t, factory.lastEndpoint, "dashscope 请求不应该收到 t8star_endpoint 的值")
+	assert.NotEqual(t, t8starOnlyEndpoint, factory.lastEndpoint)
+}
+
+// TestGenerateImage_DashscopeEndpoint_NonEmptyPassedVerbatim 确认非空的
+// dashscope_endpoint 原样透传给 provider 工厂——resolveRegionURL 的回退只
+// 在它为空时才发生（见 dashscope/endpoint.go baseURL()），这里只需要确认
+// service 层没有在中途篡改这个值。
+func TestGenerateImage_DashscopeEndpoint_NonEmptyPassedVerbatim(t *testing.T) {
+	const custom = "https://openapi.bsutopia.com"
+	settings := dashscopeSettings(map[settingmodel.Key]string{settingmodel.KeyDashscopeEndpoint: custom})
+	factory := &recordingImageFactory{result: &provider.ImageResult{Images: []string{"x"}, Model: "qwen-image-plus"}}
+	svc, _ := newImageService(t, settings, factory)
+
+	_, err := svc.GenerateImage(context.Background(), 1, service.GenerateImageRequest{
+		Model:  "qwen-image-plus",
+		Prompt: "x",
+		Params: provider.ImageParams{Size: "1328*1328", N: ptr(1)},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, custom, factory.lastEndpoint)
+}
+
+// TestGenerateImage_GPTImage2_SucceedsEvenWhenRegionLookupErrors 证明 t8star
+// 请求真的从不读取 region——不仅仅是"读到的空值恰好被目录允许"（gpt-image-2
+// 的 Regions 恰好是空集合，AllowsRegion 对任何 region 都放行，所以哪怕读了
+// 也不会被拒），而是压根不发生这次 GetDecrypted(KeyRegion) 调用。这里用
+// keyErr 让 region 这个键一旦被读取就报错，断言请求仍然成功——旧代码在
+// AllowsRegion 校验之前无条件读 region，这个测试在旧代码下会失败
+// （返回 boom 错误而不是成功）。
+func TestGenerateImage_GPTImage2_SucceedsEvenWhenRegionLookupErrors(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	settings.keyErr = map[settingmodel.Key]error{
+		settingmodel.KeyRegion: errors.New("boom: region 设置读取失败"),
+	}
+	factory := &recordingImageFactory{result: &provider.ImageResult{Images: []string{"x"}, Model: "gpt-image-2"}}
+	svc, _ := newImageService(t, settings, factory)
+
+	task, err := svc.GenerateImage(context.Background(), 1, service.GenerateImageRequest{
+		Model:  "gpt-image-2",
+		Prompt: "x",
+	})
+
+	require.NoError(t, err, "t8star 协议的请求不应该因为 region 读取失败而失败——它压根不该去读 region")
+	assert.Equal(t, generationmodel.StatusSucceeded, task.Status)
+	assert.Empty(t, factory.lastRegion)
 }
 
 func TestGenerateImage_SizeOutsideCatalog_Rejected(t *testing.T) {

@@ -205,7 +205,9 @@ func (s *VideoGenerationService) CreateVideoTask(ctx context.Context, userID int
 	if apiKey == "" {
 		return nil, apperr.ErrSettingIncomplete.Wrap(fmt.Errorf("generation_video: %s 尚未配置", settingmodel.KeyDashscopeAPIKey))
 	}
-	endpoint, err := s.settings.GetDecrypted(ctx, settingmodel.KeyEndpoint)
+	// 视频生成只走 DashScope（VideoProviderFactory 的文档注释），所以只读
+	// dashscope_endpoint，不涉及 t8star_endpoint。
+	endpoint, err := s.settings.GetDecrypted(ctx, settingmodel.KeyDashscopeEndpoint)
 	if err != nil {
 		return nil, err
 	}

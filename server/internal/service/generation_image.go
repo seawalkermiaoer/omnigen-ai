@@ -99,17 +99,33 @@ func (s *ImageGenerationService) GenerateImage(ctx context.Context, userID int64
 		return nil, err
 	}
 
-	region, err := s.settings.GetDecrypted(ctx, settingmodel.KeyRegion)
-	if err != nil {
-		return nil, err
-	}
-	if !model.AllowsRegion(region) {
-		return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_image: 模型 %q 不允许在 region %q 下调用", req.Model, region))
+	// t8star (openai 协议) 没有 region/workspace 概念——见
+	// internal/provider/t8star/client.go Client 的文档注释。region 校验只
+	// 对 dashscope 协议的模型有意义，必须连同 region 的读取一起限定在这个
+	// 分支内：不能靠 gpt-image-2 的 Regions 恰好为空（因而 AllowsRegion 恰好
+	// 不限制）侥幸不报错，就假装这条校验对它也成立——一旦以后有人给某个
+	// t8star 模型配了 Regions，这个顺序错误就会在不该拦的地方拦下请求。
+	isOpenAI := model.Protocol == catalog.ProtocolOpenAI
+
+	var region string
+	if !isOpenAI {
+		region, err = s.settings.GetDecrypted(ctx, settingmodel.KeyRegion)
+		if err != nil {
+			return nil, err
+		}
+		if !model.AllowsRegion(region) {
+			return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_image: 模型 %q 不允许在 region %q 下调用", req.Model, region))
+		}
 	}
 
+	// 两个上游各自独立的 apiKey/endpoint 键——见 settingmodel.KeyDashscopeEndpoint
+	// 的文档注释：合用一个 endpoint 曾经会让配置 t8star 地址时连带把
+	// DashScope 请求也送过去，反之亦然。
 	apiKeyKey := settingmodel.KeyDashscopeAPIKey
-	if model.Protocol == catalog.ProtocolOpenAI {
+	endpointKey := settingmodel.KeyDashscopeEndpoint
+	if isOpenAI {
 		apiKeyKey = settingmodel.KeyT8starAPIKey
+		endpointKey = settingmodel.KeyT8starEndpoint
 	}
 	apiKey, err := s.settings.GetDecrypted(ctx, apiKeyKey)
 	if err != nil {
@@ -118,13 +134,17 @@ func (s *ImageGenerationService) GenerateImage(ctx context.Context, userID int64
 	if apiKey == "" {
 		return nil, apperr.ErrSettingIncomplete.Wrap(fmt.Errorf("generation_image: %s 尚未配置", apiKeyKey))
 	}
-	endpoint, err := s.settings.GetDecrypted(ctx, settingmodel.KeyEndpoint)
+	endpoint, err := s.settings.GetDecrypted(ctx, endpointKey)
 	if err != nil {
 		return nil, err
 	}
-	workspaceID, err := s.settings.GetDecrypted(ctx, settingmodel.KeyWorkspaceID)
-	if err != nil {
-		return nil, err
+
+	var workspaceID string
+	if !isOpenAI {
+		workspaceID, err = s.settings.GetDecrypted(ctx, settingmodel.KeyWorkspaceID)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	p := s.factory(model.Protocol, apiKey, region, workspaceID, endpoint)

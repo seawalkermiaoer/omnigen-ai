@@ -25,10 +25,10 @@ import (
 // 尝试第二个 base（见 optimize.go Optimize 方法里 endpointVariants 的注释）。
 func settingsWithEndpoint(endpoint string) map[settingmodel.Key]string {
 	return map[settingmodel.Key]string{
-		settingmodel.KeyDashscopeAPIKey: "sk-test-key",
-		settingmodel.KeyRegion:          "cn-beijing",
-		settingmodel.KeyEndpoint:        endpoint,
-		settingmodel.KeyWorkspaceID:     "",
+		settingmodel.KeyDashscopeAPIKey:   "sk-test-key",
+		settingmodel.KeyRegion:            "cn-beijing",
+		settingmodel.KeyDashscopeEndpoint: endpoint,
+		settingmodel.KeyWorkspaceID:       "",
 	}
 }
 

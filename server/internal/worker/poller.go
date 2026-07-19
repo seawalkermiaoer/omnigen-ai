@@ -183,7 +183,9 @@ func (p *Poller) buildProvider(ctx context.Context) (provider.VideoProvider, err
 	if apiKey == "" {
 		return nil, apperr.ErrSettingIncomplete
 	}
-	endpoint, err := p.settings.GetDecrypted(ctx, settingmodel.KeyEndpoint)
+	// 轮询只针对视频任务，视频只走 DashScope（见 generation_video.go
+	// VideoProviderFactory 的文档注释），所以只读 dashscope_endpoint。
+	endpoint, err := p.settings.GetDecrypted(ctx, settingmodel.KeyDashscopeEndpoint)
 	if err != nil {
 		return nil, err
 	}

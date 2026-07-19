@@ -338,6 +338,33 @@ func TestSettingService_TestConnection_PassesDecryptedCredsToTester(t *testing.T
 	assert.Equal(t, "ws-1", tester.calls[0].WorkspaceID)
 }
 
+// TestSettingService_TestConnection_UsesDashscopeEndpointNotT8star locks in
+// that the connection tester — which always probes DashScope, never t8star
+// (see dashscopeConnectionTester's doc comment) — reads dashscope_endpoint
+// specifically. Before the endpoint key was split this test would have
+// exercised the same shared key both t8star_endpoint and dashscope_endpoint
+// now separately guard.
+func TestSettingService_TestConnection_UsesDashscopeEndpointNotT8star(t *testing.T) {
+	svc, _, tester := newSettingService(t)
+	ctx := context.Background()
+
+	const dashscopeEndpoint = "https://dashscope-relay.example.com"
+	const t8starEndpoint = "https://ai.t8star.org"
+	_, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
+		Items: []settingmodel.UpdateItem{
+			{Key: settingmodel.KeyDashscopeAPIKey, Value: "sk-real-test-key"},
+			{Key: settingmodel.KeyDashscopeEndpoint, Value: dashscopeEndpoint},
+			{Key: settingmodel.KeyT8starEndpoint, Value: t8starEndpoint},
+		},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, svc.TestConnection(ctx))
+	require.Len(t, tester.calls, 1)
+	assert.Equal(t, dashscopeEndpoint, tester.calls[0].Endpoint)
+	assert.NotEqual(t, t8starEndpoint, tester.calls[0].Endpoint)
+}
+
 func TestSettingService_TestConnection_PropagatesTesterFailure(t *testing.T) {
 	svc, _, tester := newSettingService(t)
 	ctx := context.Background()
