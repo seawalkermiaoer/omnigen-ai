@@ -95,7 +95,7 @@ func NewUploadService(settings SettingReader) *UploadService {
 
 // NewUploadServiceWithResolver allows tests (and upload_oss_test.go's own
 // resolver tests) to substitute the OSSResolver — mirrors
-// NewSettingServiceWithTester's fake-injection pattern (setting.go).
+// NewSettingServiceWithTesters's fake-injection pattern (setting.go).
 func NewUploadServiceWithResolver(resolver OSSResolver) *UploadService {
 	return &UploadService{resolver: resolver}
 }

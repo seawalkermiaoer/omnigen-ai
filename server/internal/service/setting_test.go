@@ -20,11 +20,12 @@ import (
 // 直接传给 NewSettingServiceWithTester，不再经由环境变量。
 var testEncryptionKey = []byte("01234567890123456789012345678901")[:32]
 
-func newSettingService(t *testing.T) (*service.SettingService, *fakeSettingRepo, *fakeConnectionTester) {
+func newSettingService(t *testing.T) (*service.SettingService, *fakeSettingRepo, *fakeConnectionTester, *fakeConnectionTester) {
 	t.Helper()
 	repo := newFakeSettingRepo()
-	tester := &fakeConnectionTester{t: t}
-	return service.NewSettingServiceWithTester(repo, testEncryptionKey, tester), repo, tester
+	dashscopeTester := &fakeConnectionTester{t: t}
+	t8starTester := &fakeConnectionTester{t: t}
+	return service.NewSettingServiceWithTesters(repo, testEncryptionKey, dashscopeTester, t8starTester), repo, dashscopeTester, t8starTester
 }
 
 func settingByKey(t *testing.T, resp *settingmodel.SettingsResponse, key settingmodel.Key) settingmodel.SettingResponse {
@@ -41,7 +42,7 @@ func settingByKey(t *testing.T, resp *settingmodel.SettingsResponse, key setting
 // ── 往返：更新一个密钥、读回脱敏值、GetDecrypted 拿到原始明文 ──────────
 
 func TestSettingService_UpdateThenGet_SecretRoundTrips(t *testing.T) {
-	svc, _, _ := newSettingService(t)
+	svc, _, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	const plaintext = "sk-SUPERSECRETPLAINTEXTVALUE1234567890"
@@ -61,7 +62,7 @@ func TestSettingService_UpdateThenGet_SecretRoundTrips(t *testing.T) {
 }
 
 func TestSettingService_UpdateThenGet_PlainKeyRoundTrips(t *testing.T) {
-	svc, _, _ := newSettingService(t)
+	svc, _, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	resp, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
@@ -80,7 +81,7 @@ func TestSettingService_UpdateThenGet_PlainKeyRoundTrips(t *testing.T) {
 // ── AAD 绑定：把 dashscope 密钥的密文搬到 t8star 密钥那一行必须解密失败 ──
 
 func TestSettingService_AADBindsCiphertextToItsOwnKey(t *testing.T) {
-	svc, repo, _ := newSettingService(t)
+	svc, repo, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	_, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
@@ -107,7 +108,7 @@ func TestSettingService_AADBindsCiphertextToItsOwnKey(t *testing.T) {
 // service.GetDecrypted(t8star_api_key) 必须报错，不能返回一个"看起来有效
 // 但完全错误"的凭证。
 func TestSettingService_AADBindsCiphertextToItsOwnKey_ViaGetDecrypted(t *testing.T) {
-	svc, repo, _ := newSettingService(t)
+	svc, repo, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	_, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
@@ -132,7 +133,7 @@ func TestSettingService_AADBindsCiphertextToItsOwnKey_ViaGetDecrypted(t *testing
 // ── 空值 = 不修改；Clear=true 才真正清空 ────────────────────────────────
 
 func TestSettingService_EmptyValueLeavesSecretUnchanged(t *testing.T) {
-	svc, _, _ := newSettingService(t)
+	svc, _, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	const plaintext = "sk-original-secret-value"
@@ -160,7 +161,7 @@ func TestSettingService_EmptyValueLeavesSecretUnchanged(t *testing.T) {
 }
 
 func TestSettingService_ClearTrueActuallyClearsSecret(t *testing.T) {
-	svc, _, _ := newSettingService(t)
+	svc, _, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	_, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
@@ -182,7 +183,7 @@ func TestSettingService_ClearTrueActuallyClearsSecret(t *testing.T) {
 }
 
 func TestSettingService_ClearTrueActuallyClearsPlainKey(t *testing.T) {
-	svc, _, _ := newSettingService(t)
+	svc, _, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	_, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
@@ -202,7 +203,7 @@ func TestSettingService_ClearTrueActuallyClearsPlainKey(t *testing.T) {
 
 // Clear=true 且同时带了 Value：Clear 优先，Value 被忽略。
 func TestSettingService_ClearTrueIgnoresAccompanyingValue(t *testing.T) {
-	svc, _, _ := newSettingService(t)
+	svc, _, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	_, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
@@ -218,7 +219,7 @@ func TestSettingService_ClearTrueIgnoresAccompanyingValue(t *testing.T) {
 // ── Get 绝不返回明文 ─────────────────────────────────────────────────
 
 func TestSettingService_Get_NeverReturnsPlaintext(t *testing.T) {
-	svc, _, _ := newSettingService(t)
+	svc, _, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	const plaintext = "sk-MUST-NEVER-LEAK-1234567890"
@@ -239,7 +240,7 @@ func TestSettingService_Get_NeverReturnsPlaintext(t *testing.T) {
 
 // Get 总是覆盖 settingmodel.AllKeys 的全集，即便某些键从未被写过。
 func TestSettingService_Get_AlwaysListsAllKeys(t *testing.T) {
-	svc, _, _ := newSettingService(t)
+	svc, _, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	resp, err := svc.Get(ctx)
@@ -255,7 +256,7 @@ func TestSettingService_Get_AlwaysListsAllKeys(t *testing.T) {
 // 而不是密文的首尾——如果 Get() 忘了在映射前解密，这个断言会失败，
 // 因为 Masked 会变成一串看起来完全不同的乱码脱敏值。
 func TestSettingService_Get_DecryptsBeforeMapping(t *testing.T) {
-	svc, _, _ := newSettingService(t)
+	svc, _, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	const plaintext = "sk-MUSTDECRYPTFIRST7890"
@@ -275,7 +276,7 @@ func TestSettingService_Get_DecryptsBeforeMapping(t *testing.T) {
 // ── Update 校验 ─────────────────────────────────────────────────────
 
 func TestSettingService_Update_RejectsUnknownKey(t *testing.T) {
-	svc, _, _ := newSettingService(t)
+	svc, _, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	_, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
@@ -289,7 +290,7 @@ func TestSettingService_Update_RejectsUnknownKey(t *testing.T) {
 
 // 未知 key 会让整个请求失败，已知的合法项也不能借机落地。
 func TestSettingService_Update_UnknownKeyRejectsWholeBatch(t *testing.T) {
-	svc, _, _ := newSettingService(t)
+	svc, _, _, _ := newSettingService(t)
 	ctx := context.Background()
 
 	_, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
@@ -308,10 +309,10 @@ func TestSettingService_Update_UnknownKeyRejectsWholeBatch(t *testing.T) {
 // ── TestConnection ───────────────────────────────────────────────────
 
 func TestSettingService_TestConnection_FailsWhenAPIKeyNotConfigured(t *testing.T) {
-	svc, _, tester := newSettingService(t)
+	svc, _, tester, _ := newSettingService(t)
 	tester.forbid = true // 没配凭证就不该打任何网络请求
 
-	err := svc.TestConnection(context.Background())
+	err := svc.TestConnection(context.Background(), "dashscope")
 	require.Error(t, err)
 	var appErr *apperr.AppError
 	require.True(t, errors.As(err, &appErr))
@@ -319,7 +320,7 @@ func TestSettingService_TestConnection_FailsWhenAPIKeyNotConfigured(t *testing.T
 }
 
 func TestSettingService_TestConnection_PassesDecryptedCredsToTester(t *testing.T) {
-	svc, _, tester := newSettingService(t)
+	svc, _, tester, _ := newSettingService(t)
 	ctx := context.Background()
 
 	_, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
@@ -331,7 +332,7 @@ func TestSettingService_TestConnection_PassesDecryptedCredsToTester(t *testing.T
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, svc.TestConnection(ctx))
+	require.NoError(t, svc.TestConnection(ctx, "dashscope"))
 	require.Len(t, tester.calls, 1)
 	assert.Equal(t, "sk-real-test-key", tester.calls[0].APIKey, "传给探测器的必须是明文，不是密文")
 	assert.Equal(t, "cn-beijing", tester.calls[0].Region)
@@ -345,7 +346,7 @@ func TestSettingService_TestConnection_PassesDecryptedCredsToTester(t *testing.T
 // exercised the same shared key both t8star_endpoint and dashscope_endpoint
 // now separately guard.
 func TestSettingService_TestConnection_UsesDashscopeEndpointNotT8star(t *testing.T) {
-	svc, _, tester := newSettingService(t)
+	svc, _, tester, _ := newSettingService(t)
 	ctx := context.Background()
 
 	const dashscopeEndpoint = "https://dashscope-relay.example.com"
@@ -359,14 +360,14 @@ func TestSettingService_TestConnection_UsesDashscopeEndpointNotT8star(t *testing
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, svc.TestConnection(ctx))
+	require.NoError(t, svc.TestConnection(ctx, "dashscope"))
 	require.Len(t, tester.calls, 1)
 	assert.Equal(t, dashscopeEndpoint, tester.calls[0].Endpoint)
 	assert.NotEqual(t, t8starEndpoint, tester.calls[0].Endpoint)
 }
 
 func TestSettingService_TestConnection_PropagatesTesterFailure(t *testing.T) {
-	svc, _, tester := newSettingService(t)
+	svc, _, tester, _ := newSettingService(t)
 	ctx := context.Background()
 
 	_, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
@@ -375,9 +376,83 @@ func TestSettingService_TestConnection_PropagatesTesterFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	tester.fail = apperr.ErrUpstreamTestFailed.Wrap(errors.New("boom"))
-	err = svc.TestConnection(ctx)
+	err = svc.TestConnection(ctx, "dashscope")
 	require.Error(t, err)
 	var appErr *apperr.AppError
 	require.True(t, errors.As(err, &appErr))
 	assert.Equal(t, "SETTING_TEST_FAILED", appErr.Code())
+}
+
+// ── TestConnection: provider 分派 ───────────────────────────────────────
+
+// provider=t8star 走 t8star tester，provider=dashscope 走 DashScope
+// tester，互不串——这是 endpoint 拆分那个 bug 的同类风险：两个 provider
+// 共享同一处状态。这里直接断言"打了 t8star 就不该碰 dashscope tester，
+// 反之亦然"，而不只是断言各自返回值对，那样如果两者悄悄都被调用了也不会
+// 被发现。
+func TestTestConnection_RoutesToCorrectProvider(t *testing.T) {
+	svc, _, dashscopeTester, t8starTester := newSettingService(t)
+	ctx := context.Background()
+
+	_, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
+		Items: []settingmodel.UpdateItem{
+			{Key: settingmodel.KeyDashscopeAPIKey, Value: "sk-dashscope-key"},
+			{Key: settingmodel.KeyDashscopeEndpoint, Value: "https://dashscope.example.com"},
+			{Key: settingmodel.KeyT8starAPIKey, Value: "sk-t8star-key"},
+			{Key: settingmodel.KeyT8starEndpoint, Value: "https://t8star.example.com"},
+		},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, svc.TestConnection(ctx, "dashscope"))
+	require.Len(t, dashscopeTester.calls, 1, "provider=dashscope 必须调用 dashscope tester")
+	assert.Equal(t, "sk-dashscope-key", dashscopeTester.calls[0].APIKey)
+	assert.Equal(t, "https://dashscope.example.com", dashscopeTester.calls[0].Endpoint)
+	assert.Empty(t, t8starTester.calls, "provider=dashscope 不该碰 t8star tester")
+
+	require.NoError(t, svc.TestConnection(ctx, "t8star"))
+	require.Len(t, t8starTester.calls, 1, "provider=t8star 必须调用 t8star tester")
+	assert.Equal(t, "sk-t8star-key", t8starTester.calls[0].APIKey)
+	assert.Equal(t, "https://t8star.example.com", t8starTester.calls[0].Endpoint)
+	require.Len(t, dashscopeTester.calls, 1, "provider=t8star 之后 dashscope tester 的调用次数不该再涨")
+}
+
+// 缺省不传 provider 等价于 dashscope（保持与现有前端兼容）。
+func TestTestConnection_DefaultsToDashscope(t *testing.T) {
+	svc, _, dashscopeTester, t8starTester := newSettingService(t)
+	ctx := context.Background()
+
+	_, err := svc.Update(ctx, 1, settingmodel.UpdateRequest{
+		Items: []settingmodel.UpdateItem{{Key: settingmodel.KeyDashscopeAPIKey, Value: "sk-dashscope-key"}},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, svc.TestConnection(ctx, ""))
+	assert.Len(t, dashscopeTester.calls, 1)
+	assert.Empty(t, t8starTester.calls)
+}
+
+// 非法 provider 值返回 VALIDATION_FAILED，且不打任何上游请求。
+func TestTestConnection_InvalidProviderRejected(t *testing.T) {
+	svc, _, dashscopeTester, t8starTester := newSettingService(t)
+
+	err := svc.TestConnection(context.Background(), "openai")
+	require.Error(t, err)
+	var appErr *apperr.AppError
+	require.True(t, errors.As(err, &appErr))
+	assert.Equal(t, "VALIDATION_FAILED", appErr.Code())
+	assert.Empty(t, dashscopeTester.calls)
+	assert.Empty(t, t8starTester.calls)
+}
+
+// t8star Key 未配置 → SETTING_INCOMPLETE，且上游零调用。
+func TestTestConnection_T8starKeyMissing_NoUpstreamCall(t *testing.T) {
+	svc, _, _, t8starTester := newSettingService(t)
+	t8starTester.forbid = true // 没配凭证就不该打任何网络请求
+
+	err := svc.TestConnection(context.Background(), "t8star")
+	require.Error(t, err)
+	var appErr *apperr.AppError
+	require.True(t, errors.As(err, &appErr))
+	assert.Equal(t, "SETTING_INCOMPLETE", appErr.Code())
 }

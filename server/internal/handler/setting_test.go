@@ -111,6 +111,52 @@ func TestSettings_PlainUserCannotTestConnection(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 }
 
+// ── POST /api/settings/test：provider 分派 ──────────────────────────────
+//
+// These exercise only the validation/short-circuit paths (unknown provider,
+// unconfigured key) — both return before newTestEnv's real
+// dashscope/t8star testers ever get a chance to make a network call, so
+// they're safe to run without a fake ConnectionTester.
+
+// 完全不带请求体（nil body）时，provider 应当按空字符串处理——等价于
+// "dashscope"——而不是让 JSON 绑定报错。没配 dashscope_api_key 时应短路成
+// SETTING_INCOMPLETE，证明请求确实按 dashscope 走了，而不是卡在绑定阶段。
+func TestSettings_TestConnection_NoBodyDefaultsToDashscope(t *testing.T) {
+	e := newTestEnv(t)
+	e.seed(t, "admin", "password123", usermodel.RoleAdmin)
+	token := e.login(t, "admin", "password123")
+
+	w := e.request(t, http.MethodPost, "/api/settings/test", token, nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, "响应=%s", w.Body.String())
+	assert.Equal(t, "SETTING_INCOMPLETE", respCode(t, w))
+}
+
+// 非法 provider 值 → VALIDATION_FAILED，不是 500、也不是被悄悄当成
+// dashscope 处理掉。
+func TestSettings_TestConnection_InvalidProviderRejected(t *testing.T) {
+	e := newTestEnv(t)
+	e.seed(t, "admin", "password123", usermodel.RoleAdmin)
+	token := e.login(t, "admin", "password123")
+
+	w := e.request(t, http.MethodPost, "/api/settings/test", token, gin.H{"provider": "openai"})
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, "响应=%s", w.Body.String())
+	assert.Equal(t, "VALIDATION_FAILED", respCode(t, w))
+}
+
+// provider=t8star 但 t8star_api_key 未配置 → SETTING_INCOMPLETE，
+// 且必须是这个码而不是 dashscope 那条路径可能报的任何错误——证明
+// provider=t8star 确实路由到了 t8star 的凭证检查，不是被 provider=dashscope
+// 的检查悄悄接管。
+func TestSettings_TestConnection_T8starKeyMissing(t *testing.T) {
+	e := newTestEnv(t)
+	e.seed(t, "admin", "password123", usermodel.RoleAdmin)
+	token := e.login(t, "admin", "password123")
+
+	w := e.request(t, http.MethodPost, "/api/settings/test", token, gin.H{"provider": "t8star"})
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, "响应=%s", w.Body.String())
+	assert.Equal(t, "SETTING_INCOMPLETE", respCode(t, w))
+}
+
 func TestSettings_UnauthenticatedGetReturns401(t *testing.T) {
 	e := newTestEnv(t)
 	w := e.request(t, http.MethodGet, "/api/settings", "", nil)

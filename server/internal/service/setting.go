@@ -39,25 +39,40 @@ type ConnectionTester interface {
 
 // SettingService 承载配置与密钥的业务规则：加解密、"空值=不修改"语义、
 // 脱敏响应、上游连通性探测。
+//
+// 上游连通性探测按 provider 分派到两个独立的 ConnectionTester——dashscope
+// 和 t8star 是两套完全不同的凭证、endpoint、探测协议（见 TestConnection），
+// 合并成一个字段会重演 endpoint 曾经共享一个配置键的那类串号 bug。
 type SettingService struct {
-	settings      repository.SettingRepository
-	tester        ConnectionTester
-	encryptionKey []byte
+	settings        repository.SettingRepository
+	dashscopeTester ConnectionTester
+	t8starTester    ConnectionTester
+	encryptionKey   []byte
 }
 
-// NewSettingService 构造生产用的 SettingService，TestConnection 走真正的
-// dashscope.Client（见 dashscopeConnectionTester）。encryptionKey 必须是
-// config.Config.AppEncryptionKey base64 解码后的 32 字节原始密钥——由 wire
-// 的 provideEncryptionKey 在装配时从 *config.Config 解出并注入，
+// TestConnectionProviderDashscope/T8star 是 TestConnection 接受的合法
+// provider 取值。空字符串等价于 TestConnectionProviderDashscope（见
+// settingmodel.TestConnectionRequest 的文档），不在这两个常量之列。
+const (
+	TestConnectionProviderDashscope = "dashscope"
+	TestConnectionProviderT8star    = "t8star"
+)
+
+// NewSettingService 构造生产用的 SettingService：TestConnection 对
+// dashscope 走真正的 dashscope.Client（见 dashscopeConnectionTester），对
+// t8star 走真正的 t8star.Client（见 t8starConnectionTester）。encryptionKey
+// 必须是 config.Config.AppEncryptionKey base64 解码后的 32 字节原始密钥——
+// 由 wire 的 provideEncryptionKey 在装配时从 *config.Config 解出并注入，
 // SettingService 自己不读取任何配置来源。
 func NewSettingService(settings repository.SettingRepository, encryptionKey []byte) *SettingService {
-	return NewSettingServiceWithTester(settings, encryptionKey, newDashscopeConnectionTester())
+	return NewSettingServiceWithTesters(settings, encryptionKey, newDashscopeConnectionTester(), newT8starConnectionTester())
 }
 
-// NewSettingServiceWithTester 允许调用方（生产环境接入真正的 provider 客户端、
-// 测试环境注入假实现）指定 ConnectionTester。
-func NewSettingServiceWithTester(settings repository.SettingRepository, encryptionKey []byte, tester ConnectionTester) *SettingService {
-	return &SettingService{settings: settings, tester: tester, encryptionKey: encryptionKey}
+// NewSettingServiceWithTesters 允许调用方（生产环境接入真正的 provider
+// 客户端、测试环境注入假实现）分别指定 dashscope 与 t8star 各自的
+// ConnectionTester。
+func NewSettingServiceWithTesters(settings repository.SettingRepository, encryptionKey []byte, dashscopeTester, t8starTester ConnectionTester) *SettingService {
+	return &SettingService{settings: settings, dashscopeTester: dashscopeTester, t8starTester: t8starTester, encryptionKey: encryptionKey}
 }
 
 // Get 返回全部配置项的脱敏视图，固定按 settingmodel.AllKeys 的顺序、
@@ -183,9 +198,38 @@ func (s *SettingService) Update(ctx context.Context, actorID int64, req settingm
 }
 
 // TestConnection 用当前落库的凭证试调上游、验证它们确实有效。
-// 缺少 dashscope_api_key 直接短路返回校验错误，不会打任何网络请求
-// （也因此不会把"凭证根本没配"和"凭证配了但打不通"混成同一种错误）。
-func (s *SettingService) TestConnection(ctx context.Context) error {
+//
+// provider 决定用哪一套凭证、哪一个 tester：
+//
+//	provider     | API Key            | Endpoint            | 其他
+//	-------------|--------------------|--------------------|------------------
+//	dashscope    | dashscope_api_key  | dashscope_endpoint | region、workspace_id
+//	t8star       | t8star_api_key     | t8star_endpoint    | 无
+//
+// 空字符串等价于 "dashscope"——保持与现有前端（从不发 provider 字段）的
+// 兼容；不认识的值返回 apperr.ErrValidation，不会打任何网络请求。这与
+// endpoint 曾经在两个 provider 之间共享一个配置键、后来拆分成
+// dashscope_endpoint/t8star_endpoint 是同一类风险：provider 分派必须让两条
+// 路径完全不共享状态，见 setting_test.go 里的
+// TestTestConnection_RoutesToCorrectProvider。
+func (s *SettingService) TestConnection(ctx context.Context, provider string) error {
+	if provider == "" {
+		provider = TestConnectionProviderDashscope
+	}
+	switch provider {
+	case TestConnectionProviderDashscope:
+		return s.testDashscopeConnection(ctx)
+	case TestConnectionProviderT8star:
+		return s.testT8starConnection(ctx)
+	default:
+		return apperr.ErrValidation.Wrap(fmt.Errorf("未知的 provider: %q", provider))
+	}
+}
+
+// testDashscopeConnection 缺少 dashscope_api_key 直接短路返回校验错误，不会
+// 打任何网络请求（也因此不会把"凭证根本没配"和"凭证配了但打不通"混成同一
+// 种错误）。
+func (s *SettingService) testDashscopeConnection(ctx context.Context) error {
 	apiKey, err := s.GetDecrypted(ctx, settingmodel.KeyDashscopeAPIKey)
 	if err != nil {
 		return err
@@ -209,11 +253,34 @@ func (s *SettingService) TestConnection(ctx context.Context) error {
 		return err
 	}
 
-	return s.tester.Test(ctx, UpstreamCredentials{
+	return s.dashscopeTester.Test(ctx, UpstreamCredentials{
 		APIKey:      apiKey,
 		Region:      region,
 		Endpoint:    endpoint,
 		WorkspaceID: workspaceID,
+	})
+}
+
+// testT8starConnection 缺少 t8star_api_key 同样短路返回校验错误、零上游调用
+// ——见 docs/superpowers/specs/2026-07-19-t8star-connection-test-design.md。
+// t8star 没有 region/workspace 概念，UpstreamCredentials 里那两个字段留空，
+// t8starConnectionTester 也从不读它们。
+func (s *SettingService) testT8starConnection(ctx context.Context) error {
+	apiKey, err := s.GetDecrypted(ctx, settingmodel.KeyT8starAPIKey)
+	if err != nil {
+		return err
+	}
+	if apiKey == "" {
+		return apperr.ErrSettingIncomplete.Wrap(errors.New("t8star_api_key 尚未配置"))
+	}
+	endpoint, err := s.GetDecrypted(ctx, settingmodel.KeyT8starEndpoint)
+	if err != nil {
+		return err
+	}
+
+	return s.t8starTester.Test(ctx, UpstreamCredentials{
+		APIKey:   apiKey,
+		Endpoint: endpoint,
 	})
 }
 

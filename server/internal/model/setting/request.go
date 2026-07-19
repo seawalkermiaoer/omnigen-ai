@@ -19,3 +19,14 @@ type UpdateItem struct {
 type UpdateRequest struct {
 	Items []UpdateItem `json:"items" binding:"required,dive"`
 }
+
+// TestConnectionRequest 是 POST /api/settings/test 的请求体。
+//
+// Provider 留空等价于 "dashscope"——旧前端从没发过这个字段，缺省值必须
+// 与它历来的唯一行为一致，否则老前端打新后端会莫名其妙地报错。非空但不
+// 认识的值（既不是 "dashscope" 也不是 "t8star"）由 service 层校验并返回
+// VALIDATION_FAILED；这里不用 binding:"oneof=..." 是因为空字符串也要合法
+// 通过（表示"用默认"），而 oneof 校验空值同样会失败。
+type TestConnectionRequest struct {
+	Provider string `json:"provider"`
+}

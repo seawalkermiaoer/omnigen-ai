@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -58,8 +60,18 @@ func (h *SettingHandler) Update(c *gin.Context) {
 
 // TestConnection 处理 POST /api/settings/test（仅 admin）：用当前落库的凭证
 // 试调上游，验证它们确实有效。
+//
+// 请求体 {provider} 决定测哪一套凭证；省略/空字符串等价于 "dashscope"，
+// 保持与现有前端（从不发这个字段）的兼容。请求体本身也是可选的——
+// ShouldBindJSON 在完全没有 body 时返回 io.EOF，这里把它当成"未提供
+// provider"处理，而不是校验错误。
 func (h *SettingHandler) TestConnection(c *gin.Context) {
-	if err := h.settings.TestConnection(c.Request.Context()); err != nil {
+	var req settingmodel.TestConnectionRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		middleware.Fail(c, apperr.ErrValidation.Wrap(err))
+		return
+	}
+	if err := h.settings.TestConnection(c.Request.Context(), req.Provider); err != nil {
 		middleware.Fail(c, err)
 		return
 	}
