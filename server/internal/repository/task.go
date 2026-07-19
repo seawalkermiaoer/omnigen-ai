@@ -314,23 +314,77 @@ func (r *taskRepository) UpdateResult(ctx context.Context, id int64, urls []stri
 	return nil
 }
 
+// DeleteForUser 删除一行的同时，在同一条语句里退回它可能还欠着的一份额度
+// ——DeleteTask 的文档早就说了"删除不区分任务当前状态，PENDING/RUNNING 也
+// 能删"，但那份文档没提到的是：一个仍处于 quota_charged=true 的在飞任务
+// 一旦被删，RefundQuotaForTask 的 WHERE id = $1 就再也匹配不到这一行了，
+// 那份额度就永久性地凭空消失，用户既没拿到结果也拿不回配额。用 CTE 把
+// DELETE 与退款绑进同一条语句，delete-then-refund 之间不存在能被打断的
+// 窗口。
+//
+// deleted 只在 RETURNING 里带出 quota_charged，refunded 是否真的发生取决
+// 于那一列：quota_charged 为 false（已经计费退过、或从来没计费，比如同步
+// 成功的图片任务）时 refunded 的 WHERE 天然匹配不到任何用户行，是这条语句
+// 自带的幂等——不需要再判断一次。quota_used > 0 是防止退成负数的同一道
+// 老守卫（同 RefundQuotaForTask/RefundQuota）。
+//
+// 最终的 SELECT 同时引用 deleted 与 refunded 两个 CTE：即便 Postgres 对
+// 数据修改型 CTE 即使不被引用也总会执行（已用真实 Postgres 验证过这一
+// 行为），显式引用也不依赖这个隐含保证，读者不需要知道这条隐含规则也能
+// 看懂这条语句一定会触发退款。
 func (r *taskRepository) DeleteForUser(ctx context.Context, id, userID int64) error {
-	tag, err := r.db.Exec(ctx, `DELETE FROM generation_tasks WHERE id = $1 AND user_id = $2`, id, userID)
-	if err != nil {
+	const q = `
+		WITH deleted AS (
+			DELETE FROM generation_tasks
+			WHERE id = $1 AND user_id = $2
+			RETURNING user_id, quota_charged
+		),
+		refunded AS (
+			UPDATE users SET quota_used = quota_used - 1, updated_at = now()
+			WHERE id = (SELECT user_id FROM deleted WHERE quota_charged)
+			  AND quota_used > 0
+			RETURNING id
+		)
+		SELECT (SELECT count(*) FROM deleted), (SELECT count(*) FROM refunded)`
+	var deletedN, refundedN int64
+	if err := r.db.QueryRow(ctx, q, id, userID).Scan(&deletedN, &refundedN); err != nil {
 		return apperr.ErrInternal.Wrap(fmt.Errorf("删除生成任务失败: %w", err))
 	}
-	if tag.RowsAffected() == 0 {
+	if deletedN == 0 {
 		return apperr.ErrTaskNotFound
 	}
 	return nil
 }
 
+// DeleteAllForUser 是 DeleteForUser 的批量版本：先数清本次删除里有多少行
+// 是 quota_charged=true（charged_count），再一次性退回那么多份额度。用
+// GREATEST(quota_used - n, 0) 而不是像单条删除那样用 "AND quota_used > 0"
+// 的门槛守卫——单条退 1 时，"要么整份生效、要么完全不生效"没有问题；批量
+// 退 n 份时，同样的门槛会变成"quota_used 只要 < n 就一份都不退"，明明该
+// 退 quota_used 份的也会被完全拦下。GREATEST 把它钳制在 0 这个下限，该退
+// 多少退多少，退到 0 为止，不会耗尽也不会变负。
 func (r *taskRepository) DeleteAllForUser(ctx context.Context, userID int64) (int64, error) {
-	tag, err := r.db.Exec(ctx, `DELETE FROM generation_tasks WHERE user_id = $1`, userID)
-	if err != nil {
+	const q = `
+		WITH deleted AS (
+			DELETE FROM generation_tasks
+			WHERE user_id = $1
+			RETURNING quota_charged
+		),
+		charged_count AS (
+			SELECT count(*) AS n FROM deleted WHERE quota_charged
+		),
+		refunded AS (
+			UPDATE users
+			SET quota_used = GREATEST(quota_used - (SELECT n FROM charged_count), 0), updated_at = now()
+			WHERE id = $1
+			RETURNING id
+		)
+		SELECT (SELECT count(*) FROM deleted), (SELECT count(*) FROM refunded)`
+	var deletedN, refundedN int64
+	if err := r.db.QueryRow(ctx, q, userID).Scan(&deletedN, &refundedN); err != nil {
 		return 0, apperr.ErrInternal.Wrap(fmt.Errorf("清空生成任务失败: %w", err))
 	}
-	return tag.RowsAffected(), nil
+	return deletedN, nil
 }
 
 // RefundQuotaForTask 用一条 CTE 把「翻转 quota_charged」与「退回用户额度」

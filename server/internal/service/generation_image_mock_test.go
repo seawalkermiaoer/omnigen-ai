@@ -29,6 +29,13 @@ type fakeTaskRepo struct {
 	tasks     map[int64]*generationmodel.Task
 	nextID    int64
 	createErr error
+
+	// quotaUsed mirrors just enough of the real users.quota_used column to
+	// let RefundQuotaForTask model both of the real CTE's guards, not just
+	// the quota_charged one — see that method's doc and the worker
+	// package's identical field for why a single-charge setup can't tell
+	// "guard present" apart from "guard absent".
+	quotaUsed map[int64]int
 }
 
 func newFakeTaskRepo() *fakeTaskRepo {
@@ -54,6 +61,12 @@ func (f *fakeTaskRepo) Create(_ context.Context, t *generationmodel.Task) error 
 	t.UpdatedAt = now
 	clone := *t
 	f.tasks[t.ID] = &clone
+	if t.QuotaCharged {
+		if f.quotaUsed == nil {
+			f.quotaUsed = map[int64]int{}
+		}
+		f.quotaUsed[t.UserID]++
+	}
 	return nil
 }
 
@@ -195,9 +208,12 @@ func (f *fakeTaskRepo) DeleteAllForUser(_ context.Context, userID int64) (int64,
 // service tests in this file — those exercise QuotaService.Refund directly
 // against *fakeUserRepo, not the task-scoped worker-side refund path (see
 // internal/worker's own fakeTaskRepo for that, which the poller tests
-// actually exercise). It's still implemented, with the same
-// quota_charged-gated idempotency the real CTE has, purely so *fakeTaskRepo
-// keeps satisfying repository.TaskRepository.
+// actually exercise). It's still implemented with the same fidelity as that
+// worker fake — both the quota_charged gate on the flip and the
+// quota_used > 0 floor on the decrement, matching the real CTE's two
+// guards — purely so *fakeTaskRepo keeps satisfying repository.
+// TaskRepository faithfully and doesn't silently pass a wrong assertion if
+// a future test in this file starts relying on it for quota amounts.
 func (f *fakeTaskRepo) RefundQuotaForTask(_ context.Context, taskID int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -207,7 +223,19 @@ func (f *fakeTaskRepo) RefundQuotaForTask(_ context.Context, taskID int64) error
 	}
 	t.QuotaCharged = false
 	t.UpdatedAt = time.Now()
+	if f.quotaUsed[t.UserID] > 0 {
+		f.quotaUsed[t.UserID]--
+	}
 	return nil
+}
+
+// quotaUsedFor is a test-only accessor for the per-user counter
+// RefundQuotaForTask maintains — mirrors the worker package's identical
+// helper.
+func (f *fakeTaskRepo) quotaUsedFor(userID int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.quotaUsed[userID]
 }
 
 // get is a test-only accessor for a single task's current in-memory state

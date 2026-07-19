@@ -556,6 +556,166 @@ func TestTaskRepo_DeleteAllForUser_NoTasks_ReturnsZeroNoError(t *testing.T) {
 	})
 }
 
+// ── Delete 时的额度退回 ─────────────────────────────────────────────
+//
+// 删除一个仍 quota_charged=true 的在飞任务（DeleteTask 明确允许删除
+// PENDING/RUNNING 任务），若只是单纯 DELETE 而不退款，那份额度会随着行
+// 一起消失——RefundQuotaForTask 之后再也没有那一行可以 WHERE id = $1 了。
+// 这些测试和 RefundQuotaForTask 一样跑在真实 Postgres 上：退款与删除
+// 绑在同一条语句里这件事本身就是一个 SQL 原子性属性。
+
+func TestTaskRepo_DeleteForUser_ChargedInFlightTask_RefundsExactlyOne(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("delete-refund-charged", usermodel.RoleUser)
+		total := 5
+		u.QuotaTotal = &total
+		require.NoError(t, userRepo.Create(ctx, u))
+		require.NoError(t, userRepo.ConsumeQuota(ctx, u.ID))
+
+		repo := repository.NewTaskRepository(tx)
+		task := sampleTask(u.ID)
+		task.Status = generationmodel.StatusPending
+		task.QuotaCharged = true
+		require.NoError(t, repo.Create(ctx, task))
+
+		require.NoError(t, repo.DeleteForUser(ctx, task.ID, u.ID))
+
+		gotUser, err := userRepo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 0, gotUser.QuotaUsed, "删除一个已计费的在飞任务必须退回它那一份额度")
+	})
+}
+
+func TestTaskRepo_DeleteForUser_UnchargedTask_RefundsZero(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("delete-refund-uncharged", usermodel.RoleUser)
+		total := 5
+		u.QuotaTotal = &total
+		require.NoError(t, userRepo.Create(ctx, u))
+		require.NoError(t, userRepo.ConsumeQuota(ctx, u.ID)) // 由另一个任务扣的，与本任务无关
+
+		repo := repository.NewTaskRepository(tx)
+		task := sampleTask(u.ID) // sampleTask 默认 QuotaCharged=false（同步成功的图片任务）
+		require.NoError(t, repo.Create(ctx, task))
+
+		require.NoError(t, repo.DeleteForUser(ctx, task.ID, u.ID))
+
+		gotUser, err := userRepo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 1, gotUser.QuotaUsed, "删除一个从未计费的任务不应该退掉别的任务的额度")
+	})
+}
+
+// 用两份独立计费而不是一份——单份计费时"退一份"和"错误地退两份"在
+// quota_used 上都可能落在同一个数字上（quota_used > 0 的门槛会掩盖多退的
+// 那一次），必须让另一个任务的欠款仍然挂着，才能真正证明这次删除只退了
+// 自己那一份。同 worker 包 TestPoller_AlreadyRefunded_DoesNotRefundTwice
+// 与 TestTaskRepo_RefundQuotaForTask_AlreadyRefunded_DoesNotRefundTwice 的
+// 同一处教训。
+func TestTaskRepo_DeleteForUser_OneOfTwoChargedTasks_OnlyRefundsItsOwnShare(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("delete-refund-two-charges", usermodel.RoleUser)
+		total := 5
+		u.QuotaTotal = &total
+		require.NoError(t, userRepo.Create(ctx, u))
+		require.NoError(t, userRepo.ConsumeQuota(ctx, u.ID))
+		require.NoError(t, userRepo.ConsumeQuota(ctx, u.ID))
+
+		repo := repository.NewTaskRepository(tx)
+		taskA := sampleTask(u.ID)
+		taskA.Status = generationmodel.StatusPending
+		taskA.QuotaCharged = true
+		require.NoError(t, repo.Create(ctx, taskA))
+
+		taskB := sampleTask(u.ID)
+		taskB.Status = generationmodel.StatusPending
+		taskB.QuotaCharged = true
+		require.NoError(t, repo.Create(ctx, taskB))
+
+		require.NoError(t, repo.DeleteForUser(ctx, taskA.ID, u.ID))
+
+		gotUser, err := userRepo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 1, gotUser.QuotaUsed, "只删了 A，B 仍然欠着的那一份额度必须保留")
+	})
+}
+
+// 删别人的任务必须是 NOT_FOUND，且不能碰任何一方的额度——即便是"顺手"退
+// 了误删失败的那次退款也不行，ownership 校验必须先于退款生效。
+func TestTaskRepo_DeleteForUser_OtherUsersTask_NotFound_TouchesNeitherQuota(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		owner := sampleUser("delete-refund-owner", usermodel.RoleUser)
+		total := 5
+		owner.QuotaTotal = &total
+		require.NoError(t, userRepo.Create(ctx, owner))
+		require.NoError(t, userRepo.ConsumeQuota(ctx, owner.ID))
+
+		intruder := sampleUser("delete-refund-intruder", usermodel.RoleUser)
+		intruder.QuotaTotal = &total
+		require.NoError(t, userRepo.Create(ctx, intruder))
+		require.NoError(t, userRepo.ConsumeQuota(ctx, intruder.ID))
+
+		repo := repository.NewTaskRepository(tx)
+		task := sampleTask(owner.ID)
+		task.Status = generationmodel.StatusPending
+		task.QuotaCharged = true
+		require.NoError(t, repo.Create(ctx, task))
+
+		err := repo.DeleteForUser(ctx, task.ID, intruder.ID)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, apperr.ErrTaskNotFound))
+
+		gotOwner, err := userRepo.GetByID(ctx, owner.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 1, gotOwner.QuotaUsed, "删除失败，属主的额度不应该被退")
+
+		gotIntruder, err := userRepo.GetByID(ctx, intruder.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 1, gotIntruder.QuotaUsed, "入侵者自己的额度也不该被这次失败的删除动到")
+	})
+}
+
+func TestTaskRepo_DeleteAllForUser_MixOfChargedAndUncharged_RefundsExactlyChargedCount(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("deleteall-refund-mix", usermodel.RoleUser)
+		total := 10
+		u.QuotaTotal = &total
+		require.NoError(t, userRepo.Create(ctx, u))
+
+		repo := repository.NewTaskRepository(tx)
+		// 3 个已计费的在飞任务 + 2 个未计费的（已同步成功的图片任务）。
+		for i := 0; i < 3; i++ {
+			require.NoError(t, userRepo.ConsumeQuota(ctx, u.ID))
+			task := sampleTask(u.ID)
+			task.Status = generationmodel.StatusPending
+			task.QuotaCharged = true
+			require.NoError(t, repo.Create(ctx, task))
+		}
+		for i := 0; i < 2; i++ {
+			task := sampleTask(u.ID)
+			task.QuotaCharged = false
+			require.NoError(t, repo.Create(ctx, task))
+		}
+
+		gotBefore, err := userRepo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		require.Equal(t, 3, gotBefore.QuotaUsed)
+
+		deleted, err := repo.DeleteAllForUser(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, int64(5), deleted, "应该报告全部 5 行被删除，不只是计费的那 3 行")
+
+		gotAfter, err := userRepo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 0, gotAfter.QuotaUsed, "应该只退回 3 个计费任务对应的额度")
+	})
+}
+
 // ── RefundQuotaForTask ──────────────────────────────────────────────
 //
 // Idempotency here is a SQL property (the CTE's WHERE quota_charged = true
