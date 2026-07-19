@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
-import { App, Button, Empty, Flex, Input, Modal, Space, Table, Tag, Tooltip, Typography } from 'antd'
+import { App, Button, Empty, Flex, Input, Modal, Space, Table, Tabs, Tag, Tooltip, Typography } from 'antd'
 import {
   ClearOutlined,
   CopyOutlined,
@@ -17,6 +17,7 @@ import { generationApi } from '@/api/generation'
 import { useApiError } from '@/hooks/useApiError'
 import type { GenerationTask, TaskStatus } from '@/types/generation'
 import HistoryDetailModal from './history/HistoryDetailModal'
+import StatsPanel from './history/StatsPanel'
 import {
   buildReuseState,
   errorText,
@@ -370,55 +371,77 @@ export default function HistoryPage() {
 
   return (
     <div>
-      {/* wrap + gap：窄视口下标题与操作按钮挤在一行会把标题压缩到 0 宽度，
-          CJK 文本在这种情况下逐字换行（就是用户报的表格那个 bug 的同款根因，
-          只是这次出现在标题行）。允许按钮在窄屏换到标题下方，而不是压扁标题。 */}
-      <Flex justify="space-between" align="center" wrap="wrap" gap={12} style={{ marginBottom: 16 }}>
-        <Title level={3} style={{ margin: 0 }}>
-          {t('nav.history')}
-        </Title>
-        <Space>
-          <Button icon={<ExportOutlined aria-hidden />} onClick={handleExport}>
-            {t('history.exportJson')}
-          </Button>
-          <Button
-            danger
-            icon={<ClearOutlined aria-hidden />}
-            disabled={total === 0}
-            onClick={() => setClearOpen(true)}
-          >
-            {t('history.clearAll')}
-          </Button>
-        </Space>
-      </Flex>
+      {/* 历史页现在是两个 Tab：「记录」是旧有的表格（连同它的导出/清空
+          工具栏），「报表」是新的用量报表（StatsPanel，见该文件顶部的
+          dataviz 相关注释）。Tab 状态不持久化——每次进入历史页都从
+          「记录」开始，与用户在别处切 Tab 的预期一致。 */}
+      <Tabs
+        defaultActiveKey="records"
+        items={[
+          {
+            key: 'records',
+            label: t('history.tabRecords'),
+            children: (
+              <>
+                {/* wrap + gap：窄视口下标题与操作按钮挤在一行会把标题压缩到 0 宽度，
+                    CJK 文本在这种情况下逐字换行（就是用户报的表格那个 bug 的同款根因，
+                    只是这次出现在标题行）。允许按钮在窄屏换到标题下方，而不是压扁标题。 */}
+                <Flex justify="space-between" align="center" wrap="wrap" gap={12} style={{ marginBottom: 16 }}>
+                  <Title level={3} style={{ margin: 0 }}>
+                    {t('nav.history')}
+                  </Title>
+                  <Space>
+                    <Button icon={<ExportOutlined aria-hidden />} onClick={handleExport}>
+                      {t('history.exportJson')}
+                    </Button>
+                    <Button
+                      danger
+                      icon={<ClearOutlined aria-hidden />}
+                      disabled={total === 0}
+                      onClick={() => setClearOpen(true)}
+                    >
+                      {t('history.clearAll')}
+                    </Button>
+                  </Space>
+                </Flex>
 
-      <Table<GenerationTask>
-        rowKey="id"
-        size="middle"
-        loading={loading}
-        columns={columns}
-        dataSource={items}
-        tableLayout="fixed"
-        scroll={{ x: TABLE_SCROLL_X }}
-        locale={{
-          emptyText: (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={t('history.empty')}
-              style={{ padding: '32px 0' }}
-            />
-          ),
-        }}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          onChange: (p, ps) => {
-            setPage(p)
-            setPageSize(ps)
+                <Table<GenerationTask>
+                  rowKey="id"
+                  size="middle"
+                  loading={loading}
+                  columns={columns}
+                  dataSource={items}
+                  tableLayout="fixed"
+                  scroll={{ x: TABLE_SCROLL_X }}
+                  locale={{
+                    emptyText: (
+                      <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description={t('history.empty')}
+                        style={{ padding: '32px 0' }}
+                      />
+                    ),
+                  }}
+                  pagination={{
+                    current: page,
+                    pageSize,
+                    total,
+                    showSizeChanger: true,
+                    onChange: (p, ps) => {
+                      setPage(p)
+                      setPageSize(ps)
+                    },
+                  }}
+                />
+              </>
+            ),
           },
-        }}
+          {
+            key: 'report',
+            label: t('history.tabReport'),
+            children: <StatsPanel />,
+          },
+        ]}
       />
 
       <HistoryDetailModal task={detailTask} onClose={() => setDetailTask(null)} />
