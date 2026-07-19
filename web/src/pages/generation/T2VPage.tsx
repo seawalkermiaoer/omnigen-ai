@@ -2,13 +2,20 @@ import { useEffect, useMemo, useState } from 'react'
 import { Alert, App, Button, Card, Col, Flex, Row, Typography } from 'antd'
 import { PlayCircleOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
+import { useLocation } from 'react-router-dom'
 
 import { catalogApi, generationApi } from '@/api/generation'
 import { ApiError } from '@/api/client'
 import { useApiError } from '@/hooks/useApiError'
 import { useAuthStore } from '@/stores/auth'
 import { ModelSelect, ParamPanel, PromptInput, ResultPanel } from '@/components/generation'
-import { modelHasCapability, type CatalogModel, type GenerateVideoRequest, type ParamPanelValues } from '@/types/generation'
+import {
+  modelHasCapability,
+  type CatalogModel,
+  type GenerateVideoRequest,
+  type ParamPanelValues,
+  type ReuseLocationState,
+} from '@/types/generation'
 import ConfigIncompleteAlert from './ConfigIncompleteAlert'
 import VideoParamsFields from './VideoParamsFields'
 import { DEFAULT_DURATION, DEFAULT_RATIO, DEFAULT_RESOLUTION } from './videoParams'
@@ -28,6 +35,8 @@ export default function T2VPage() {
   const { message } = App.useApp()
   const { notify } = useApiError()
   const isAdmin = useAuthStore((s) => s.isAdmin)
+  const location = useLocation()
+  const reuse = (location.state as ReuseLocationState | null)?.reuse
 
   const [models, setModels] = useState<CatalogModel[]>([])
   const [loadingCatalog, setLoadingCatalog] = useState(true)
@@ -42,6 +51,11 @@ export default function T2VPage() {
 
   const { task, polling, start } = useVideoTaskPolling()
 
+  // 目录加载完成后要么应用"复用"数据（历史记录页跳转过来时），要么按旧行为
+  // 默认选中第一个可用模型——这个 effect 只在挂载时跑一次（deps 只有
+  // notify），此刻读到的 reuse 就是这次挂载唯一会用到的那份，不需要额外
+  // 用 ref 防重放；本页面没有像 I2V/R2V 那样"modelId 变化时清空表单"的
+  // 第二个 effect，所以这里直接设 modelId 不会被谁再覆盖掉。
   useEffect(() => {
     let cancelled = false
     setLoadingCatalog(true)
@@ -50,8 +64,21 @@ export default function T2VPage() {
       .then((res) => {
         if (cancelled) return
         setModels(res.models)
-        const first = res.models.find((m) => modelHasCapability(m, CAPABILITY))
-        if (first) setModelId(first.ID)
+        if (reuse && reuse.mode === CAPABILITY && res.models.some((m) => m.ID === reuse.model)) {
+          setModelId(reuse.model)
+          setPrompt(reuse.prompt)
+          if (typeof reuse.params.resolution === 'string') setResolution(reuse.params.resolution)
+          if (typeof reuse.params.duration === 'number') setDuration(reuse.params.duration)
+          if (typeof reuse.params.ratio === 'string') setRatio(reuse.params.ratio)
+          setParamValues({
+            watermark: typeof reuse.params.watermark === 'boolean' ? reuse.params.watermark : undefined,
+            seed: typeof reuse.params.seed === 'number' ? reuse.params.seed : undefined,
+          })
+          void message.info(reuse.hadInput ? t('generation.reuseImageNote') : t('generation.reuseApplied'))
+        } else {
+          const first = res.models.find((m) => modelHasCapability(m, CAPABILITY))
+          if (first) setModelId(first.ID)
+        }
       })
       .catch((err) => {
         if (!cancelled) notify(err)
@@ -62,6 +89,7 @@ export default function T2VPage() {
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notify])
 
   const model = useMemo(() => models.find((m) => m.ID === modelId), [models, modelId])

@@ -100,6 +100,43 @@ export interface ListTasksQuery {
   pageSize: number
 }
 
+/** 与 server/internal/model/generation/response.go 的 TaskDeleteAllResponse 对应。 */
+export interface TaskDeleteAllResponse {
+  deleted: number
+}
+
+// ── 复用（历史记录页 → 生成页面预填充） ────────────────────────────────────
+
+/**
+ * "复用"跨路由传递的预填充数据，历史记录页通过
+ * `navigate(path, { state: { reuse } })` 交给对应的生成页面。
+ *
+ * params 直接就是 task.params——后端落库时存的原始请求参数，图片模式的
+ * 字段名（size/n/watermark/seed/thinkingMode/enableSequential/promptExtend/
+ * negativePrompt）与 ParamPanelValues 同名，视频模式的字段名
+ * （resolution/duration/ratio/watermark/seed/negativePrompt/promptExtend）
+ * 与三个视频页面自己的 state 同名，见 server/internal/service/
+ * generation_image.go 的 paramsToStorageMap 与 generation_video.go 的
+ * videoParamsToStorageMap——调用页面按自己认识的字段名挑取，不需要转换。
+ *
+ * 不携带任何输入图片/视频 URL——旧系统的"复用"同样从不恢复输入素材（见
+ * public/js/history.js 的 reuseHistory 与 reuseImggenNote/reuseOtherNote
+ * 文案），hadInput 只用来告诉用户"这条记录曾经带过输入素材，需要重新上传"。
+ */
+export interface ReuseGenerationState {
+  taskId: number
+  mode: TaskMode
+  model: string
+  prompt: string
+  params: Record<string, unknown>
+  hadInput: boolean
+}
+
+/** 通过 `navigate(path, { state })` 传递的 location.state 形状。 */
+export interface ReuseLocationState {
+  reuse?: ReuseGenerationState
+}
+
 // ── ParamPanel ───────────────────────────────────────────────────────────
 
 /**

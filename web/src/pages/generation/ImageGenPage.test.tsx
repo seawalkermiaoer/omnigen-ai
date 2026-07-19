@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, type InitialEntry } from 'react-router-dom'
 import { App as AntdApp, ConfigProvider } from 'antd'
 import { I18nextProvider } from 'react-i18next'
 
@@ -12,7 +12,7 @@ import { catalogApi, generationApi } from '@/api/generation'
 import { ApiError } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { allModels, qwenImage, wanImage } from '@/components/generation/__fixtures__/catalog'
-import type { GenerationTask } from '@/types/generation'
+import type { GenerationTask, ReuseGenerationState } from '@/types/generation'
 
 vi.mock('@/api/generation', () => ({
   catalogApi: { list: vi.fn() },
@@ -44,12 +44,12 @@ const succeededTask: GenerationTask = {
   updatedAt: '2026-07-19T00:00:00Z',
 }
 
-function renderPage() {
+function renderPage(initialEntries: InitialEntry[] = ['/imggen']) {
   return render(
     <I18nextProvider i18n={i18n}>
       <ConfigProvider theme={omnigenTheme}>
         <AntdApp>
-          <MemoryRouter>
+          <MemoryRouter initialEntries={initialEntries}>
             <ImageGenPage />
           </MemoryRouter>
         </AntdApp>
@@ -192,5 +192,29 @@ describe('ImageGenPage', () => {
 
     const thinkingSwitch = await screen.findByTestId('param-thinking-mode')
     expect(thinkingSwitch.querySelector('button')).toHaveAttribute('aria-checked', 'false')
+  })
+
+  // 从历史记录页"复用"过来：目录默认选中第一项的 effect 必须让路给复用数据，
+  // 否则会出现"先选中 qwen-image（目录第一项），再跳成 wan2.7-image（复用
+  // 目标模型）"的可见闪烁，或者复用的参数被目录首选逻辑覆盖掉。
+  it('从历史记录复用：目录加载完成后回填 prompt/model/参数，而不是目录默认的第一项', async () => {
+    const reuse: ReuseGenerationState = {
+      taskId: 77,
+      mode: 'imggen',
+      model: wanImage.ID,
+      prompt: '复用的猫咪描述',
+      params: { size: '2K', n: 3, watermark: true, thinkingMode: true },
+      hadInput: false,
+    }
+    renderPage([{ pathname: '/imggen', state: { reuse } }])
+
+    await screen.findByTestId('param-panel')
+
+    await waitFor(() => expect(screen.getByTestId('model-select')).toHaveTextContent(wanImage.ID))
+    expect(screen.getByTestId('prompt-input').querySelector('textarea')).toHaveValue('复用的猫咪描述')
+
+    const thinkingSwitch = await screen.findByTestId('param-thinking-mode')
+    expect(thinkingSwitch.querySelector('button')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText(i18n.t('generation.reuseApplied'))).toBeInTheDocument()
   })
 })

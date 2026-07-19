@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Flex, Spin, Typography } from 'antd'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { App, Button, Card, Flex, Spin, Typography } from 'antd'
 import { useTranslation } from 'react-i18next'
+import { useLocation } from 'react-router-dom'
 
 import { catalogApi, generationApi } from '@/api/generation'
 import { ApiError } from '@/api/client'
@@ -8,7 +9,13 @@ import { useApiError } from '@/hooks/useApiError'
 import { useAuthStore } from '@/stores/auth'
 import { MediaUploader, ModelSelect, ParamPanel, PromptInput, ResultPanel } from '@/components/generation'
 import type { MediaUploaderItem } from '@/components/generation'
-import { modelHasCapability, type CatalogModel, type GenerationTask, type ParamPanelValues } from '@/types/generation'
+import {
+  modelHasCapability,
+  type CatalogModel,
+  type GenerationTask,
+  type ParamPanelValues,
+  type ReuseLocationState,
+} from '@/types/generation'
 import ConfigIncompleteAlert from './ConfigIncompleteAlert'
 
 const { Title, Text } = Typography
@@ -22,8 +29,12 @@ const { Title, Text } = Typography
  */
 export default function ImageEditPage() {
   const { t } = useTranslation()
+  const { message } = App.useApp()
   const { notify } = useApiError()
   const isAdmin = useAuthStore((s) => s.isAdmin)
+  const location = useLocation()
+  const reuse = (location.state as ReuseLocationState | null)?.reuse
+  const reuseAppliedRef = useRef(false)
 
   const [models, setModels] = useState<CatalogModel[]>([])
   const [catalogLoading, setCatalogLoading] = useState(true)
@@ -60,12 +71,36 @@ export default function ImageEditPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 目录加载完成后默认选中第一个可用模型，行为对齐 ImageGenPage。
+  // 目录加载完成后默认选中第一个可用模型，行为对齐 ImageGenPage。有待应用
+  // 的"复用"数据时跳过，理由同 ImageGenPage 的同名 effect。
   useEffect(() => {
-    if (!modelId && editModels.length > 0) {
+    if (!modelId && !reuse && editModels.length > 0) {
       setModelId(editModels[0].ID)
     }
-  }, [modelId, editModels])
+  }, [modelId, editModels, reuse])
+
+  // 从历史记录页"复用"过来：机制与 ImageGenPage 完全一致，见其注释。
+  // 输入图片不恢复——旧系统的复用同样从不恢复输入素材（history.js 的
+  // reuseOtherNote 文案），imgedit 提交前必须至少有一张图，所以复用后
+  // 用户仍然需要重新上传才能提交,这里只提示一次而不是假装帮他恢复了。
+  useEffect(() => {
+    if (!reuse || reuse.mode !== 'imgedit' || reuseAppliedRef.current || models.length === 0) return
+    reuseAppliedRef.current = true
+    setModelId(reuse.model)
+    setPrompt(reuse.prompt)
+    setParams({
+      size: typeof reuse.params.size === 'string' ? reuse.params.size : undefined,
+      n: typeof reuse.params.n === 'number' ? reuse.params.n : undefined,
+      watermark: typeof reuse.params.watermark === 'boolean' ? reuse.params.watermark : undefined,
+      seed: typeof reuse.params.seed === 'number' ? reuse.params.seed : undefined,
+      thinkingMode: typeof reuse.params.thinkingMode === 'boolean' ? reuse.params.thinkingMode : undefined,
+      enableSequential:
+        typeof reuse.params.enableSequential === 'boolean' ? reuse.params.enableSequential : undefined,
+      promptExtend: typeof reuse.params.promptExtend === 'boolean' ? reuse.params.promptExtend : undefined,
+      negativePrompt: typeof reuse.params.negativePrompt === 'string' ? reuse.params.negativePrompt : undefined,
+    })
+    void message.info(t('generation.reuseImageNote'))
+  }, [reuse, models, message, t])
 
   const handleModelChange = (id: string) => {
     setModelId(id)

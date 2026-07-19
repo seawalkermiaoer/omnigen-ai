@@ -8,6 +8,7 @@ import type {
   ListTasksQuery,
   OptimizePromptRequest,
   OptimizePromptResponse,
+  TaskDeleteAllResponse,
   TaskListResponse,
   UploadResult,
 } from '@/types/generation'
@@ -50,6 +51,14 @@ export const generationApi = {
 
   listTasks: (query: ListTasksQuery) =>
     unwrap<TaskListResponse>(client.get<ApiResponse<TaskListResponse>>('/tasks', { params: query })),
+
+  /** DELETE /api/tasks/:id——按 id 删一条，服务端已按当前用户过滤，不存在/别人的任务一律 TASK_NOT_FOUND。 */
+  deleteTask: (id: number) =>
+    unwrap<null>(client.delete<ApiResponse<null>>(`/tasks/${id}`)),
+
+  /** DELETE /api/tasks——清空当前用户的全部历史，返回删除行数供"清空全部"确认。 */
+  deleteAllTasks: () =>
+    unwrap<TaskDeleteAllResponse>(client.delete<ApiResponse<TaskDeleteAllResponse>>('/tasks')),
 
   optimizePrompt: (req: OptimizePromptRequest) =>
     unwrap<OptimizePromptResponse>(

@@ -7,7 +7,7 @@ import AdminRoute from '@/components/AdminRoute'
 import LoginPage from '@/pages/LoginPage'
 import UsersPage from '@/pages/UsersPage'
 import SettingsPage from '@/pages/SettingsPage'
-import PlaceholderPage from '@/pages/PlaceholderPage'
+import HistoryPage from '@/pages/HistoryPage'
 import ImageGenPage from '@/pages/generation/ImageGenPage'
 import ImageEditPage from '@/pages/generation/ImageEditPage'
 import T2VPage from '@/pages/generation/T2VPage'
@@ -35,7 +35,7 @@ export default function App() {
           <Route path="/t2v" element={<T2VPage />} />
           <Route path="/i2v" element={<I2VPage />} />
           <Route path="/r2v" element={<R2VPage />} />
-          <Route path="/history" element={<PlaceholderPage nameKey="nav.history" />} />
+          <Route path="/history" element={<HistoryPage />} />
 
           <Route element={<AdminRoute />}>
             <Route path="/users" element={<UsersPage />} />

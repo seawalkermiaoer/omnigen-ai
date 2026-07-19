@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, App, Button, Card, Col, Flex, Input, Row, Typography } from 'antd'
 import { DeleteOutlined, PlusOutlined, VideoCameraOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
+import { useLocation } from 'react-router-dom'
 
 import { catalogApi, generationApi } from '@/api/generation'
 import { ApiError } from '@/api/client'
@@ -23,6 +24,7 @@ import {
   type GenerateVideoRequest,
   type OptimizeMode,
   type ParamPanelValues,
+  type ReuseLocationState,
   type VideoMediaImage,
   type VideoMediaVideo,
 } from '@/types/generation'
@@ -69,6 +71,11 @@ export default function R2VPage() {
   const { message } = App.useApp()
   const { notify } = useApiError()
   const isAdmin = useAuthStore((s) => s.isAdmin)
+  const location = useLocation()
+  const reuse = (location.state as ReuseLocationState | null)?.reuse
+  // 同 I2VPage：记录复用触发的那次 modelId 变化，避免被下面"切模型清空
+  // 表单"的 effect 立刻冲掉刚填好的 paramValues。
+  const reuseAppliedModelRef = useRef<string | null>(null)
 
   const [models, setModels] = useState<CatalogModel[]>([])
   const [loadingCatalog, setLoadingCatalog] = useState(true)
@@ -87,6 +94,8 @@ export default function R2VPage() {
 
   const { task, polling, start } = useVideoTaskPolling()
 
+  // 目录加载完成后要么应用"复用"数据，要么按旧行为默认选中第一个可用
+  // 模型，机制与 I2VPage 完全一致（见其同名 effect 的注释）。
   useEffect(() => {
     let cancelled = false
     setLoadingCatalog(true)
@@ -95,8 +104,24 @@ export default function R2VPage() {
       .then((res) => {
         if (cancelled) return
         setModels(res.models)
-        const first = res.models.find((m) => modelHasCapability(m, CAPABILITY))
-        if (first) setModelId(first.ID)
+        if (reuse && reuse.mode === CAPABILITY && res.models.some((m) => m.ID === reuse.model)) {
+          reuseAppliedModelRef.current = reuse.model
+          setModelId(reuse.model)
+          setPrompt(reuse.prompt)
+          if (typeof reuse.params.resolution === 'string') setResolution(reuse.params.resolution)
+          if (typeof reuse.params.duration === 'number') setDuration(reuse.params.duration)
+          if (typeof reuse.params.ratio === 'string') setRatio(reuse.params.ratio)
+          setParamValues({
+            watermark: typeof reuse.params.watermark === 'boolean' ? reuse.params.watermark : undefined,
+            seed: typeof reuse.params.seed === 'number' ? reuse.params.seed : undefined,
+            negativePrompt: typeof reuse.params.negativePrompt === 'string' ? reuse.params.negativePrompt : undefined,
+            promptExtend: typeof reuse.params.promptExtend === 'boolean' ? reuse.params.promptExtend : undefined,
+          })
+          void message.info(reuse.hadInput ? t('generation.reuseImageNote') : t('generation.reuseApplied'))
+        } else {
+          const first = res.models.find((m) => modelHasCapability(m, CAPABILITY))
+          if (first) setModelId(first.ID)
+        }
       })
       .catch((err) => {
         if (!cancelled) notify(err)
@@ -107,6 +132,7 @@ export default function R2VPage() {
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notify])
 
   const model = useMemo(() => models.find((m) => m.ID === modelId), [models, modelId])
@@ -115,7 +141,13 @@ export default function R2VPage() {
 
   // 切模型时，非 wan 模型完全不支持参考视频——残留的视频行会让 maxCount
   // 计算（下面的 imageMaxCount）变得对不上，直接清空更安全。
+  //
+  // 复用触发的 modelId 变化例外，跳过这次清空——理由同 I2VPage。
   useEffect(() => {
+    if (reuseAppliedModelRef.current !== null && reuseAppliedModelRef.current === modelId) {
+      reuseAppliedModelRef.current = null
+      return
+    }
     setVideos([])
     setParamValues(defaultParamValues(model))
     // eslint-disable-next-line react-hooks/exhaustive-deps

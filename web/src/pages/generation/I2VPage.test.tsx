@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, type InitialEntry } from 'react-router-dom'
 import { App as AntdApp, ConfigProvider } from 'antd'
 import { I18nextProvider } from 'react-i18next'
 
@@ -10,7 +10,7 @@ import { omnigenTheme } from '@/theme'
 import I2VPage from './I2VPage'
 import { catalogApi, generationApi, uploadApi } from '@/api/generation'
 import { useAuthStore } from '@/stores/auth'
-import type { CatalogModel, GenerationTask } from '@/types/generation'
+import type { CatalogModel, GenerationTask, ReuseGenerationState } from '@/types/generation'
 
 vi.mock('@/api/generation', () => ({
   catalogApi: { list: vi.fn() },
@@ -97,12 +97,12 @@ const pendingTask: GenerationTask = {
   updatedAt: '2026-07-19T00:00:00Z',
 }
 
-function renderPage() {
+function renderPage(initialEntries: InitialEntry[] = ['/i2v']) {
   return render(
     <I18nextProvider i18n={i18n}>
       <ConfigProvider theme={omnigenTheme}>
         <AntdApp>
-          <MemoryRouter>
+          <MemoryRouter initialEntries={initialEntries}>
             <I2VPage />
           </MemoryRouter>
         </AntdApp>
@@ -249,5 +249,33 @@ describe('I2VPage', () => {
     await waitFor(() =>
       expect(generationApi.optimizePrompt).toHaveBeenCalledWith(expect.objectContaining({ mode: 'i2v_wan' })),
     )
+  })
+
+  // I2VPage 是最容易踩坑的一个：目录加载完成后既要应用"复用"数据，又有一个
+  // 单独的 [modelId] effect 会在模型变化时清空 paramValues（正常切模型需要
+  // 这个行为）。这条测试确保复用触发的那次 modelId 变化不会被那个 effect
+  // 冲掉——resolution/watermark/negativePrompt/promptExtend 都要保留下来。
+  it('从历史记录复用：目录加载完成后回填 wan 模型的 prompt/参数，且不被"切模型清空"逻辑覆盖', async () => {
+    const reuse: ReuseGenerationState = {
+      taskId: 99,
+      mode: 'i2v',
+      model: wanI2V.ID,
+      prompt: '复用的描述文字',
+      params: { resolution: '1080P', duration: 8, watermark: true, seed: 42, negativePrompt: '低质量', promptExtend: false },
+      hadInput: true,
+    }
+    renderPage([{ pathname: '/i2v', state: { reuse } }])
+
+    await screen.findByTestId('submit-i2v')
+
+    await waitFor(() => expect(screen.getByTestId('model-select')).toHaveTextContent(wanI2V.ID))
+    expect(screen.getByTestId('prompt-input').querySelector('textarea')).toHaveValue('复用的描述文字')
+    expect(screen.getByTestId('video-resolution')).toHaveTextContent('1080P')
+    expect(screen.getByTestId('video-duration').querySelector('input')).toHaveValue('8')
+
+    const watermarkSwitch = await screen.findByTestId('param-watermark')
+    expect(watermarkSwitch.querySelector('button')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('param-negative-prompt').querySelector('textarea')).toHaveValue('低质量')
+    expect(screen.getByText(i18n.t('generation.reuseImageNote'))).toBeInTheDocument()
   })
 })

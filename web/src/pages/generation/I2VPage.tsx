@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, App, Button, Card, Col, Flex, Input, Row, Segmented, Typography } from 'antd'
 import { VideoCameraOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
+import { useLocation } from 'react-router-dom'
 
 import { catalogApi, generationApi } from '@/api/generation'
 import { ApiError } from '@/api/client'
@@ -23,6 +24,7 @@ import {
   type GenerateVideoRequest,
   type OptimizeMode,
   type ParamPanelValues,
+  type ReuseLocationState,
 } from '@/types/generation'
 import ConfigIncompleteAlert from './ConfigIncompleteAlert'
 import VideoParamsFields from './VideoParamsFields'
@@ -73,6 +75,13 @@ export default function I2VPage() {
   const { message } = App.useApp()
   const { notify } = useApiError()
   const isAdmin = useAuthStore((s) => s.isAdmin)
+  const location = useLocation()
+  const reuse = (location.state as ReuseLocationState | null)?.reuse
+  // 复用触发的 setModelId 会顺带触发下面"modelId 变化清空表单"的 effect——
+  // 那个 effect 会把我们刚填好的 paramValues 冲掉。这个 ref 记录"下一次
+  // modelId 变成这个值时，是复用自己引发的，跳过一次清空"，消费后清零，
+  // 之后用户手动切模型仍然正常触发清空。
+  const reuseAppliedModelRef = useRef<string | null>(null)
 
   const [models, setModels] = useState<CatalogModel[]>([])
   const [loadingCatalog, setLoadingCatalog] = useState(true)
@@ -93,6 +102,9 @@ export default function I2VPage() {
 
   const { task, polling, start } = useVideoTaskPolling()
 
+  // 目录加载完成后要么应用"复用"数据，要么按旧行为默认选中第一个可用
+  // 模型。复用命中时顺带记一下 reuseAppliedModelRef，供下面"modelId 变化
+  // 清空表单"的 effect 识别出这次变化不该清空刚填好的 paramValues。
   useEffect(() => {
     let cancelled = false
     setLoadingCatalog(true)
@@ -101,8 +113,23 @@ export default function I2VPage() {
       .then((res) => {
         if (cancelled) return
         setModels(res.models)
-        const first = res.models.find((m) => modelHasCapability(m, CAPABILITY))
-        if (first) setModelId(first.ID)
+        if (reuse && reuse.mode === CAPABILITY && res.models.some((m) => m.ID === reuse.model)) {
+          reuseAppliedModelRef.current = reuse.model
+          setModelId(reuse.model)
+          setPrompt(reuse.prompt)
+          if (typeof reuse.params.resolution === 'string') setResolution(reuse.params.resolution)
+          if (typeof reuse.params.duration === 'number') setDuration(reuse.params.duration)
+          setParamValues({
+            watermark: typeof reuse.params.watermark === 'boolean' ? reuse.params.watermark : undefined,
+            seed: typeof reuse.params.seed === 'number' ? reuse.params.seed : undefined,
+            negativePrompt: typeof reuse.params.negativePrompt === 'string' ? reuse.params.negativePrompt : undefined,
+            promptExtend: typeof reuse.params.promptExtend === 'boolean' ? reuse.params.promptExtend : undefined,
+          })
+          void message.info(t('generation.reuseImageNote'))
+        } else {
+          const first = res.models.find((m) => modelHasCapability(m, CAPABILITY))
+          if (first) setModelId(first.ID)
+        }
       })
       .catch((err) => {
         if (!cancelled) notify(err)
@@ -113,6 +140,7 @@ export default function I2VPage() {
     return () => {
       cancelled = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notify])
 
   const model = useMemo(() => models.find((m) => m.ID === modelId), [models, modelId])
@@ -121,7 +149,14 @@ export default function I2VPage() {
   // 切换模型时素材槽位的可见性、必填规则都可能整体改变（比如从 continue
   // 任务切到 happyhorse），残留的旧素材容易造出一个用户没看见、却仍会被
   // 提交的字段——直接清空，比"只清空看不见的那些"更不容易漏。
+  //
+  // 复用触发的 modelId 变化例外：那次不清空，见 reuseAppliedModelRef 声明
+  // 处的注释——否则复用刚填进去的 paramValues 会被这里立刻覆盖掉。
   useEffect(() => {
+    if (reuseAppliedModelRef.current !== null && reuseAppliedModelRef.current === modelId) {
+      reuseAppliedModelRef.current = null
+      return
+    }
     setTaskType('first_frame')
     setFirstFrame([])
     setLastFrame([])
