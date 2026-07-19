@@ -55,7 +55,7 @@ func NewTaskRepository(db DB) TaskRepository { return &taskRepository{db: db} }
 
 const taskColumns = `id, user_id, mode, model, status, upstream_task_id, prompt,
 	params, input_urls, result_urls, usage, note, error_code, error_message,
-	created_at, updated_at`
+	quota_charged, created_at, updated_at`
 
 // scanTaskRow 只做原始扫描 + JSONB 解码，不做错误翻译，与 scanUserRow 的
 // 分工一致。extra 用于 ListForUser 在同一行里多扫一列 count(*) OVER()。
@@ -71,7 +71,7 @@ func scanTaskRow(row rowScanner, extra ...any) (*generationmodel.Task, error) {
 	dest := append([]any{
 		&t.ID, &t.UserID, &t.Mode, &t.Model, &t.Status, &t.UpstreamTaskID, &t.Prompt,
 		&paramsRaw, &inputRaw, &resultRaw, &usageRaw,
-		&t.Note, &t.ErrorCode, &t.ErrorMessage, &t.CreatedAt, &t.UpdatedAt,
+		&t.Note, &t.ErrorCode, &t.ErrorMessage, &t.QuotaCharged, &t.CreatedAt, &t.UpdatedAt,
 	}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
@@ -186,12 +186,12 @@ func (r *taskRepository) Create(ctx context.Context, t *generationmodel.Task) er
 	const q = `
 		INSERT INTO generation_tasks
 			(user_id, mode, model, status, upstream_task_id, prompt,
-			 params, input_urls, result_urls, usage, note, error_code, error_message)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			 params, input_urls, result_urls, usage, note, error_code, error_message, quota_charged)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		RETURNING id, created_at, updated_at`
 	err = r.db.QueryRow(ctx, q,
 		t.UserID, t.Mode, t.Model, t.Status, t.UpstreamTaskID, t.Prompt,
-		paramsRaw, inputRaw, resultRaw, usageRaw, t.Note, t.ErrorCode, t.ErrorMessage,
+		paramsRaw, inputRaw, resultRaw, usageRaw, t.Note, t.ErrorCode, t.ErrorMessage, t.QuotaCharged,
 	).Scan(&t.ID, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return apperr.ErrInternal.Wrap(fmt.Errorf("创建生成任务失败: %w", err))

@@ -66,8 +66,13 @@ type Task struct {
 	Note           *string
 	ErrorCode      *string
 	ErrorMessage   *string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// QuotaCharged 记录这条任务是否仍占着一份算力额度。创建时按当次生成
+	// 是否成功扣费写入；视频异步失败/超时由轮询 worker 退款时把它置回
+	// false，并以此为条件保证退款幂等——见
+	// docs/superpowers/specs/2026-07-19-quota-and-stats-design.md。
+	QuotaCharged bool
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // IsInFlight 报告任务是否处于 PENDING/RUNNING——供 worker（Task 12）判断是否

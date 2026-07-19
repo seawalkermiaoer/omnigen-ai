@@ -49,7 +49,8 @@ func InitApp(ctx context.Context, cfg *config.Config) (*App, error) {
 	uploadService := service.NewUploadService(settingReader)
 	uploadHandler := handler.NewUploadHandler(uploadService)
 	taskRepository := repository.NewTaskRepository(db)
-	imageGenerationService := service.NewImageGenerationService(settingReader, taskRepository)
+	quotaService := service.NewQuotaService(userRepository)
+	imageGenerationService := service.NewImageGenerationService(settingReader, taskRepository, quotaService)
 	imageGenerationHandler := handler.NewImageGenerationHandler(imageGenerationService)
 	videoGenerationService := service.NewVideoGenerationService(settingReader, taskRepository)
 	videoGenerationHandler := handler.NewVideoGenerationHandler(videoGenerationService)
@@ -182,6 +183,6 @@ var providerSet = wire.NewSet(
 	provideCORSOrigins,
 	provideEncryptionKey,
 	provideSettingReader,
-	provideVideoProviderFactory, repository.NewUserRepository, repository.NewSettingRepository, repository.NewTaskRepository, service.NewAuthService, service.NewUserService, service.NewSettingService, service.NewUploadService, service.NewImageGenerationService, service.NewVideoGenerationService, service.NewOptimizeService, handler.NewAuthHandler, handler.NewUserHandler, handler.NewHealthHandler, handler.NewSettingHandler, handler.NewCatalogHandler, handler.NewUploadHandler, handler.NewImageGenerationHandler, handler.NewVideoGenerationHandler, handler.NewDownloadHandler, handler.NewOptimizeHandler, provideHandlers,
+	provideVideoProviderFactory, repository.NewUserRepository, repository.NewSettingRepository, repository.NewTaskRepository, service.NewAuthService, service.NewUserService, service.NewSettingService, service.NewUploadService, service.NewQuotaService, service.NewImageGenerationService, service.NewVideoGenerationService, service.NewOptimizeService, handler.NewAuthHandler, handler.NewUserHandler, handler.NewHealthHandler, handler.NewSettingHandler, handler.NewCatalogHandler, handler.NewUploadHandler, handler.NewImageGenerationHandler, handler.NewVideoGenerationHandler, handler.NewDownloadHandler, handler.NewOptimizeHandler, provideHandlers,
 	provideWorker, router.New, provideApp,
 )

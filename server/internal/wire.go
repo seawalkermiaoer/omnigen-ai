@@ -142,6 +142,7 @@ var providerSet = wire.NewSet(
 	service.NewUserService,
 	service.NewSettingService,
 	service.NewUploadService,
+	service.NewQuotaService,
 	service.NewImageGenerationService,
 	service.NewVideoGenerationService,
 	service.NewOptimizeService,

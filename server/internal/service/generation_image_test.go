@@ -14,6 +14,7 @@ import (
 	"github.com/chenhao/omnigen-ai/server/internal/model/catalog"
 	generationmodel "github.com/chenhao/omnigen-ai/server/internal/model/generation"
 	settingmodel "github.com/chenhao/omnigen-ai/server/internal/model/setting"
+	usermodel "github.com/chenhao/omnigen-ai/server/internal/model/user"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/apperr"
 	"github.com/chenhao/omnigen-ai/server/internal/provider"
 	"github.com/chenhao/omnigen-ai/server/internal/provider/dashscope"
@@ -41,9 +42,23 @@ func dashscopeSettings(overrides map[settingmodel.Key]string) *fakeOptimizeSetti
 
 func newImageService(t *testing.T, settings *fakeOptimizeSettings, factory *recordingImageFactory) (*service.ImageGenerationService, *fakeTaskRepo) {
 	t.Helper()
-	repo := newFakeTaskRepo()
-	svc := service.NewImageGenerationServiceWithFactory(settings, repo, factory.Factory())
+	svc, repo, _ := newImageServiceWithQuota(t, settings, factory)
 	return svc, repo
+}
+
+// newImageServiceWithQuota is like newImageService but also returns the
+// underlying fakeUserRepo, for the quota-focused tests that need to seed a
+// specific QuotaTotal and/or assert on QuotaUsed afterwards. See
+// autoProvisioningUserRepo's doc comment (generation_image_mock_test.go) for
+// why every other test in this file can keep using arbitrary literal
+// userIDs without seeding anything here.
+func newImageServiceWithQuota(t *testing.T, settings *fakeOptimizeSettings, factory *recordingImageFactory) (*service.ImageGenerationService, *fakeTaskRepo, *fakeUserRepo) {
+	t.Helper()
+	taskRepo := newFakeTaskRepo()
+	userRepo := newFakeRepo()
+	quota := service.NewQuotaService(&autoProvisioningUserRepo{userRepo})
+	svc := service.NewImageGenerationServiceWithFactory(settings, taskRepo, quota, factory.Factory())
+	return svc, taskRepo, userRepo
 }
 
 func TestGenerateImage_HappyPath_DashScope(t *testing.T) {
@@ -545,4 +560,128 @@ func TestGenerateImage_PersistedTask_NeverContainsCredentials(t *testing.T) {
 	assert.False(t, strings.Contains(body, "sk-"), "响应体不得包含任何 sk- 前缀的凭证材料")
 	assert.False(t, strings.Contains(body, fakeDashscopeKey))
 	assert.False(t, strings.Contains(body, fakeT8starKey))
+}
+
+// ── 配额接入 ──────────────────────────────────────────────────────────
+
+// 额度耗尽时必须在调用上游之前就拦住——不能先花钱再报错。
+func TestGenerateImage_QuotaExhausted_NeverCallsUpstream(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingImageFactory{result: &provider.ImageResult{Images: []string{"x"}, Model: "qwen-image-plus"}}
+	svc, taskRepo, userRepo := newImageServiceWithQuota(t, settings, factory)
+
+	u := seedUser(t, userRepo, "quota-exhausted", "password123", usermodel.RoleUser, usermodel.StatusActive)
+	zero := 0
+	u.QuotaTotal = &zero
+
+	_, err := svc.GenerateImage(context.Background(), u.ID, service.GenerateImageRequest{
+		Model:  "qwen-image-plus",
+		Prompt: "x",
+		Params: provider.ImageParams{Size: "1328*1328", N: ptr(1)},
+	})
+
+	assertCode(t, err, "QUOTA_EXCEEDED")
+	assert.Equal(t, 0, factory.calls, "额度耗尽不应该打任何上游请求")
+	assert.Empty(t, taskRepo.all(), "额度耗尽不应该落任何 task 行")
+}
+
+func TestGenerateImage_Success_ConsumesOneAndMarksCharged(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingImageFactory{result: &provider.ImageResult{Images: []string{"x"}, Model: "qwen-image-plus"}}
+	svc, taskRepo, userRepo := newImageServiceWithQuota(t, settings, factory)
+
+	u := seedUser(t, userRepo, "quota-success", "password123", usermodel.RoleUser, usermodel.StatusActive)
+	total := 2
+	u.QuotaTotal = &total
+
+	task, err := svc.GenerateImage(context.Background(), u.ID, service.GenerateImageRequest{
+		Model:  "qwen-image-plus",
+		Prompt: "x",
+		Params: provider.ImageParams{Size: "1328*1328", N: ptr(1)},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, userRepo.users[u.ID].QuotaUsed, "成功一次应该扣 1")
+	assert.True(t, task.QuotaCharged, "成功的任务应该标记为已计费")
+
+	rows := taskRepo.all()
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].QuotaCharged, "落库的行也应该标记为已计费")
+}
+
+func TestGenerateImage_UpstreamFailure_RefundsAndMarksNotCharged(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	upstreamErr := dashscope.ErrUpstreamHTTP.Wrap(errors.New("dashscope: 上游返回 HTTP 500"))
+	factory := &recordingImageFactory{err: upstreamErr}
+	svc, taskRepo, userRepo := newImageServiceWithQuota(t, settings, factory)
+
+	u := seedUser(t, userRepo, "quota-refund", "password123", usermodel.RoleUser, usermodel.StatusActive)
+	total := 3
+	u.QuotaTotal = &total
+
+	_, err := svc.GenerateImage(context.Background(), u.ID, service.GenerateImageRequest{
+		Model:  "qwen-image-plus",
+		Prompt: "x",
+	})
+	require.Error(t, err)
+
+	assert.Equal(t, 0, userRepo.users[u.ID].QuotaUsed, "上游失败应该退回额度")
+
+	rows := taskRepo.all()
+	require.Len(t, rows, 1, "上游失败也必须落一行 FAILED")
+	assert.Equal(t, generationmodel.StatusFailed, rows[0].Status)
+	assert.False(t, rows[0].QuotaCharged, "退款后的 FAILED 行不应该标记为已计费")
+}
+
+// 校验阶段失败（模型不存在 / 地域不允许 / 凭证未配置）不该动额度。
+func TestGenerateImage_ValidationFailure_DoesNotTouchQuota(t *testing.T) {
+	tests := []struct {
+		name     string
+		settings map[settingmodel.Key]string
+		req      service.GenerateImageRequest
+	}{
+		{
+			name: "未知模型",
+			req: service.GenerateImageRequest{
+				Model:  "does-not-exist",
+				Prompt: "x",
+			},
+		},
+		{
+			name:     "地域不允许",
+			settings: map[settingmodel.Key]string{settingmodel.KeyRegion: "us-east-1"},
+			req: service.GenerateImageRequest{
+				Model:  "wan2.7-image-pro",
+				Prompt: "x",
+				Params: provider.ImageParams{Size: "1K", N: ptr(1)},
+			},
+		},
+		{
+			name:     "凭证未配置",
+			settings: map[settingmodel.Key]string{settingmodel.KeyDashscopeAPIKey: ""},
+			req: service.GenerateImageRequest{
+				Model:  "qwen-image-plus",
+				Prompt: "x",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := dashscopeSettings(tc.settings)
+			factory := &recordingImageFactory{result: &provider.ImageResult{Images: []string{"x"}}}
+			svc, taskRepo, userRepo := newImageServiceWithQuota(t, settings, factory)
+
+			u := seedUser(t, userRepo, "quota-validation-"+tc.name, "password123", usermodel.RoleUser, usermodel.StatusActive)
+			total := 5
+			u.QuotaTotal = &total
+
+			_, err := svc.GenerateImage(context.Background(), u.ID, tc.req)
+
+			require.Error(t, err)
+			assert.Equal(t, 0, userRepo.users[u.ID].QuotaUsed, "校验失败不该动额度")
+			assert.Equal(t, 0, factory.calls, "校验失败不应该打任何上游请求")
+			assert.Empty(t, taskRepo.all(), "校验失败不落库")
+		})
+	}
 }

@@ -2,12 +2,14 @@ package service_test
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/chenhao/omnigen-ai/server/internal/model/catalog"
 	generationmodel "github.com/chenhao/omnigen-ai/server/internal/model/generation"
+	usermodel "github.com/chenhao/omnigen-ai/server/internal/model/user"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/apperr"
 	"github.com/chenhao/omnigen-ai/server/internal/provider"
 	"github.com/chenhao/omnigen-ai/server/internal/repository"
@@ -217,6 +219,27 @@ func (f *fakeTaskRepo) all() []*generationmodel.Task {
 }
 
 var _ repository.TaskRepository = (*fakeTaskRepo)(nil)
+
+// autoProvisioningUserRepo wraps a *fakeUserRepo so image-generation tests
+// written before quota existed — which pass in arbitrary literal userIDs
+// like 42/7/99 that were never "created" through repo.Create — keep working
+// unmodified: ConsumeQuota/RefundQuota lazily provision an unlimited-quota
+// user for an id it hasn't seen before, on first use. Tests that care about
+// quota specifically call userRepo.add(...) themselves before invoking
+// GenerateImage, and that seeded entry (with its own QuotaTotal) takes
+// precedence — auto-provisioning only fires when the id is still absent.
+type autoProvisioningUserRepo struct {
+	*fakeUserRepo
+}
+
+func (r *autoProvisioningUserRepo) ConsumeQuota(ctx context.Context, id int64) error {
+	if _, ok := r.users[id]; !ok {
+		r.users[id] = &usermodel.User{ID: id, Username: fmt.Sprintf("auto-%d", id)}
+	}
+	return r.fakeUserRepo.ConsumeQuota(ctx, id)
+}
+
+var _ repository.UserRepository = (*autoProvisioningUserRepo)(nil)
 
 // imageProviderFunc lets a plain function satisfy provider.ImageProvider,
 // mirroring optimizeProviderFunc in optimize_mock_test.go.

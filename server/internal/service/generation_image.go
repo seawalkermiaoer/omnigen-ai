@@ -66,19 +66,20 @@ type ImageGenerationService struct {
 	settings SettingReader
 	tasks    repository.TaskRepository
 	factory  ImageProviderFactory
+	quota    *QuotaService
 }
 
 // NewImageGenerationService 构造生产用的 ImageGenerationService，provider
 // 走真正的 dashscope/t8star 客户端。
-func NewImageGenerationService(settings SettingReader, tasks repository.TaskRepository) *ImageGenerationService {
-	return NewImageGenerationServiceWithFactory(settings, tasks, NewDashScopeT8starImageProviderFactory())
+func NewImageGenerationService(settings SettingReader, tasks repository.TaskRepository, quota *QuotaService) *ImageGenerationService {
+	return NewImageGenerationServiceWithFactory(settings, tasks, quota, NewDashScopeT8starImageProviderFactory())
 }
 
 // NewImageGenerationServiceWithFactory 允许测试注入假的 ImageProviderFactory，
 // 不必打真实网络请求，也不需要真实数据库（tasks 同样是接口，测试可以注入
 // 内存假实现）。
-func NewImageGenerationServiceWithFactory(settings SettingReader, tasks repository.TaskRepository, factory ImageProviderFactory) *ImageGenerationService {
-	return &ImageGenerationService{settings: settings, tasks: tasks, factory: factory}
+func NewImageGenerationServiceWithFactory(settings SettingReader, tasks repository.TaskRepository, quota *QuotaService, factory ImageProviderFactory) *ImageGenerationService {
+	return &ImageGenerationService{settings: settings, tasks: tasks, factory: factory, quota: quota}
 }
 
 // GenerateImage 校验目录 → 取凭证 → 选 provider → 同步调用 → 落库。
@@ -88,7 +89,9 @@ func NewImageGenerationServiceWithFactory(settings SettingReader, tasks reposito
 // 调用方（handler）只需要照常把 err 交给 middleware.Fail，不需要关心
 // "已经落了一行 FAILED" 这件事，那是审计/历史记录的关注点，不是这次请求
 // 响应的一部分。
-func (s *ImageGenerationService) GenerateImage(ctx context.Context, userID int64, req GenerateImageRequest) (*generationmodel.Task, error) {
+func (s *ImageGenerationService) GenerateImage(
+	ctx context.Context, userID int64, req GenerateImageRequest,
+) (task *generationmodel.Task, retErr error) {
 	model, ok := catalog.ByID(req.Model)
 	if !ok {
 		return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_image: 未知的模型 %q", req.Model))
@@ -147,6 +150,26 @@ func (s *ImageGenerationService) GenerateImage(ctx context.Context, userID int64
 		}
 	}
 
+	// 扣费点：所有校验之后、真正调上游之前。校验失败不该动额度；而一旦
+	// 要发请求就必须先扣，否则并发下会超发——见
+	// docs/superpowers/specs/2026-07-19-quota-and-stats-design.md「扣减点与退回点」。
+	if err := s.quota.Consume(ctx, userID); err != nil {
+		return nil, err
+	}
+	charged := true
+	// defer 是兜底，不是主路径：失败分支会显式退款并把 charged 置
+	// false，因为 defer 在 return 之后才运行，来不及影响即将创建的
+	// task 行的 QuotaCharged 字段。defer 只在没有显式处理的错误路径
+	// 上生效——比如 s.tasks.Create 自身失败、或 panic 展开。
+	defer func() {
+		if charged && retErr != nil {
+			if refundErr := s.quota.Refund(ctx, userID); refundErr != nil {
+				slog.Error("退回额度失败", "userID", userID, "error", refundErr)
+			}
+			charged = false
+		}
+	}()
+
 	p := s.factory(model.Protocol, apiKey, region, workspaceID, endpoint)
 	result, callErr := p.GenerateImage(ctx, provider.ImageRequest{
 		Model:  req.Model,
@@ -159,7 +182,7 @@ func (s *ImageGenerationService) GenerateImage(ctx context.Context, userID int64
 	// upstream_error.go 顶部注释。
 	callErr = normalizeUpstreamError(callErr)
 
-	task := &generationmodel.Task{
+	task = &generationmodel.Task{
 		UserID:    userID,
 		Mode:      mode,
 		Model:     req.Model,
@@ -169,10 +192,21 @@ func (s *ImageGenerationService) GenerateImage(ctx context.Context, userID int64
 	}
 
 	if callErr != nil {
+		// 显式退款并翻转 charged：这条 FAILED 行必须以 QuotaCharged=false
+		// 落库，而 defer 运行得太晚，赶不上这次 Create。task.QuotaCharged
+		// 是从 charged 派生的（不是硬编码 false）——这样如果这段显式退款
+		// 被意外删掉，charged 仍是 true，QuotaCharged 就会如实反映出
+		// "其实没退成/没翻转"，而不是永远看起来正确。
+		if refundErr := s.quota.Refund(ctx, userID); refundErr != nil {
+			slog.Error("退回额度失败", "userID", userID, "error", refundErr)
+		}
+		charged = false
+
 		code, msg := errorCodeAndMessage(callErr)
 		task.Status = generationmodel.StatusFailed
 		task.ErrorCode = &code
 		task.ErrorMessage = &msg
+		task.QuotaCharged = charged
 		if createErr := s.tasks.Create(ctx, task); createErr != nil {
 			// 落库失败不能掩盖真正的上游失败原因——调用方需要看到的是
 			// callErr（比如"上游拒绝"），不是这个次生的数据库错误。
@@ -185,6 +219,7 @@ func (s *ImageGenerationService) GenerateImage(ctx context.Context, userID int64
 	task.Model = result.Model
 	task.ResultURLs = result.Images
 	task.Usage = result.Usage
+	task.QuotaCharged = charged
 	if result.Note != "" {
 		note := result.Note
 		task.Note = &note

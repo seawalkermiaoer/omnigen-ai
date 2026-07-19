@@ -125,7 +125,8 @@ func newImageGenTestEnv(t *testing.T, factory service.ImageProviderFactory) (*gi
 		settingmodel.KeyDashscopeAPIKey: imageGenSeededKey,
 		settingmodel.KeyRegion:          "cn-beijing",
 	}}
-	imgSvc := service.NewImageGenerationServiceWithFactory(settings, &fakeImageTaskRepo{}, factory)
+	quota := service.NewQuotaService(repo)
+	imgSvc := service.NewImageGenerationServiceWithFactory(settings, &fakeImageTaskRepo{}, quota, factory)
 	imgH := handler.NewImageGenerationHandler(imgSvc)
 
 	r := gin.New()
