@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { App as AntdApp, ConfigProvider } from 'antd'
 import { I18nextProvider } from 'react-i18next'
@@ -122,5 +123,41 @@ describe('AppShell 剩余额度', () => {
       i18n.t('users.quotaRemaining', { count: 0 }),
     )
     expect(screen.getByTestId('quota-remaining')).toHaveStyle({ color: colors.warning })
+  })
+})
+
+/**
+ * 回归测试覆盖的 bug：账号菜单此前没传 trigger，用的是 antd Dropdown 默认的
+ * ['hover']——鼠标只是路过顶栏右上角就会把菜单展开，而这个菜单里装着
+ * 「登出」这种破坏性操作。窄视口下按钮离视口右边缘只有 20px，鼠标移向屏幕
+ * 右侧的路径必然反复扫过它，浮层反复弹出收起，观感上就是「一 hover 就闪」。
+ */
+describe('AppShell 账号菜单的触发方式', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useAuthStore.setState({ token: 'tok', user: admin, initializing: false })
+  })
+
+  it('hover 不展开菜单', async () => {
+    const user = userEvent.setup()
+    renderShell()
+
+    await user.hover(document.querySelector('.shell-user') as HTMLElement)
+    // 必须等过 antd Dropdown 的 mouseEnterDelay（默认 0.15s）再断言。
+    // 少了这一步，菜单在 hover 触发模式下也还没来得及打开，断言必然通过——
+    // 这个测试就会变成一个恒绿的摆设，钉不住任何东西（写这条测试时就先踩了
+    // 一次：移除 trigger={['click']} 后它照样全绿）。
+    await new Promise((r) => setTimeout(r, 400))
+
+    expect(screen.queryByText(i18n.t('common.logout'))).not.toBeInTheDocument()
+  })
+
+  it('click 才展开菜单', async () => {
+    const user = userEvent.setup()
+    renderShell()
+
+    await user.click(document.querySelector('.shell-user') as HTMLElement)
+
+    expect(await screen.findByText(i18n.t('common.logout'))).toBeInTheDocument()
   })
 })

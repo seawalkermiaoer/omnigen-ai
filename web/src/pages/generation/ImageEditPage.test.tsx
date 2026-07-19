@@ -20,7 +20,6 @@ vi.mock('@/api/generation', () => ({
     generateImage: vi.fn(),
     optimizePrompt: vi.fn(),
     downloadResult: vi.fn(),
-    downloadLinkPath: (taskId: number, index: number) => `/download/${taskId}/${index}`,
   },
   uploadApi: { upload: vi.fn() },
 }))

@@ -33,11 +33,14 @@ function resultExtension(isVideo: boolean): string {
  * 结果展示区：图片网格 / 视频播放器，逐项下载与复制链接，以及 t8star 的
  * note 文案（存在时展示）。
  *
- * 下载与复制链接都走 GET /api/download/:taskId/:index，不直接使用
- * task.resultUrls 里的真实上游地址去拼下载——那正是新版下载接口要收敛掉
- * 的开放代理面（见 generation-core-design.md）。resultUrls 仍然用于
- * <img>/<video> 的展示 src，因为浏览器直接渲染远程地址不涉及"服务端代
- * 转发任意 URL"的那类风险。
+ * 下载走 GET /api/download/:taskId/:index：它带鉴权、有 Content-Disposition，
+ * 文件名由服务端拼，体验优于让浏览器直接打开一个裸链。
+ *
+ * 复制链接则直接给出 task.resultUrls[index] 本身。之前复制的是上面那条内部
+ * 下载路径，可它需要 Authorization 头才能打开，粘到任何地方都是死链——一个
+ * 叫"复制链接"的按钮给出打不开的东西没有意义。结果归档到我方 OSS 后
+ * resultUrls 是永久公开地址，正是该复制的东西；老任务里存的上游地址即便可能
+ * 已过期，也仍比一条必然打不开的内部路径有用。
  */
 export default function ResultPanel({ task, polling }: ResultPanelProps) {
   const { t } = useTranslation()
@@ -70,7 +73,7 @@ export default function ResultPanel({ task, polling }: ResultPanelProps) {
   }
 
   const handleCopyLink = async (index: number) => {
-    const url = `${window.location.origin}/api${generationApi.downloadLinkPath(task.id, index)}`
+    const url = task.resultUrls[index]
     try {
       await navigator.clipboard.writeText(url)
       void message.success(t('generation.resultCopySuccess'))

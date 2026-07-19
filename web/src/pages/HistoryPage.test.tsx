@@ -25,9 +25,10 @@ vi.mock('@/api/generation', () => ({
     deleteTask: vi.fn(),
     deleteAllTasks: vi.fn(),
     downloadResult: vi.fn(),
-    downloadLinkPath: (taskId: number, index: number) => `/download/${taskId}/${index}`,
   },
 }))
+
+const writeText = vi.fn<(text: string) => Promise<void>>()
 
 const NOW = new Date('2026-07-19T12:00:00Z')
 
@@ -144,6 +145,7 @@ describe('HistoryPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.setSystemTime(NOW)
+    writeText.mockResolvedValue(undefined)
     vi.mocked(generationApi.listTasks).mockResolvedValue({
       total: 4,
       items: [imggenTask, imgeditTask, t2vDoneTask, failedTask],
@@ -189,6 +191,24 @@ describe('HistoryPage', () => {
     expect(within(modal).getByText('一只猫在草地上奔跑')).toBeInTheDocument()
     expect(within(modal).getByText(/"size"/)).toBeInTheDocument()
     expect(await within(modal).findByTestId('result-image-grid')).toBeInTheDocument()
+  })
+
+  // 同 ResultPanel：复制出去的必须是能直接打开的结果地址，而不是需要
+  // Authorization 头的内部下载路径。
+  it('复制链接复制的是 resultUrls[0]，未生成结果的记录没有复制按钮', async () => {
+    const user = userEvent.setup()
+    // 必须在 setup() 之后装桩：setup() 自己会挂一份 clipboard 存根覆盖掉先装的。
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    renderPage()
+
+    await screen.findByTestId('history-copy-1')
+    // 失败任务 resultUrls 为空，不渲染复制按钮——否则会复制出 undefined。
+    expect(screen.queryByTestId('history-copy-4')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('history-copy-1'))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://example.com/1.png'))
+    expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining('/api/download/'))
   })
 
   it('删除单条记录：确认后调用接口并刷新列表', async () => {

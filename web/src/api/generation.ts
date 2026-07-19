@@ -114,14 +114,6 @@ export const generationApi = {
     ),
 
   /**
-   * 复制链接用：下载走的是"任务 id + 结果序号"这条路径，前端从不持有、
-   * 也不需要拼真实上游 URL（见 generation-core-design.md 的下载决策）。
-   * 这个链接需要 Authorization 头才能真正打开，复制的意义是"在本应用内
-   * 可用的标识"，不是一个可脱离登录态分享的公开 URL。
-   */
-  downloadLinkPath: downloadPath,
-
-  /**
    * 实际触发下载：GET /api/download/:taskId/:index 需要 Bearer token，
    * 不能用 `<a href>`/`window.location` 直接跳转（浏览器导航不会带上
    * axios 拦截器注入的 Authorization 头）。改为用 axios 取 blob，再用

@@ -180,6 +180,12 @@ export default function AppShell() {
               </Tooltip>
             )}
             <Dropdown
+              // 必须显式指定 click：antd Dropdown 默认是 ['hover']，而这个菜单
+              // 里装着「登出」这种破坏性操作——鼠标只是路过右上角就把它展开，
+              // 既容易误触，也让顶栏在窄视口下反复弹出/收起浮层。
+              // 实测 760px 宽时用户按钮右边缘离视口边缘只有 20px，鼠标移向
+              // 屏幕右侧的路径必然反复扫过它。
+              trigger={['click']}
               menu={{
                 items: [
                   { key: 'password', icon: <UserOutlined />, label: t('common.changePassword') },

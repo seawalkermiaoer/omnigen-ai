@@ -178,8 +178,10 @@ export default function HistoryPage() {
     }
   }
 
+  // 复制的是结果地址本身而不是 /api/download 那条内部路径：后者需要
+  // Authorization 头，粘到别处必然打不开。理由同 ResultPanel 的注释。
   const handleCopyLink = async (task: GenerationTask) => {
-    const url = `${window.location.origin}/api${generationApi.downloadLinkPath(task.id, 0)}`
+    const url = task.resultUrls[0]
     try {
       await navigator.clipboard.writeText(url)
       void message.success(t('generation.resultCopySuccess'))
@@ -342,7 +344,12 @@ export default function HistoryPage() {
               </Button>
             )}
             {canDownload && (
-              <Button size="small" icon={<CopyOutlined aria-hidden />} onClick={() => void handleCopyLink(task)}>
+              <Button
+                size="small"
+                icon={<CopyOutlined aria-hidden />}
+                data-testid={`history-copy-${task.id}`}
+                onClick={() => void handleCopyLink(task)}
+              >
                 {t('history.actionCopy')}
               </Button>
             )}
