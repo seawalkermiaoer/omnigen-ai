@@ -21,6 +21,7 @@ type Handlers struct {
 	VideoGeneration *handler.VideoGenerationHandler
 	Download        *handler.DownloadHandler
 	Optimize        *handler.OptimizeHandler
+	Stats           *handler.StatsHandler
 }
 
 func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, corsOrigins []string) *gin.Engine {
@@ -56,6 +57,7 @@ func New(h Handlers, jwtMgr *jwtx.Manager, users repository.UserRepository, cors
 	authed.DELETE("/tasks/:id", h.VideoGeneration.Delete)
 	authed.DELETE("/tasks", h.VideoGeneration.DeleteAll)
 	authed.GET("/download/:taskId/:index", h.Download.Download)
+	authed.GET("/stats", h.Stats.Get)
 
 	admin := authed.Group("", middleware.RequireAdmin())
 	admin.GET("/users", h.User.List)

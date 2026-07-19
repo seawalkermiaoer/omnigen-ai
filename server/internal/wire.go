@@ -89,6 +89,7 @@ func provideHandlers(
 	vid *handler.VideoGenerationHandler,
 	dl *handler.DownloadHandler,
 	opt *handler.OptimizeHandler,
+	st *handler.StatsHandler,
 ) router.Handlers {
 	return router.Handlers{
 		Auth:            a,
@@ -101,6 +102,7 @@ func provideHandlers(
 		VideoGeneration: vid,
 		Download:        dl,
 		Optimize:        opt,
+		Stats:           st,
 	}
 }
 
@@ -138,6 +140,7 @@ var providerSet = wire.NewSet(
 	repository.NewUserRepository,
 	repository.NewSettingRepository,
 	repository.NewTaskRepository,
+	repository.NewStatsRepository,
 	service.NewAuthService,
 	service.NewUserService,
 	service.NewSettingService,
@@ -146,6 +149,7 @@ var providerSet = wire.NewSet(
 	service.NewImageGenerationService,
 	service.NewVideoGenerationService,
 	service.NewOptimizeService,
+	service.NewStatsService,
 	handler.NewAuthHandler,
 	handler.NewUserHandler,
 	handler.NewHealthHandler,
@@ -156,6 +160,7 @@ var providerSet = wire.NewSet(
 	handler.NewVideoGenerationHandler,
 	handler.NewDownloadHandler,
 	handler.NewOptimizeHandler,
+	handler.NewStatsHandler,
 	provideHandlers,
 	provideWorker,
 	router.New,

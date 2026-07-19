@@ -57,7 +57,10 @@ func InitApp(ctx context.Context, cfg *config.Config) (*App, error) {
 	downloadHandler := handler.NewDownloadHandler(taskRepository)
 	optimizeService := service.NewOptimizeService(settingReader)
 	optimizeHandler := handler.NewOptimizeHandler(optimizeService)
-	handlers := provideHandlers(authHandler, userHandler, healthHandler, settingHandler, catalogHandler, uploadHandler, imageGenerationHandler, videoGenerationHandler, downloadHandler, optimizeHandler)
+	statsRepository := repository.NewStatsRepository(db)
+	statsService := service.NewStatsService(statsRepository)
+	statsHandler := handler.NewStatsHandler(statsService)
+	handlers := provideHandlers(authHandler, userHandler, healthHandler, settingHandler, catalogHandler, uploadHandler, imageGenerationHandler, videoGenerationHandler, downloadHandler, optimizeHandler, statsHandler)
 	v2 := provideCORSOrigins(cfg)
 	engine := router.New(handlers, manager, userRepository, v2)
 	videoProviderFactory := provideVideoProviderFactory()
@@ -138,6 +141,7 @@ func provideHandlers(
 	vid *handler.VideoGenerationHandler,
 	dl *handler.DownloadHandler,
 	opt *handler.OptimizeHandler,
+	st *handler.StatsHandler,
 ) router.Handlers {
 	return router.Handlers{
 		Auth:            a,
@@ -150,6 +154,7 @@ func provideHandlers(
 		VideoGeneration: vid,
 		Download:        dl,
 		Optimize:        opt,
+		Stats:           st,
 	}
 }
 
@@ -183,6 +188,6 @@ var providerSet = wire.NewSet(
 	provideCORSOrigins,
 	provideEncryptionKey,
 	provideSettingReader,
-	provideVideoProviderFactory, repository.NewUserRepository, repository.NewSettingRepository, repository.NewTaskRepository, service.NewAuthService, service.NewUserService, service.NewSettingService, service.NewUploadService, service.NewQuotaService, service.NewImageGenerationService, service.NewVideoGenerationService, service.NewOptimizeService, handler.NewAuthHandler, handler.NewUserHandler, handler.NewHealthHandler, handler.NewSettingHandler, handler.NewCatalogHandler, handler.NewUploadHandler, handler.NewImageGenerationHandler, handler.NewVideoGenerationHandler, handler.NewDownloadHandler, handler.NewOptimizeHandler, provideHandlers,
+	provideVideoProviderFactory, repository.NewUserRepository, repository.NewSettingRepository, repository.NewTaskRepository, repository.NewStatsRepository, service.NewAuthService, service.NewUserService, service.NewSettingService, service.NewUploadService, service.NewQuotaService, service.NewImageGenerationService, service.NewVideoGenerationService, service.NewOptimizeService, service.NewStatsService, handler.NewAuthHandler, handler.NewUserHandler, handler.NewHealthHandler, handler.NewSettingHandler, handler.NewCatalogHandler, handler.NewUploadHandler, handler.NewImageGenerationHandler, handler.NewVideoGenerationHandler, handler.NewDownloadHandler, handler.NewOptimizeHandler, handler.NewStatsHandler, provideHandlers,
 	provideWorker, router.New, provideApp,
 )
