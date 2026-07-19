@@ -343,7 +343,7 @@ git commit -m "feat(server): 用户算力配额的存储与原子扣减"
 
 **这个任务有一个必须先理解的顺序问题。** `generation_image.go` 当前的流程是：校验 → 取凭证 → **调 provider（150-151 行）** → **再创建 task 行（176 或 192 行）**。而扣费必须在调 provider 之前，此时 task 行还不存在，`quota_charged` 无处可写。
 
-解决办法是用 `defer` + 命名返回值：扣费后注册一个延迟退款，任何错误路径（包括 panic）都会触发；成功路径不触发。task 行创建时按当时的状态写 `quota_charged`。
+解决办法是用 `defer` + 命名返回值：扣费后注册一个延迟退款。注意：**命名返回值 + defer 并不覆盖 panic**——panic 展开时 retErr 仍是 nil，必须在 defer 里 recover 再 re-panic，否则用户会被扣费却拿到一个 500。task 行创建时按当时的状态写 `quota_charged`。
 
 - [ ] **Step 1: 写 QuotaService 与它的假 repository 测试**
 
@@ -482,12 +482,18 @@ func (s *ImageGenerationService) GenerateImage(
 	}
 	charged := true
 	defer func() {
-		// 任何错误路径（含 panic 展开）都退回。成功路径 retErr 为 nil，不退。
-		if charged && retErr != nil {
+		// panic 不会设置命名返回值——retErr 在这里仍是 nil。只判断 retErr
+		// 会漏掉 panic 路径：middleware.Recovery 把 panic 转成干净的 500，
+		// 用户被扣了费、拿到一个 500、没有任何补偿，外部还看不出哪里坏了。
+		r := recover()
+		if charged && (retErr != nil || r != nil) {
 			if refundErr := s.quota.Refund(ctx, userID); refundErr != nil {
 				slog.Error("退回额度失败", "userID", userID, "error", refundErr)
 			}
 			charged = false
+		}
+		if r != nil {
+			panic(r) // 交还给 middleware.Recovery
 		}
 	}()
 
