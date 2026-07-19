@@ -101,6 +101,10 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<TestResult | null>(null)
+  // t8star 的测试连接状态与百炼卡片的完全分开——两个按钮各打各的 provider，
+  // 一个的结果绝不能覆盖或清空另一个的展示（见 handleTest/handleT8starTest）。
+  const [t8starTesting, setT8starTesting] = useState(false)
+  const [t8starTestResult, setT8starTestResult] = useState<TestResult | null>(null)
   const [settingsByKey, setSettingsByKey] = useState<Record<string, SettingItem>>({})
   const [clearedKeys, setClearedKeys] = useState<Set<SettingKey>>(new Set())
 
@@ -227,6 +231,7 @@ export default function SettingsPage() {
     const values = form.getFieldsValue(true) as FormValues
     setSaving(true)
     setTestResult(null)
+    setT8starTestResult(null)
     try {
       await settingApi.update({ items: buildItems(values) })
       void message.success(t('settings.saveSuccess'))
@@ -238,18 +243,27 @@ export default function SettingsPage() {
     }
   }
 
-  const handleTest = async () => {
-    setTesting(true)
-    setTestResult(null)
+  // 两个按钮共用同一段"调用 → 记录结果"逻辑，但各自的 loading/result
+  // setter 完全独立传入——不共享一份 state，是两个结果互不覆盖的保证。
+  const runTest = async (
+    provider: 'dashscope' | 't8star',
+    setLoadingState: (v: boolean) => void,
+    setResultState: (v: TestResult | null) => void,
+  ) => {
+    setLoadingState(true)
+    setResultState(null)
     try {
-      await settingApi.test()
-      setTestResult({ ok: true })
+      await settingApi.test(provider)
+      setResultState({ ok: true })
     } catch (err) {
-      setTestResult({ ok: false, message: toMessage(err) })
+      setResultState({ ok: false, message: toMessage(err) })
     } finally {
-      setTesting(false)
+      setLoadingState(false)
     }
   }
+
+  const handleTest = () => runTest('dashscope', setTesting, setTestResult)
+  const handleT8starTest = () => runTest('t8star', setT8starTesting, setT8starTestResult)
 
   const secretExtra = (key: SettingKey) => {
     const item = settingsByKey[key]
@@ -438,6 +452,36 @@ export default function SettingsPage() {
           <Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }} data-testid="settings-t8star-models">
             {t('settings.t8starApplicableModels')}
           </Paragraph>
+
+          <div style={{ marginTop: 16 }}>
+            <Button onClick={handleT8starTest} loading={t8starTesting} data-testid="settings-test-connection-t8star">
+              {t('settings.testConnection')}
+            </Button>
+          </div>
+
+          {/*
+            这句话是本卡片存在的理由，不是可有可无的说明：t8star 唯一的
+            端点就是出图接口，没有独立的鉴权探测路径，测试连接会真的向
+            上游发一次请求。百炼卡片没有这句话，因为它探测的是文本模型，
+            成本可以忽略——这个不对称是真实的，藏起来才是误导。
+          */}
+          <Paragraph type="warning" style={{ marginTop: 8, marginBottom: 0 }} data-testid="settings-t8star-test-cost-note">
+            {t('settings.t8starTestCostNote')}
+          </Paragraph>
+
+          {t8starTestResult && (
+            <Alert
+              style={{ marginTop: 16 }}
+              type={t8starTestResult.ok ? 'success' : 'error'}
+              showIcon
+              data-testid="settings-test-result-t8star"
+              message={
+                t8starTestResult.ok
+                  ? t('settings.testSuccess')
+                  : `${t('settings.testFailedPrefix')}${t8starTestResult.message}`
+              }
+            />
+          )}
         </Card>
 
         {/* ── Card 3: 对象存储 OSS（可选） ───────────────────────────── */}

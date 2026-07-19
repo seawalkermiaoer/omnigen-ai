@@ -272,6 +272,69 @@ describe('SettingsPage', () => {
     expect(screen.getByText(i18n.t('settings.workspaceIdExplain'))).toBeInTheDocument()
   })
 
+  it('t8star 测试连接成功时展示翻译后的成功文案，且带 provider 参数', async () => {
+    const user = userEvent.setup()
+    vi.mocked(settingApi.test).mockResolvedValue({ data: { code: 'OK' } } as never)
+    renderPage()
+    await screen.findByText(/sk-ab...wxyz/)
+
+    await user.click(screen.getByTestId('settings-test-connection-t8star'))
+
+    expect(await screen.findByTestId('settings-test-result-t8star')).toHaveTextContent(i18n.t('settings.testSuccess'))
+    expect(settingApi.test).toHaveBeenCalledWith('t8star')
+  })
+
+  it('t8star 测试连接失败时展示翻译文案，而不是裸露的错误码', async () => {
+    const user = userEvent.setup()
+    vi.mocked(settingApi.test).mockRejectedValue(new ApiError('UPSTREAM_AUTH_FAILED', 502))
+    renderPage()
+    await screen.findByText(/sk-ab...wxyz/)
+
+    await user.click(screen.getByTestId('settings-test-connection-t8star'))
+
+    const result = await screen.findByTestId('settings-test-result-t8star')
+    expect(result).toHaveTextContent(i18n.t('errors.UPSTREAM_AUTH_FAILED'))
+    expect(result.textContent).not.toContain('UPSTREAM_AUTH_FAILED')
+  })
+
+  it('两个测试连接按钮各自触发正确的 provider，结果互不覆盖', async () => {
+    const user = userEvent.setup()
+    vi.mocked(settingApi.test).mockImplementation(((provider: string) =>
+      provider === 't8star'
+        ? Promise.reject(new ApiError('UPSTREAM_AUTH_FAILED', 502))
+        : Promise.resolve({ data: { code: 'OK' } })) as never)
+    renderPage()
+    await screen.findByText(/sk-ab...wxyz/)
+
+    // 先点 DashScope，成功。
+    await user.click(screen.getByTestId('settings-test-connection'))
+    expect(await screen.findByTestId('settings-test-result')).toHaveTextContent(i18n.t('settings.testSuccess'))
+
+    // 再点 t8star，失败——DashScope 那条成功结果不应该被清掉或覆盖。
+    await user.click(screen.getByTestId('settings-test-connection-t8star'))
+    expect(await screen.findByTestId('settings-test-result-t8star')).toHaveTextContent(
+      i18n.t('errors.UPSTREAM_AUTH_FAILED'),
+    )
+    expect(screen.getByTestId('settings-test-result')).toHaveTextContent(i18n.t('settings.testSuccess'))
+
+    expect(settingApi.test).toHaveBeenNthCalledWith(1, 'dashscope')
+    expect(settingApi.test).toHaveBeenNthCalledWith(2, 't8star')
+  })
+
+  it('t8star 按钮带费用说明，百炼按钮不带', async () => {
+    renderPage()
+    await screen.findByText(/sk-ab...wxyz/)
+
+    const t8starCard = screen.getByText(i18n.t('settings.cardT8starTitle')).closest('.ant-card') as HTMLElement
+    expect(t8starCard.querySelector('[data-testid="settings-t8star-test-cost-note"]')).toHaveTextContent(
+      i18n.t('settings.t8starTestCostNote'),
+    )
+
+    const dashscopeCard = screen.getByText(i18n.t('settings.cardDashscopeTitle')).closest('.ant-card') as HTMLElement
+    expect(dashscopeCard.textContent).not.toContain(i18n.t('settings.t8starTestCostNote'))
+    expect(dashscopeCard.querySelector('[data-testid="settings-t8star-test-cost-note"]')).toBeNull()
+  })
+
   it('t8star 卡片不渲染地域或 WorkspaceId 控件', async () => {
     renderPage()
     await screen.findByText(/sk-ab...wxyz/)

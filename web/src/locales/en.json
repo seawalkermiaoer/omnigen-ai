@@ -128,6 +128,7 @@
     "t8starEndpointPlaceholder": "Leave blank to use the default address https://ai.t8star.org",
     "t8starEndpointHint": "Leave blank to use the default address; only change this if you need to route through your own or a third-party relay.",
     "t8starApplicableModels": "Applies to: gpt-image-2 (image generation and editing only — no video).",
+  "t8starTestCostNote": "t8star has no separate credential-check endpoint. Running this test sends a real request upstream and may incur a small charge.",
     "cardOSSTitle": "Object storage (OSS) — optional",
     "cardOSSDesc": "Uploads larger than 12MB go through Alibaba Cloud OSS direct upload instead of being inlined in the request; without this configured, only smaller images will work and oversized ones will fail to upload.",
     "ossBucket": "OSS Bucket",

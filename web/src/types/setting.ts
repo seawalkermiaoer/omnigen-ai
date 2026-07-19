@@ -48,3 +48,13 @@ export interface UpdateSettingItem {
 export interface UpdateSettingsRequest {
   items: UpdateSettingItem[]
 }
+
+/**
+ * 对应后端 settingmodel.TestConnectionRequest.Provider（POST /api/settings/test）。
+ *
+ * 两个 provider 的测试成本天差地别：DashScope 探测的是文本模型，几厘钱
+ * 级别；t8star 没有独立的鉴权探测接口，唯一的端点就是出图接口，测试即
+ * 一次真实请求。UI 层必须为 t8star 单独展示费用说明，不能把两者当成
+ * 对称的按钮处理。
+ */
+export type TestConnectionProvider = 'dashscope' | 't8star'

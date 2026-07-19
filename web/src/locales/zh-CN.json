@@ -128,6 +128,7 @@
     "t8starEndpointPlaceholder": "留空则使用默认地址 https://ai.t8star.org",
     "t8starEndpointHint": "留空使用默认地址；只有需要接入自建或第三方中转站时才需要修改。",
     "t8starApplicableModels": "适用模型：gpt-image-2（仅支持图片生成与编辑，不支持视频）。",
+  "t8starTestCostNote": "t8star 没有独立的鉴权探测接口，本次测试会向上游发起一次真实请求，可能产生少量费用。",
     "cardOSSTitle": "对象存储 OSS（可选）",
     "cardOSSDesc": "上传图片超过 12MB 时会走阿里云 OSS 直传，而不是直接内嵌在请求里；不配置的话，只有较小的图片能正常处理，超限图片会上传失败。",
     "ossBucket": "OSS Bucket",
