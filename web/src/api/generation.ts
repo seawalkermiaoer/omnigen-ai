@@ -1,4 +1,4 @@
-import { client, unwrap } from './client'
+import { client, unwrap, LONG_RUNNING_TIMEOUT } from './client'
 import { useAuthStore } from '@/stores/auth'
 import type { ApiResponse } from '@/types/common'
 import type {
@@ -30,6 +30,8 @@ export const uploadApi = {
     return unwrap<UploadResult>(
       client.post<ApiResponse<UploadResult>>('/upload', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        // 上传耗时随文件大小和上行带宽变化，很容易超过 15s 的全局默认值。
+        timeout: LONG_RUNNING_TIMEOUT,
       }),
     )
   },
@@ -58,8 +60,15 @@ function refreshQuota(): void {
 }
 
 export const generationApi = {
+  // 图片生成是同步接口：上游整个出图过程（实测 gpt-image-2 约 40s）都发生在
+  // 这一次 HTTP 请求里，必须给足超时。视频生成不同——它提交后立刻返回
+  // task id，真正的等待在后续轮询里，所以沿用默认超时。
   generateImage: (req: GenerateImageRequest) =>
-    unwrap<GenerationTask>(client.post<ApiResponse<GenerationTask>>('/generate/image', req)).then(
+    unwrap<GenerationTask>(
+      client.post<ApiResponse<GenerationTask>>('/generate/image', req, {
+        timeout: LONG_RUNNING_TIMEOUT,
+      }),
+    ).then(
       (result) => {
         refreshQuota()
         return result
@@ -96,9 +105,12 @@ export const generationApi = {
       },
     ),
 
+  // 优化要等上游大模型把整段提示词写完（实测约 19s），同样超过默认超时。
   optimizePrompt: (req: OptimizePromptRequest) =>
     unwrap<OptimizePromptResponse>(
-      client.post<ApiResponse<OptimizePromptResponse>>('/optimize-prompt', req),
+      client.post<ApiResponse<OptimizePromptResponse>>('/optimize-prompt', req, {
+        timeout: LONG_RUNNING_TIMEOUT,
+      }),
     ),
 
   /**

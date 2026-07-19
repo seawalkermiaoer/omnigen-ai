@@ -88,6 +88,43 @@ describe('api client 响应拦截器', () => {
     expect(onUnauthorized).not.toHaveBeenCalled()
   })
 
+  // 这是本次要修的 bug：客户端自己的超时被当成了「网络连接失败」。
+  //
+  // 实测：/api/optimize-prompt 服务端耗时 18.56s、/api/generate/image 耗时
+  // 39.68s，两者都超过 axios 默认的 15s 超时。axios 中止请求后 error.response
+  // 是 undefined，原来的判断只看 `!error.response`，于是一律归为
+  // NETWORK_ERROR——文案「网络连接失败，请检查后端服务是否已启动」把用户
+  // 引去检查后端，而后端其实好好地跑完了这次请求（并且真实计费、真实扣了
+  // 配额）。超时和「连不上」是两回事，必须分开。
+  it('客户端超时（ECONNABORTED）映射为 REQUEST_TIMEOUT，不是 NETWORK_ERROR', async () => {
+    const timeoutAdapter = async (config: InternalAxiosRequestConfig) => {
+      throw new AxiosError('timeout of 15000ms exceeded', AxiosError.ECONNABORTED, config)
+    }
+
+    let caught: unknown
+    try {
+      await client.get('/whatever', { adapter: timeoutAdapter })
+    } catch (e) {
+      caught = e
+    }
+
+    expect(caught).toBeInstanceOf(ApiError)
+    expect((caught as ApiError).code).toBe('REQUEST_TIMEOUT')
+    expect(onUnauthorized).not.toHaveBeenCalled()
+  })
+
+  // Node 侧（以及部分 axios 传输层）超时用的是 ETIMEDOUT 而不是
+  // ECONNABORTED，两个码指向同一件事，不能只认其中一个。
+  it('客户端超时（ETIMEDOUT）同样映射为 REQUEST_TIMEOUT', async () => {
+    const timeoutAdapter = async (config: InternalAxiosRequestConfig) => {
+      throw new AxiosError('timeout exceeded', AxiosError.ETIMEDOUT, config)
+    }
+
+    await expect(client.get('/whatever', { adapter: timeoutAdapter })).rejects.toMatchObject({
+      code: 'REQUEST_TIMEOUT',
+    })
+  })
+
   it('网络层失败（无 response）映射为 NETWORK_ERROR，不触发登出', async () => {
     const networkFailAdapter = async (config: InternalAxiosRequestConfig) => {
       throw new AxiosError('Network Error', AxiosError.ERR_NETWORK, config)

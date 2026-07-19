@@ -55,6 +55,12 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// upstreamTimeout 与 t8star 一侧取同一个值，都来自旧系统 forwardJSON() 的
+// 180000ms。此前这里是裸的 &http.Client{}——即没有任何超时：上游一旦不回包
+// 也不断开，这次请求连同它占住的 goroutine 与数据库连接就会一直挂着，只能
+// 靠调用方的 context 或进程重启收场。
+const upstreamTimeout = 180 * time.Second
+
 // New 构造一个绑定了固定凭证的 Client。
 func New(apiKey, region, workspaceID, endpoint string) *Client {
 	return &Client{
@@ -62,7 +68,7 @@ func New(apiKey, region, workspaceID, endpoint string) *Client {
 		region:      region,
 		workspaceID: workspaceID,
 		endpoint:    endpoint,
-		httpClient:  &http.Client{},
+		httpClient:  &http.Client{Timeout: upstreamTimeout},
 	}
 }
 
