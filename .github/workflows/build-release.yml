@@ -139,6 +139,25 @@ jobs:
       - name: Extract tag message
         id: tag
         run: |
+          # actions/checkout 会把带注释的 tag 取成**轻量** tag（指向 commit
+          # 本身，annotated tag 对象没被取下来）。此时
+          # `git tag -l --format='%(contents)'` 会静默回退成那个 commit 的
+          # message —— 发布说明里出现的是最后一条提交信息，而不是精心写的
+          # tag 注释。这不是假设：v0.0.1 第一次发布就是这么翻车的，
+          # Release 正文开头是「ci: GitHub Actions 构建发布流水线…」。
+          #
+          # 所以必须显式把 annotated tag 对象强制重新取一遍。--force 是必需的：
+          # 同名的轻量 tag 已经在本地了，不覆盖就取不动。
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
+          # 取完再自检一次：确认它现在真的是 annotated tag（对象类型为 tag，
+          # 轻量 tag 的类型是 commit）。宁可在这里显式失败，也好过又发一版
+          # 正文是提交信息的 Release —— 那种错误发出去才会被发现。
+          if [ "$(git cat-file -t "${GITHUB_REF_NAME}")" != "tag" ]; then
+            echo "::error::${GITHUB_REF_NAME} 不是 annotated tag，发布说明会退化成提交信息。请用 git tag -a 重新打标签。"
+            exit 1
+          fi
+
           {
             echo 'body<<__OMNIGEN_EOF__'
             git tag -l --format='%(contents)' "${GITHUB_REF_NAME}"
