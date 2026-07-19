@@ -88,6 +88,31 @@ const failedTask: GenerationTask = {
   updatedAt: '2026-07-19T11:41:00Z',
 }
 
+// 回归测试用：一条足够长的失败原因（模拟真实的 DashScope 错误详情），
+// 没有 errorCode 命中翻译表，errorText() 会回退展示原始 errorMessage——
+// 这正是最容易撑爆行高的场景。
+const LONG_ERROR_MESSAGE =
+  'DashScope upstream returned a very long diagnostic message that includes request id, ' +
+  'trace id, retry hints and a full stack of nested error causes which together add up to ' +
+  'far more characters than any single table row should ever try to display inline without truncation.'
+const LONG_PROMPT =
+  '一段用来验证提示词两行截断的长文本，长到足以在任何合理宽度的内容列里都会溢出可见区域，' +
+  '必须依赖行数限制加省略号来截断，而不是无限制换行撑高整行。'
+
+const longContentTask: GenerationTask = {
+  id: 6,
+  mode: 'imggen',
+  model: 'qwen-image',
+  status: 'FAILED',
+  prompt: LONG_PROMPT,
+  params: { size: '1328*1328', n: 1 },
+  inputUrls: [],
+  resultUrls: [],
+  errorMessage: LONG_ERROR_MESSAGE,
+  createdAt: '2026-07-19T11:45:00Z',
+  updatedAt: '2026-07-19T11:45:10Z',
+}
+
 const pendingTask: GenerationTask = {
   id: 5,
   mode: 't2v',
@@ -274,5 +299,37 @@ describe('HistoryPage', () => {
     expect(errorEl).toHaveTextContent(i18n.t('errors.UPSTREAM_FAILED'))
     expect(screen.queryByText('UPSTREAM_FAILED')).not.toBeInTheDocument()
     expect(errorEl).not.toHaveTextContent(failedTask.errorMessage!)
+  })
+
+  // 回归测试：内容列的长文本（提示词/失败原因）必须靠"限定行数 + 省略号 +
+  // title 悬浮展示全文"截断，而不是无限制换行撑高整行——这正是用户报的
+  // "内容列被挤成一字一行、整行拉伸到 1000px+ 高"那个 bug 的根因。断言的
+  // 是截断机制本身（title 属性 + CSS 截断样式），而不是像素级的视觉结果。
+  it('内容列的长提示词/长错误信息通过省略号截断并可悬浮查看全文，不会无限换行撑高行高', async () => {
+    vi.mocked(generationApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [longContentTask],
+    })
+    renderPage()
+
+    const promptEl = await screen.findByTestId('history-prompt-6')
+    // 全文仍在 DOM 里（可被读屏器/搜索访问到），只是视觉上被截断。
+    expect(promptEl).toHaveTextContent(LONG_PROMPT)
+    expect(promptEl).toHaveAttribute('title', LONG_PROMPT)
+    // 多行截断：固定行数的 line-clamp 容器（-webkit-box + box-orient +
+    // overflow:hidden），不会随文本长度无限增高。jsdom 的 CSSOM 实现
+    // （cssstyle）不识别 -webkit-line-clamp 这个供应商前缀属性、会静默
+    // 丢弃，所以断言它认得的那几个关联属性，加上真实浏览器里验证过的
+    // 截断效果（见 HistoryPage.tsx 的 twoLineClampStyle）。
+    expect(promptEl.style.display).toBe('-webkit-box')
+    expect(promptEl.style.overflow).toBe('hidden')
+
+    const errorEl = await screen.findByTestId('history-error-6')
+    expect(errorEl).toHaveTextContent(LONG_ERROR_MESSAGE)
+    expect(errorEl).toHaveAttribute('title', LONG_ERROR_MESSAGE)
+    // 单行截断：绝不换行，溢出用省略号表示，不会把行高撑爆。
+    expect(errorEl.style.whiteSpace).toBe('nowrap')
+    expect(errorEl.style.textOverflow).toBe('ellipsis')
+    expect(errorEl.style.overflow).toBe('hidden')
   })
 })

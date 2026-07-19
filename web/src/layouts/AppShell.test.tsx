@@ -50,4 +50,26 @@ describe('AppShell 导航', () => {
     renderShell()
     expect(screen.queryByText(i18n.t('nav.settings'))).not.toBeInTheDocument()
   })
+
+  // 回归测试：导航顺序必须与旧系统 public/index.html + zh-CN.json 的侧栏
+  // 顺序完全一致（r2v → i2v → t2v → imggen → imgedit → history → users →
+  // settings），这是用户的肌肉记忆——断言的是顺序本身，不是"这些项都在"。
+  it('导航顺序与旧系统完全一致', () => {
+    useAuthStore.setState({ token: 'tok', user: admin, initializing: false })
+    renderShell()
+
+    const expectedOrder = [
+      i18n.t('nav.r2v'),
+      i18n.t('nav.i2v'),
+      i18n.t('nav.t2v'),
+      i18n.t('nav.imggen'),
+      i18n.t('nav.imgedit'),
+      i18n.t('nav.history'),
+      i18n.t('nav.users'),
+      i18n.t('nav.settings'),
+    ]
+
+    const menuItems = screen.getAllByRole('menuitem')
+    expect(menuItems.map((el) => el.textContent)).toEqual(expectedOrder)
+  })
 })

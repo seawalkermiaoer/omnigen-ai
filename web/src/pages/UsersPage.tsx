@@ -123,13 +123,25 @@ export default function UsersPage() {
     }
   }
 
+  // 与历史记录页同样的道理：给除"显示名"外的每一列一个明确宽度，"显示名"
+  // 不设宽度吃剩余空间，再配合 Table 的 scroll.x——窄屏下整表横向滚动，
+  // 而不是把某一列挤没。
+  const USERNAME_COL_WIDTH = 140
+  const ROLE_COL_WIDTH = 100
+  const STATUS_COL_WIDTH = 100
+  const CREATED_COL_WIDTH = 170
+  const USERS_ACTIONS_COL_WIDTH = 260
+  const USERS_TABLE_SCROLL_X =
+    USERNAME_COL_WIDTH + ROLE_COL_WIDTH + STATUS_COL_WIDTH + CREATED_COL_WIDTH + USERS_ACTIONS_COL_WIDTH + 160
+
   const columns: ColumnsType<User> = [
-    { title: t('users.username'), dataIndex: 'username', key: 'username' },
+    { title: t('users.username'), dataIndex: 'username', key: 'username', width: USERNAME_COL_WIDTH },
     { title: t('users.displayName'), dataIndex: 'displayName', key: 'displayName' },
     {
       title: t('users.role'),
       dataIndex: 'role',
       key: 'role',
+      width: ROLE_COL_WIDTH,
       render: (role: User['role']) => (
         <Tag color={role === 'admin' ? 'purple' : 'default'}>
           {role === 'admin' ? t('users.roleAdmin') : t('users.roleUser')}
@@ -140,6 +152,7 @@ export default function UsersPage() {
       title: t('users.status'),
       dataIndex: 'status',
       key: 'status',
+      width: STATUS_COL_WIDTH,
       render: (status: User['status']) => (
         <Tag color={status === 'active' ? 'success' : 'error'}>
           {status === 'active' ? t('users.statusActive') : t('users.statusDisabled')}
@@ -150,12 +163,13 @@ export default function UsersPage() {
       title: t('users.createdAt'),
       dataIndex: 'createdAt',
       key: 'createdAt',
+      width: CREATED_COL_WIDTH,
       render: (v: string) => new Date(v).toLocaleString(),
     },
     {
       title: t('common.actions'),
       key: 'actions',
-      width: 260,
+      width: USERS_ACTIONS_COL_WIDTH,
       render: (_, record) => {
         // 后端对自我删除已有护栏；前端一并隐藏，避免用户点了才被拒。
         const isSelf = record.id === currentUser?.id
@@ -203,7 +217,19 @@ export default function UsersPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      {/* flexWrap + gap：窄视口下标题与"新建用户"按钮挤在一行会把标题压缩到
+          0 宽度，CJK 文本此时逐字换行——与历史记录页表格内容列是同一类
+          bug。允许按钮在窄屏换到标题下方。 */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
         <Title level={3} style={{ margin: 0 }}>{t('users.title')}</Title>
         <Button
           type="primary"
@@ -223,6 +249,8 @@ export default function UsersPage() {
         loading={loading}
         columns={columns}
         dataSource={items}
+        tableLayout="fixed"
+        scroll={{ x: USERS_TABLE_SCROLL_X }}
         locale={{
           emptyText: (
             <Empty

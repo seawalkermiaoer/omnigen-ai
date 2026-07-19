@@ -55,7 +55,7 @@ export default function ChangePasswordModal({
       confirmLoading={submitting}
       okText={t('common.confirm')}
       cancelText={t('common.cancel')}
-      destroyOnClose
+      destroyOnHidden
     >
       <Form form={form} layout="vertical" requiredMark={false}>
         <Form.Item

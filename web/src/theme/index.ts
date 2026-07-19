@@ -14,7 +14,10 @@ export const colors = {
   border: '#26262c',
   borderStrong: '#2c2c33',
   textBase: '#f2f2f4',
-  textMuted: '#6b6b76',
+  // #6b6b76 在 bgContainer(#131317) 上只有约 3.5:1 对比度，低于 WCAG AA 正文
+  // 文本要求的 4.5:1；这里注入 antd colorTextSecondary，全站次要文字都受它
+  // 影响。#8a8a94 在三种背景色（bgBase/bgContainer/bgElevated）上均 >5:1。
+  textMuted: '#8a8a94',
   success: '#059669',
   warning: '#f59e0b',
   error: '#f43f5e',

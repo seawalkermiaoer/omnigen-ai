@@ -27,12 +27,16 @@ interface NavItem {
   adminOnly?: boolean
 }
 
+// 顺序与旧系统 public/index.html + public/locales/zh-CN.json 的侧栏顺序一一对应
+// （r2v → i2v → t2v → imggen → imgedit → history → settings），这是用户的
+// 肌肉记忆，不能按"新功能感觉上更重要"重排。用户管理是本次重写新增的
+// 管理员入口，插在 history 之后、settings 之前，让原本七项的相对顺序保持不变。
 const NAV_ITEMS: NavItem[] = [
+  { key: 'r2v', path: '/r2v', icon: <VideoCameraOutlined />, labelKey: 'nav.r2v' },
+  { key: 'i2v', path: '/i2v', icon: <VideoCameraOutlined />, labelKey: 'nav.i2v' },
+  { key: 't2v', path: '/t2v', icon: <PlayCircleOutlined />, labelKey: 'nav.t2v' },
   { key: 'imggen', path: '/imggen', icon: <PictureOutlined />, labelKey: 'nav.imggen' },
   { key: 'imgedit', path: '/imgedit', icon: <EditOutlined />, labelKey: 'nav.imgedit' },
-  { key: 't2v', path: '/t2v', icon: <PlayCircleOutlined />, labelKey: 'nav.t2v' },
-  { key: 'i2v', path: '/i2v', icon: <VideoCameraOutlined />, labelKey: 'nav.i2v' },
-  { key: 'r2v', path: '/r2v', icon: <VideoCameraOutlined />, labelKey: 'nav.r2v' },
   { key: 'history', path: '/history', icon: <HistoryOutlined />, labelKey: 'nav.history' },
   { key: 'users', path: '/users', icon: <TeamOutlined />, labelKey: 'nav.users', adminOnly: true },
   { key: 'settings', path: '/settings', icon: <SettingOutlined />, labelKey: 'nav.settings', adminOnly: true },
@@ -59,6 +63,11 @@ export default function AppShell() {
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_KEY) !== 'false',
   )
+  // 窄视口（antd Sider 的 md 断点，<768px）下强制收起为图标栏，与用户手动
+  // 偏好分开存储——否则在桌面端展开侧栏、切到手机宽度访问时，220px 的
+  // 展开侧栏会把头部（标题/语言切换/用户菜单）挤出可视区甚至互相重叠。
+  // 回到宽屏后自动恢复用户原本的展开/收起偏好。
+  const [autoCollapsed, setAutoCollapsed] = useState(false)
   const [locale, setLocaleState] = useState<Locale>(getStoredLocale())
   const [pwdOpen, setPwdOpen] = useState(false)
 
@@ -69,6 +78,7 @@ export default function AppShell() {
     })
   }
 
+  const effectiveCollapsed = collapsed || autoCollapsed
   const visibleItems = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin())
   const activeKey =
     visibleItems.find((item) => location.pathname.startsWith(item.path))?.key ?? 'imggen'
@@ -84,15 +94,17 @@ export default function AppShell() {
     <Layout style={{ minHeight: '100vh', ...shellVars }}>
       <Sider
         collapsible
-        collapsed={collapsed}
+        collapsed={effectiveCollapsed}
         trigger={null}
         collapsedWidth={64}
         width={220}
         theme="dark"
+        breakpoint="md"
+        onBreakpoint={(broken) => setAutoCollapsed(broken)}
       >
         <div className="shell-logo">
           <span className="shell-logo__mark" />
-          {!collapsed && <span className="shell-logo__text">{t('app.title')}</span>}
+          {!effectiveCollapsed && <span className="shell-logo__text">{t('app.title')}</span>}
         </div>
         <Menu
           className="shell-nav"
@@ -114,14 +126,14 @@ export default function AppShell() {
       <Layout>
         <Header className="shell-header">
           <div className="shell-header__left">
-            <Tooltip title={collapsed ? t('common.expand') : t('common.collapse')}>
+            <Tooltip title={effectiveCollapsed ? t('common.expand') : t('common.collapse')}>
               <button
                 type="button"
                 className="shell-toggle"
-                aria-label={collapsed ? t('common.expand') : t('common.collapse')}
+                aria-label={effectiveCollapsed ? t('common.expand') : t('common.collapse')}
                 onClick={toggleCollapsed}
               >
-                {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+                {effectiveCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
               </button>
             </Tooltip>
             <span className="shell-header__title">{activeLabel ? t(activeLabel) : t('app.title')}</span>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { App, Button, Empty, Flex, Input, Modal, Space, Table, Tag, Tooltip, Typography } from 'antd'
 import {
   ClearOutlined,
@@ -211,11 +211,44 @@ export default function HistoryPage() {
     URL.revokeObjectURL(url)
   }
 
+  // 列宽策略：任务/状态/时间/操作四列给固定宽度，内容列不设宽度、吃剩余
+  // 空间——这是 antd Table 在 tableLayout:fixed 下"唯一不设宽度的列自动
+  // 撑满剩余空间"的标准写法。scroll.x 取四个固定列宽度之和再加内容列的
+  // 合理下限（约 320px），保证窄视口下表格整体横向滚动而不是把内容列挤
+  // 成一格一行的竖排文字（这正是用户报的 bug 的根因：没有任何列宽约束时，
+  // 浏览器会在极窄可用宽度下把长文本按字符换行）。
+  const TASK_COL_WIDTH = 170
+  const STATUS_COL_WIDTH = 96
+  const TIME_COL_WIDTH = 140
+  const ACTIONS_COL_WIDTH = 280
+  const TABLE_SCROLL_X = TASK_COL_WIDTH + STATUS_COL_WIDTH + TIME_COL_WIDTH + ACTIONS_COL_WIDTH + 320
+
+  // 单行截断 + title 悬浮展示全文——不用 antd Typography 的 ellipsis
+  // 探测式截断（依赖 ResizeObserver 测量实际渲染宽度，在极端场景/测试环境
+  // 下不可靠），改用纯 CSS text-overflow，行为在任意视口宽度下都是确定的。
+  const singleLineEllipsisStyle: CSSProperties = {
+    display: 'block',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    maxWidth: '100%',
+  }
+  // 提示词允许最多两行，用 -webkit-line-clamp 做多行截断——同样是纯 CSS、
+  // 不依赖测量，且行数固定住了这一格的最大高度，长文本不可能撑爆整行。
+  const twoLineClampStyle: CSSProperties = {
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+    wordBreak: 'break-word',
+    maxWidth: '100%',
+  }
+
   const columns: ColumnsType<GenerationTask> = [
     {
       title: t('history.columnTask'),
       key: 'task',
-      width: 190,
+      width: TASK_COL_WIDTH,
       render: (_, task) => (
         <Flex vertical gap={4}>
           <Tag>{modeLabel(task.mode, t)}</Tag>
@@ -228,7 +261,7 @@ export default function HistoryPage() {
     {
       title: t('history.columnStatus'),
       key: 'status',
-      width: 110,
+      width: STATUS_COL_WIDTH,
       render: (_, task) => (
         <Tag color={STATUS_COLOR[task.status]} data-testid={`history-status-${task.id}`}>
           {t(`generation.status.${task.status}`)}
@@ -238,7 +271,7 @@ export default function HistoryPage() {
     {
       title: t('history.columnTime'),
       key: 'time',
-      width: 130,
+      width: TIME_COL_WIDTH,
       render: (_, task) => (
         <Tooltip title={formatAbsoluteTime(task.createdAt)}>
           <span data-testid={`history-time-${task.id}`}>{formatRelativeTime(task.createdAt, t)}</span>
@@ -250,20 +283,30 @@ export default function HistoryPage() {
       key: 'content',
       render: (_, task) => {
         const failure = errorText(task, t)
+        const prompt = task.prompt || t('history.detailNoPrompt')
+        const summary = paramSummary(task, t)
         return (
-          <Flex vertical gap={4}>
-            <Paragraph
-              ellipsis={{ rows: 2 }}
-              style={{ marginBottom: 0, maxWidth: 480 }}
-              data-testid={`history-prompt-${task.id}`}
-            >
-              {task.prompt || t('history.detailNoPrompt')}
-            </Paragraph>
-            <Text type="secondary" style={{ fontSize: 12 }} data-testid={`history-params-${task.id}`}>
-              {paramSummary(task, t)}
+          <Flex vertical gap={4} style={{ minWidth: 0 }}>
+            <Text title={prompt} style={twoLineClampStyle} data-testid={`history-prompt-${task.id}`}>
+              {prompt}
             </Text>
+            {summary && (
+              <Text
+                type="secondary"
+                title={summary}
+                style={{ ...singleLineEllipsisStyle, fontSize: 12 }}
+                data-testid={`history-params-${task.id}`}
+              >
+                {summary}
+              </Text>
+            )}
             {failure && (
-              <Text type="danger" style={{ fontSize: 12 }} data-testid={`history-error-${task.id}`}>
+              <Text
+                type="danger"
+                title={failure}
+                style={{ ...singleLineEllipsisStyle, fontSize: 12 }}
+                data-testid={`history-error-${task.id}`}
+              >
                 {failure}
               </Text>
             )}
@@ -274,7 +317,7 @@ export default function HistoryPage() {
     {
       title: t('common.actions'),
       key: 'actions',
-      width: 260,
+      width: ACTIONS_COL_WIDTH,
       render: (_, task) => {
         const canDownload = task.status === 'SUCCEEDED' && task.resultUrls.length > 0
         return (
@@ -327,7 +370,10 @@ export default function HistoryPage() {
 
   return (
     <div>
-      <Flex justify="space-between" align="center" style={{ marginBottom: 16 }}>
+      {/* wrap + gap：窄视口下标题与操作按钮挤在一行会把标题压缩到 0 宽度，
+          CJK 文本在这种情况下逐字换行（就是用户报的表格那个 bug 的同款根因，
+          只是这次出现在标题行）。允许按钮在窄屏换到标题下方，而不是压扁标题。 */}
+      <Flex justify="space-between" align="center" wrap="wrap" gap={12} style={{ marginBottom: 16 }}>
         <Title level={3} style={{ margin: 0 }}>
           {t('nav.history')}
         </Title>
@@ -352,6 +398,8 @@ export default function HistoryPage() {
         loading={loading}
         columns={columns}
         dataSource={items}
+        tableLayout="fixed"
+        scroll={{ x: TABLE_SCROLL_X }}
         locale={{
           emptyText: (
             <Empty
