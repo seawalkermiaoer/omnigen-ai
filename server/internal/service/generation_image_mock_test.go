@@ -350,3 +350,51 @@ func (f *recordingImageFactory) Factory() service.ImageProviderFactory {
 		})
 	}
 }
+
+// ── 结果归档 ──────────────────────────────────────────────────────────
+
+// scriptedArchiver 是一个假的 service.ResultArchiver。
+//
+// 它刻意复刻了真实 ResultArchiveService 最关键的语义：Archive 不返回 error，
+// 归档不了的那一条原样退回上游 URL，返回切片长度恒等于入参长度、顺序一一
+// 对应。fail 让测试模拟「OSS 没配 / 网络抖 / 写入被拒」——那时的正确行为是
+// 生成照样成功、库里存上游 URL，而不是把一次已经扣过配额的成功变成失败。
+type scriptedArchiver struct {
+	calls int
+	// lastTaskID / lastURLs 记录调用现场，用来断言归档确实发生在写库之前
+	// （拿到的是上游 URL）而不是之后。
+	lastTaskID int64
+	lastURLs   []string
+
+	// fail 为 true 时整批归档失败，全部退回上游 URL。
+	fail bool
+	// failIndex 只让某一条失败，用来验证「逐条降级」不是「整批降级」。
+	failIndex *int
+	// prefix 是归档成功时替换出来的 URL 前缀，形状对齐 ossx 的 publicURL。
+	prefix string
+}
+
+func newScriptedArchiver() *scriptedArchiver {
+	return &scriptedArchiver{prefix: "https://test-bucket.oss-cn-chengdu.aliyuncs.com/results/"}
+}
+
+func (a *scriptedArchiver) Archive(_ context.Context, taskID int64, urls []string) []string {
+	a.calls++
+	a.lastTaskID = taskID
+	a.lastURLs = append([]string(nil), urls...)
+
+	out := make([]string, len(urls))
+	copy(out, urls)
+	if a.fail {
+		return out
+	}
+	for i := range out {
+		if a.failIndex != nil && *a.failIndex == i {
+			continue
+		}
+		out[i] = fmt.Sprintf("%s%d/%d-deadbeef.png", a.prefix, taskID, i)
+	}
+	return out
+}
+
+var _ service.ResultArchiver = (*scriptedArchiver)(nil)

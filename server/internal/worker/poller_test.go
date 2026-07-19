@@ -56,7 +56,7 @@ func TestPoller_PendingRunningSucceeded_UpdatesRowAtEachStep(t *testing.T) {
 	pv := newScriptedVideoProvider(map[string][]scriptedPoll{
 		"up-1": {ok("RUNNING"), succeeded("https://cdn.example.com/v.mp4")},
 	})
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	p.PollOnce(context.Background())
 	got := repo.get(id)
@@ -77,7 +77,7 @@ func TestPoller_FourConsecutiveUnknowns_KeepPolling_FifthFails(t *testing.T) {
 	pv := newScriptedVideoProvider(map[string][]scriptedPoll{
 		"up-1": {ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN")},
 	})
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	for i := 0; i < 4; i++ {
 		p.PollOnce(context.Background())
@@ -104,7 +104,7 @@ func TestPoller_GoodResponse_ResetsCounter(t *testing.T) {
 		ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), // 再 4 个 UNKNOWN
 	}
 	pv := newScriptedVideoProvider(map[string][]scriptedPoll{"up-1": script})
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	for i := 0; i < len(script); i++ {
 		p.PollOnce(context.Background())
@@ -133,7 +133,7 @@ func TestPoller_FailureCounter_IsPerTask_NotGlobal(t *testing.T) {
 		"up-A": {ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("RUNNING"), ok("RUNNING")},
 		"up-B": {ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN"), ok("UNKNOWN")},
 	})
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	for i := 0; i < 5; i++ {
 		p.PollOnce(context.Background())
@@ -157,7 +157,7 @@ func TestPoller_TaskOlderThan30Minutes_FailsWithTimeoutCode(t *testing.T) {
 	// 已经手工设成 31 分钟前，不需要额外注入假时钟就能触发超时判断，但
 	// WithClock 仍然可用（下面这行留空走默认 time.Now，证明两条路径都对）。
 	pv := newScriptedVideoProvider(map[string][]scriptedPoll{})
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	p.PollOnce(context.Background())
 
@@ -173,7 +173,7 @@ func TestPoller_TaskUnder30Minutes_NotTimedOut(t *testing.T) {
 	id := seedPendingTask(repo, "up-1", recent)
 
 	pv := newScriptedVideoProvider(map[string][]scriptedPoll{"up-1": {ok("RUNNING")}})
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	p.PollOnce(context.Background())
 
@@ -189,7 +189,7 @@ func TestPoller_GracefulShutdown_MidPoll_LeavesNoCorruptedState(t *testing.T) {
 
 	block := make(chan struct{}) // never closed: PollTask blocks until ctx is canceled
 	pv := &scriptedVideoProvider{scripts: map[string][]scriptedPoll{}, cursor: map[string]int{}, blockUntil: block}
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -220,7 +220,7 @@ func TestPoller_Run_StopsOnContextCancel(t *testing.T) {
 	repo := newFakeTaskRepo()
 	seedPendingTask(repo, "up-1", time.Now())
 
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(alwaysRunningProvider{}), worker.WithInterval(time.Millisecond))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(alwaysRunningProvider{}), noopArchiver{}, worker.WithInterval(time.Millisecond))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -246,7 +246,7 @@ func TestPoller_CredentialsMissing_SkipsCycle_DoesNotFailTasks(t *testing.T) {
 	id := seedPendingTask(repo, "up-1", time.Now())
 
 	pv := newScriptedVideoProvider(map[string][]scriptedPoll{})
-	p := worker.New(repo, fakeSettings{}, fixedVideoFactory(pv)) // 空设置：apiKey 为空
+	p := worker.New(repo, fakeSettings{}, fixedVideoFactory(pv), noopArchiver{}) // 空设置：apiKey 为空
 
 	p.PollOnce(context.Background())
 
@@ -266,7 +266,7 @@ func TestPoller_NetworkFailure_CountsTowardSameThreshold(t *testing.T) {
 			{err: netErr}, {err: netErr}, {err: netErr}, {err: netErr}, {err: netErr},
 		},
 	})
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	for i := 0; i < 4; i++ {
 		p.PollOnce(context.Background())
@@ -322,7 +322,7 @@ func TestPoller_TaskDeletedMidPoll_SucceededResponse_DoesNotCrash_DoesNotResurre
 			"output": map[string]any{"task_status": "SUCCEEDED", "video_url": "https://cdn.example.com/v.mp4"},
 		},
 	}}
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	assert.NotPanics(t, func() {
 		p.PollOnce(context.Background())
@@ -357,7 +357,7 @@ func TestPoller_TaskFailed_RefundsQuota(t *testing.T) {
 			Raw:    map[string]any{"output": map[string]any{"task_status": "FAILED", "message": "upstream rejected"}},
 		}}},
 	})
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	p.PollOnce(context.Background())
 
@@ -401,7 +401,7 @@ func TestPoller_Timeout_RefundsQuota(t *testing.T) {
 	require.Equal(t, 1, repo.quotaUsedFor(1))
 
 	pv := newScriptedVideoProvider(map[string][]scriptedPoll{})
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	p.PollOnce(context.Background())
 
@@ -422,7 +422,7 @@ func TestPoller_Succeeded_DoesNotRefund(t *testing.T) {
 	pv := newScriptedVideoProvider(map[string][]scriptedPoll{
 		"up-1": {succeeded("https://cdn.example.com/v.mp4")},
 	})
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	p.PollOnce(context.Background())
 
@@ -440,7 +440,7 @@ func TestPoller_TaskDeletedMidPoll_RunningResponse_DoesNotCrash(t *testing.T) {
 		Status: "RUNNING",
 		Raw:    map[string]any{"output": map[string]any{"task_status": "RUNNING"}},
 	}}
-	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), noopArchiver{})
 
 	assert.NotPanics(t, func() {
 		p.PollOnce(context.Background())
@@ -450,4 +450,71 @@ func TestPoller_TaskDeletedMidPoll_RunningResponse_DoesNotCrash(t *testing.T) {
 	_, exists := repo.tasks[id]
 	repo.mu.Unlock()
 	assert.False(t, exists)
+}
+
+// ── 结果归档接线 ──────────────────────────────────────────────────────
+
+// 视频轮询到 SUCCEEDED 时，写进 generation_tasks 的必须已经是 OSS URL，
+// 不能有上游 URL 残留——与图片侧同一条要求：库里从第一次写入起就只有最终
+// URL，不存在「先存上游、再更新成 OSS」的中间态。
+func TestPoller_ArchivesResultBeforeWritingRow(t *testing.T) {
+	repo := newFakeTaskRepo()
+	id := seedPendingTask(repo, "up-1", time.Now())
+
+	const upstreamURL = "https://dashscope-result-sh.oss-cn-shanghai.aliyuncs.com/v.mp4"
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{
+		"up-1": {succeeded(upstreamURL)},
+	})
+	archiver := &scriptedArchiver{}
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), archiver)
+
+	p.PollOnce(context.Background())
+
+	require.Equal(t, 1, archiver.calls, "SUCCEEDED 必须触发一次归档")
+	assert.Equal(t, id, archiver.taskID, "归档要拿到真实的 taskID（视频任务此刻已经有行了）")
+	assert.Equal(t, []string{upstreamURL}, archiver.urls, "交给归档的是上游原始 URL")
+
+	got := repo.get(id)
+	assert.Equal(t, generationmodel.StatusSucceeded, got.Status)
+	require.Len(t, got.ResultURLs, 1)
+	assert.Contains(t, got.ResultURLs[0], "test-bucket.oss-cn-chengdu.aliyuncs.com")
+	assert.NotContains(t, got.ResultURLs[0], "dashscope-result", "库里不允许残留上游 URL")
+}
+
+// 归档不可用（OSS 未配置 / 写入被拒）时，视频任务仍然是 SUCCEEDED、
+// result_urls 退回上游 URL，且**不退配额**——上游已经真的出了视频、也真的
+// 收了钱，归档失败不是生成失败。
+func TestPoller_ArchiveUnavailable_StillSucceedsAndDoesNotRefund(t *testing.T) {
+	repo := newFakeTaskRepo()
+	id := seedPendingTask(repo, "up-1", time.Now())
+	require.Equal(t, 1, repo.quotaUsedFor(1), "前置：在飞任务已经计过费")
+
+	const upstreamURL = "https://dashscope-result-sh.oss-cn-shanghai.aliyuncs.com/v.mp4"
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{
+		"up-1": {succeeded(upstreamURL)},
+	})
+	archiver := &scriptedArchiver{fail: true}
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), archiver)
+
+	p.PollOnce(context.Background())
+
+	got := repo.get(id)
+	assert.Equal(t, generationmodel.StatusSucceeded, got.Status, "归档失败不能把成功的视频翻成失败")
+	assert.Equal(t, []string{upstreamURL}, got.ResultURLs)
+	assert.True(t, got.QuotaCharged, "归档失败不得触发退款")
+	assert.Equal(t, 1, repo.quotaUsedFor(1), "配额必须照扣不退")
+}
+
+// 非 SUCCEEDED 的终态（FAILED/CANCELED）不该有任何归档动作：没有结果可归档。
+func TestPoller_FailedTask_DoesNotArchive(t *testing.T) {
+	repo := newFakeTaskRepo()
+	seedPendingTask(repo, "up-1", time.Now())
+
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{"up-1": {ok("FAILED")}})
+	archiver := &scriptedArchiver{}
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv), archiver)
+
+	p.PollOnce(context.Background())
+
+	assert.Equal(t, 0, archiver.calls, "没有出结果的任务不该走归档")
 }

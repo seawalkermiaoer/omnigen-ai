@@ -74,8 +74,8 @@ func provideVideoProviderFactory() service.VideoProviderFactory {
 // 变参的构造函数做静态分析（它不知道要传几个、传什么 Option），所以这里
 // 用一个不带变参的薄包装把生产环境"零个 Option、用全部默认值"这个决定
 // 显式表达出来。
-func provideWorker(tasks repository.TaskRepository, settings service.SettingReader, factory service.VideoProviderFactory) *worker.Poller {
-	return worker.New(tasks, settings, factory)
+func provideWorker(tasks repository.TaskRepository, settings service.SettingReader, factory service.VideoProviderFactory, archiver service.ResultArchiver) *worker.Poller {
+	return worker.New(tasks, settings, factory, archiver)
 }
 
 func provideHandlers(
@@ -137,6 +137,13 @@ var providerSet = wire.NewSet(
 	provideEncryptionKey,
 	provideSettingReader,
 	provideVideoProviderFactory,
+	service.NewResultArchiver,
+	// NewResultArchiver 返回具体类型 *ResultArchiveService，而图片 service 与
+	// worker 依赖的是 ResultArchiver 接口。wire 不会自己把实现「看成」接口，
+	// 必须显式声明这条绑定，否则图里缺少 ResultArchiver 的 provider。
+	// 与 provideDB / provideSettingReader 用薄函数收窄类型是同一件事的两种
+	// 写法，这里用 Bind 是因为不需要额外的构造逻辑。
+	wire.Bind(new(service.ResultArchiver), new(*service.ResultArchiveService)),
 	repository.NewUserRepository,
 	repository.NewSettingRepository,
 	repository.NewTaskRepository,

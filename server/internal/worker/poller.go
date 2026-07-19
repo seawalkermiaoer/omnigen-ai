@@ -86,6 +86,7 @@ type Poller struct {
 	tasks    repository.TaskRepository
 	settings service.SettingReader
 	factory  service.VideoProviderFactory
+	archiver service.ResultArchiver
 
 	interval  time.Duration
 	now       func() time.Time
@@ -102,11 +103,16 @@ type Poller struct {
 
 // New constructs a Poller with production defaults (15s interval, real
 // clock, batch size 50); apply Option values to override any of them.
-func New(tasks repository.TaskRepository, settings service.SettingReader, factory service.VideoProviderFactory, opts ...Option) *Poller {
+//
+// archiver 是必填的位置参数，不是一个 Option：漏了它的症状是「一切正常，
+// 只是半年后所有视频历史记录变成坏链」——没有任何即时信号，所以让它在
+// 编译期就无法被遗漏，而不是指望装配处有人记得加。
+func New(tasks repository.TaskRepository, settings service.SettingReader, factory service.VideoProviderFactory, archiver service.ResultArchiver, opts ...Option) *Poller {
 	p := &Poller{
 		tasks:         tasks,
 		settings:      settings,
 		factory:       factory,
+		archiver:      archiver,
 		interval:      DefaultInterval,
 		now:           time.Now,
 		batchSize:     defaultBatchSize,
@@ -239,6 +245,18 @@ func (p *Poller) pollTask(ctx context.Context, pv provider.VideoProvider, t gene
 	case string(generationmodel.StatusSucceeded):
 		delete(p.failureCounts, t.ID)
 		urls, usage, note := extractSuccess(result.Raw)
+		// 归档在写库之前完成，所以 result_urls 从第一次写入起就只有最终
+		// URL，不存在「先存上游、再更新成 OSS」的中间态。
+		//
+		// Archive 不返回 error 是它的核心契约：上游已经真的出了视频、也真的
+		// 收了钱，归档失败时它逐条退回上游 URL。所以这一行下面没有、也绝不能
+		// 有错误处理分支——尤其不能走 refundQuota：归档失败不是生成失败，
+		// 退了款等于用户白拿一次视频，而我们已经为它付过上游的钱。
+		//
+		// 这是同步串行的：一段视频要完整下载再完整上传，会占住 poller 这一轮
+		// 循环，同批次后面的任务要等它。这是已知的、被接受的代价——见
+		// PollOnce 的注释与本次接线的交付说明。
+		urls = p.archiver.Archive(ctx, t.ID, urls)
 		if err := p.tasks.UpdateResult(ctx, t.ID, urls, usage, note); err != nil {
 			slog.Error("worker: 写入任务结果失败", "taskID", t.ID, "err", err)
 		}

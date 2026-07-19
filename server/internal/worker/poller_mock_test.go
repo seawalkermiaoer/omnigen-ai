@@ -3,6 +3,7 @@ package worker_test
 import (
 	"context"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -341,3 +342,48 @@ func (alwaysRunningProvider) PollTask(_ context.Context, taskID string) (*provid
 }
 
 var _ provider.VideoProvider = alwaysRunningProvider{}
+
+// scriptedArchiver 是 worker 侧的假 service.ResultArchiver（service 包里那个
+// 同名类型在 service_test 内部测试包里，这里 import 不到）。
+//
+// 它保持真实 ResultArchiveService 的契约：不返回 error，失败的那条原样退回
+// 上游 URL，返回切片与入参等长同序。
+type scriptedArchiver struct {
+	mu     sync.Mutex
+	calls  int
+	taskID int64
+	urls   []string
+
+	// fail 为 true 时整批归档失败（模拟 OSS 未配置 / 写入被拒），全部退回
+	// 上游 URL——此时视频任务仍然必须是 SUCCEEDED，且不退配额。
+	fail bool
+}
+
+func (a *scriptedArchiver) Archive(_ context.Context, taskID int64, urls []string) []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.calls++
+	a.taskID = taskID
+	a.urls = append([]string(nil), urls...)
+
+	out := make([]string, len(urls))
+	copy(out, urls)
+	if a.fail {
+		return out
+	}
+	for i := range out {
+		out[i] = "https://test-bucket.oss-cn-chengdu.aliyuncs.com/results/" +
+			strconv.FormatInt(taskID, 10) + "/" + strconv.Itoa(i) + "-deadbeef.mp4"
+	}
+	return out
+}
+
+var _ service.ResultArchiver = (*scriptedArchiver)(nil)
+
+// noopArchiver 供那些对归档毫无意见的既有用例使用：原样透传，等价于 OSS
+// 未配置时的降级路径，于是它们对 ResultURLs 的既有断言保持成立。
+type noopArchiver struct{}
+
+func (noopArchiver) Archive(_ context.Context, _ int64, urls []string) []string { return urls }
+
+var _ service.ResultArchiver = noopArchiver{}

@@ -127,7 +127,10 @@ func newImageGenTestEnv(t *testing.T, factory service.ImageProviderFactory) (*gi
 		settingmodel.KeyRegion:          "cn-beijing",
 	}}
 	quota := service.NewQuotaService(repo)
-	imgSvc := service.NewImageGenerationServiceWithFactory(settings, &fakeImageTaskRepo{}, quota, factory)
+	// handler 层的用例只关心 HTTP 契约，对归档没有意见：注入一个原样透传的
+	// archiver，等价于 OSS 未配置时的降级路径，于是这些用例对 resultUrls 的
+	// 既有断言保持成立。归档行为本身由 service 层的用例覆盖。
+	imgSvc := service.NewImageGenerationServiceWithFactory(settings, &fakeImageTaskRepo{}, quota, factory, passthroughArchiver{})
 	imgH := handler.NewImageGenerationHandler(imgSvc)
 
 	r := gin.New()
@@ -262,3 +265,11 @@ func TestImageGenerationHandler_UpstreamAuthFailure_NeverReturnsBare401(t *testi
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, apperr.ErrUpstreamAuthFailed.Code(), resp.Code)
 }
+
+// passthroughArchiver 是一个原样返回上游 URL 的 service.ResultArchiver ——
+// 与 OSS 未配置时真实 ResultArchiveService 的降级行为一致。
+type passthroughArchiver struct{}
+
+func (passthroughArchiver) Archive(_ context.Context, _ int64, urls []string) []string { return urls }
+
+var _ service.ResultArchiver = passthroughArchiver{}

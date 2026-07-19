@@ -476,3 +476,64 @@ func TestDownloadHandler_FilenameSanitization_CRLFInExtensionNeutralized(t *test
 	assert.NotContains(t, cd, "\n")
 	assert.False(t, strings.Contains(cd, "X-Injected"), "CR/LF 之间的注入内容不应该出现在任何响应头里: %q", cd)
 }
+
+// TestDownloadHandler_HostAllowlist_ArchivedOSSBucketHostAllowed 是一颗钉子。
+//
+// 结果归档（service/result_archive.go）上线后，generation_tasks.result_urls
+// 里存的不再是上游域名，而是我们自己 OSS bucket 的域名
+// "<bucket>.<region>.aliyuncs.com"（见 ossx.Config.publicURL）。而「下载」
+// 按钮走的仍然是 GET /api/download/:taskId/:index——它要过同一份 host 白名单。
+// 白名单一旦不认这个域名，**所有新任务的下载会全部被拒**，而且是静默地全线坏掉。
+//
+// 今天它之所以通过，是因为白名单里有 ".aliyuncs.com" 这条（本来是给
+// DashScope 结果域名用的），OSS bucket 域名恰好是它的子域，属于被动放行。
+// 这条测试把「OSS 域名可下载」这个行为本身钉住：将来有人按设计文档
+// （2026-07-19-result-archive-to-oss-design.md 第 149 行）把 ".aliyuncs.com"
+// 收紧成「只放行当前配置的那个 bucket」时，如果忘了把 OSS 域名显式加回去，
+// 这里会立刻红，而不是等用户报「下载全坏了」。
+func TestDownloadHandler_HostAllowlist_ArchivedOSSBucketHostAllowed(t *testing.T) {
+	ossHosts := []string{
+		"omnigen-prod.oss-cn-chengdu.aliyuncs.com",
+		"my-bucket.oss-cn-beijing.aliyuncs.com",
+	}
+	for _, host := range ossHosts {
+		t.Run(host, func(t *testing.T) {
+			assert.True(t, handler.IsAllowedResultHost(host),
+				"归档后的结果 URL 就在这个 host 上，白名单不认它 = 所有新任务下载全挂")
+		})
+	}
+}
+
+// TestDownloadHandler_ArchivedOSSResultDownloadable 走完整 HTTP 路径，
+// 而不只是断言那个谓词函数：任务的 result_urls 是一个 OSS 形状的 URL 时，
+// /api/download 必须真的把字节流回来。上面那条钉的是白名单，这条钉的是
+// 「整条下载链路对归档后的 URL 仍然可用」。
+func TestDownloadHandler_ArchivedOSSResultDownloadable(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("ARCHIVED-BYTES"))
+	}))
+	defer upstream.Close()
+
+	repo := newFakeDownloadTaskRepo()
+	srvHost := hostOnly(t, upstream.URL)
+	// 过滤器同时接受 httptest 的回环 host（字节真的要能取回来）和真实的
+	// OSS bucket host——后者才是生产里 result_urls 的形状，用它来确认
+	// 生产谓词也放行，两者缺一测试都说明不了问题。
+	r, alice, _ := newDownloadTestEnv(t, repo, func(h string) bool {
+		return h == srvHost || handler.IsAllowedResultHost(h)
+	})
+	require.True(t, handler.IsAllowedResultHost("omnigen-prod.oss-cn-chengdu.aliyuncs.com"))
+
+	repo.put(generationmodel.Task{
+		ID: 21, UserID: alice.id, Mode: generationmodel.TaskModeT2V,
+		ResultURLs: []string{upstream.URL + "/results/21/0-a1b2c3d4.mp4"},
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, downloadReq("/api/download/21/0", alice.token))
+
+	require.Equal(t, http.StatusOK, w.Code, "响应=%s", w.Body.String())
+	assert.Equal(t, "ARCHIVED-BYTES", w.Body.String())
+	assert.Contains(t, w.Header().Get("Content-Disposition"), ".mp4")
+}

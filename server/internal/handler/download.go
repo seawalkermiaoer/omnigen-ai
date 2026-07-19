@@ -27,7 +27,6 @@ package handler
 import (
 	"errors"
 	"fmt"
-	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -40,58 +39,26 @@ import (
 	"github.com/chenhao/omnigen-ai/server/internal/middleware"
 	generationmodel "github.com/chenhao/omnigen-ai/server/internal/model/generation"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/apperr"
+	"github.com/chenhao/omnigen-ai/server/internal/pkg/mimeext"
+	"github.com/chenhao/omnigen-ai/server/internal/pkg/urlallow"
 	"github.com/chenhao/omnigen-ai/server/internal/repository"
 )
 
-// allowedResultHostSuffixes lists exactly the upstream domains this system
-// ever produces generation results on:
-//   - ".aliyuncs.com" — DashScope result URLs, and also every OSS bucket URL
-//     this codebase can produce: ossx.Client always signs against
-//     "<bucket>.<region>.aliyuncs.com" (see internal/pkg/ossx/client.go,
-//     Config.endpoint), so "the configured OSS bucket host" is already a
-//     subdomain of this suffix — no separate entry is needed for it.
-//   - ".alicdn.com" — Aliyun's CDN fronting for the same result assets.
-//   - ".aiproxy.vip" — t8star's *result* host, taken from the real fixture
-//     in docs/superpowers/plans/2026-07-18-t8star-gpt-image-2.md
-//     ("https://webstatic.aiproxy.vip/output/...png"). This is deliberately
-//     NOT "ai.t8star.org", which is t8star's *API* host, not where it hosts
-//     the generated images the client is asked to download.
+// IsAllowedResultHost is the production host filter. It now lives in
+// internal/pkg/urlallow, shared with internal/service's result archiver —
+// which fetches upstream result URLs on the same threat model but cannot
+// import this package (handler already imports service). This alias is kept
+// so callers and tests here keep naming the guard where they always did.
 //
-// Each entry carries its own leading dot: matching is a suffix check that
-// requires the dot to be present in the candidate host too, so
-// "evil-aliyuncs.com" (which merely ends with the letters "aliyuncs.com",
-// with no dot boundary before them) does not pass — a naive
-// strings.Contains/HasSuffix-without-a-boundary check would let it through.
-var allowedResultHostSuffixes = []string{
-	".aliyuncs.com",
-	".alicdn.com",
-	".aiproxy.vip",
-}
+// Tests substitute their own filter (see NewDownloadHandlerWithHostFilter) so
+// an httptest.Server's loopback host can stand in for a real result host,
+// while still exercising the exact same enforcement code path (initial URL +
+// every redirect hop) that runs in production.
+func IsAllowedResultHost(host string) bool { return urlallow.IsAllowedResultHost(host) }
 
-// IsAllowedResultHost is the production host filter. Tests substitute their
-// own filter (see NewDownloadHandlerWithHostFilter) so an httptest.Server's
-// loopback host can stand in for a real result host, while still exercising
-// the exact same enforcement code path (initial URL + every redirect hop)
-// that runs in production.
-func IsAllowedResultHost(host string) bool {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	if host == "" {
-		return false
-	}
-	for _, suffix := range allowedResultHostSuffixes {
-		if host == strings.TrimPrefix(suffix, ".") || strings.HasSuffix(host, suffix) {
-			return true
-		}
-	}
-	return false
-}
-
-// maxDownloadRedirects is the hop limit server.js never had. Following N
-// redirects means CheckRedirect is invoked N times (once per hop, with `via`
-// holding the requests made so far — length 1 on the first hop, length N on
-// the Nth); rejecting once len(via) exceeds this constant means exactly
-// maxDownloadRedirects hops are followed and the next one fails closed.
-const maxDownloadRedirects = 3
+// maxDownloadRedirects is the hop limit server.js never had — see
+// urlallow.MaxRedirects for why the bound is enforced the way it is.
+const maxDownloadRedirects = urlallow.MaxRedirects
 
 const downloadTimeout = 60 * time.Second
 
@@ -228,29 +195,11 @@ func (h *DownloadHandler) Download(c *gin.Context) {
 	})
 }
 
-// contentTypeExtensions maps the handful of MIME types this system's
-// upstreams actually return to a fixed, known-good extension — preferred
-// over mime.ExtensionsByType, whose result for a type like "image/jpeg" is
-// drawn from a larger, unordered candidate set (".jpe"/".jpeg"/".jpg") that
-// isn't guaranteed to put the conventional extension first.
-var contentTypeExtensions = map[string]string{
-	"image/png":       "png",
-	"image/jpeg":      "jpg",
-	"image/jpg":       "jpg",
-	"image/webp":      "webp",
-	"image/gif":       "gif",
-	"video/mp4":       "mp4",
-	"video/quicktime": "mov",
-	"video/webm":      "webm",
-	"audio/mpeg":      "mp3",
-	"audio/wav":       "wav",
-}
-
 // resultFilename derives the Content-Disposition filename from
 // server-controlled data (task mode, task id, result index — never from
 // user input) plus a best-effort extension. The extension is the only part
 // sourced from attacker-reachable data (the upstream URL path and its
-// Content-Type response header), so it alone goes through sanitizeExt,
+// Content-Type response header), so it alone goes through mimeext.Sanitize,
 // which keeps nothing but ASCII letters/digits — that structurally rules
 // out path separators, "..", and CR/LF ending up in the header value.
 // sanitizeFilename is then a second, whole-string defensive pass over the
@@ -258,7 +207,7 @@ var contentTypeExtensions = map[string]string{
 func resultFilename(task *generationmodel.Task, index int, sourceURL, contentType string) string {
 	ext := extFromURL(sourceURL)
 	if ext == "" {
-		ext = extFromContentType(contentType)
+		ext = mimeext.FromContentType(contentType)
 	}
 	if ext == "" {
 		ext = "bin"
@@ -277,33 +226,7 @@ func extFromURL(raw string) string {
 	if dot < 0 || dot == len(base)-1 {
 		return ""
 	}
-	return sanitizeExt(base[dot+1:])
-}
-
-func extFromContentType(contentType string) string {
-	base := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
-	if ext, ok := contentTypeExtensions[base]; ok {
-		return ext
-	}
-	if exts, err := mime.ExtensionsByType(base); err == nil && len(exts) > 0 {
-		return sanitizeExt(strings.TrimPrefix(exts[0], "."))
-	}
-	return ""
-}
-
-// sanitizeExt keeps only ASCII letters/digits (max 8 of them) — see
-// resultFilename's doc comment for why this is the load-bearing sanitizer.
-func sanitizeExt(ext string) string {
-	var b strings.Builder
-	for _, r := range ext {
-		if b.Len() >= 8 {
-			break
-		}
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-		}
-	}
-	return strings.ToLower(b.String())
+	return mimeext.Sanitize(base[dot+1:])
 }
 
 // sanitizeFilename is the whole-string defensive pass described in

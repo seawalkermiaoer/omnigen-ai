@@ -44,6 +44,13 @@ func (f *fakeUploadStore) SignedURL(_ context.Context, key string) (string, erro
 	return "https://signed.example.com/" + key, nil
 }
 
+// PutPublic 必须在这里炸：参考图上传走的是「私有对象 + 24 小时签名 URL」，
+// 一旦哪次重构让它改走 public-read，用户上传的参考图就变成了公网可访问，
+// 这个 fake 是那条防线上的告警。
+func (f *fakeUploadStore) PutPublic(context.Context, string, io.Reader, string) (string, error) {
+	panic("参考图上传不得走 public-read 路径")
+}
+
 var _ ossx.Store = (*fakeUploadStore)(nil)
 
 type fakeUploadResolver struct {

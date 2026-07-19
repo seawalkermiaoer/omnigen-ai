@@ -67,19 +67,24 @@ type ImageGenerationService struct {
 	tasks    repository.TaskRepository
 	factory  ImageProviderFactory
 	quota    *QuotaService
+	archiver ResultArchiver
 }
 
 // NewImageGenerationService 构造生产用的 ImageGenerationService，provider
 // 走真正的 dashscope/t8star 客户端。
-func NewImageGenerationService(settings SettingReader, tasks repository.TaskRepository, quota *QuotaService) *ImageGenerationService {
-	return NewImageGenerationServiceWithFactory(settings, tasks, quota, NewDashScopeT8starImageProviderFactory())
+func NewImageGenerationService(settings SettingReader, tasks repository.TaskRepository, quota *QuotaService, archiver ResultArchiver) *ImageGenerationService {
+	return NewImageGenerationServiceWithFactory(settings, tasks, quota, NewDashScopeT8starImageProviderFactory(), archiver)
 }
 
 // NewImageGenerationServiceWithFactory 允许测试注入假的 ImageProviderFactory，
 // 不必打真实网络请求，也不需要真实数据库（tasks 同样是接口，测试可以注入
 // 内存假实现）。
-func NewImageGenerationServiceWithFactory(settings SettingReader, tasks repository.TaskRepository, quota *QuotaService, factory ImageProviderFactory) *ImageGenerationService {
-	return &ImageGenerationService{settings: settings, tasks: tasks, factory: factory, quota: quota}
+//
+// archiver 是必填的位置参数而不是可选项：它一旦缺席，症状是「一切正常，只是
+// 半年后所有历史记录变成坏链」——这种故障没有任何即时信号，靠人在装配处
+// 记得加是靠不住的，所以让它在编译期就无法被遗漏。
+func NewImageGenerationServiceWithFactory(settings SettingReader, tasks repository.TaskRepository, quota *QuotaService, factory ImageProviderFactory, archiver ResultArchiver) *ImageGenerationService {
+	return &ImageGenerationService{settings: settings, tasks: tasks, factory: factory, quota: quota, archiver: archiver}
 }
 
 // GenerateImage 校验目录 → 取凭证 → 选 provider → 同步调用 → 落库。
@@ -229,7 +234,22 @@ func (s *ImageGenerationService) GenerateImage(
 
 	task.Status = generationmodel.StatusSucceeded
 	task.Model = result.Model
-	task.ResultURLs = result.Images
+	// 归档发生在写库之前，所以数据库里从第一次写入起就只有最终 URL——
+	// 设计文档明确排除了「先存上游、再更新成 OSS」那种两步写法，那会引入
+	// 中间态与并发更新问题。
+	//
+	// Archive 不返回 error 是它的核心契约：此刻上游已经出了图、token 已经
+	// 扣了、配额也已经扣了，归档失败时它退回上游 URL 而不是报错，所以这一行
+	// 下面不需要（也绝不能）有任何错误处理分支——加了就等于把一次已经付过钱
+	// 的成功生成变成失败，用户既丢钱又丢图。charged 保持 true，退款逻辑
+	// 不受影响。
+	//
+	// taskID 传 0 是一个已知的将就：对象键是 results/{taskID}/...，而图片是
+	// 同步生成的，此刻这一行还没落库、还没有 ID。键里的随机段保证了不可枚举
+	// （public-read 之下这才是安全属性），taskID 只起分目录归类作用，所以
+	// 全部图片结果会堆在 results/0/ 下。要修得先分配 ID 再归档，那会改动
+	// 落库顺序，超出本次接线范围——已在交付报告里点名。
+	task.ResultURLs = s.archiver.Archive(ctx, 0, result.Images)
 	task.Usage = result.Usage
 	task.QuotaCharged = charged
 	if result.Note != "" {

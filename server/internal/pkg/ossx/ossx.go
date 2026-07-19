@@ -14,6 +14,7 @@ package ossx
 
 import (
 	"context"
+	"io"
 	"time"
 )
 
@@ -47,4 +48,18 @@ type Store interface {
 	Put(ctx context.Context, key string, body []byte, contentType string) error
 	// SignedURL returns an HTTPS GET URL for key, valid for SignedURLTTL.
 	SignedURL(ctx context.Context, key string) (string, error)
+	// PutPublic uploads body under key with a public-read ACL and returns
+	// the object's permanent public URL.
+	//
+	// It takes an io.Reader rather than []byte on purpose: this is the path
+	// generation results (images *and* videos, tens of MB) travel, and the
+	// upstream HTTP response body is handed straight to the SDK so nothing
+	// is ever fully buffered.
+	//
+	// Public-read is likewise deliberate and confined to this method: the
+	// returned URL is stored in the DB and handed to users as a shareable
+	// link, which a SignedURL cannot be (it dies after SignedURLTTL). Put +
+	// SignedURL remain the private path for reference-image uploads — their
+	// security model did not change and must not be widened by proximity.
+	PutPublic(ctx context.Context, key string, body io.Reader, contentType string) (string, error)
 }

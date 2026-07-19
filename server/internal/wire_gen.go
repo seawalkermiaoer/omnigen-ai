@@ -50,7 +50,8 @@ func InitApp(ctx context.Context, cfg *config.Config) (*App, error) {
 	uploadHandler := handler.NewUploadHandler(uploadService)
 	taskRepository := repository.NewTaskRepository(db)
 	quotaService := service.NewQuotaService(userRepository)
-	imageGenerationService := service.NewImageGenerationService(settingReader, taskRepository, quotaService)
+	resultArchiveService := service.NewResultArchiver(settingReader)
+	imageGenerationService := service.NewImageGenerationService(settingReader, taskRepository, quotaService, resultArchiveService)
 	imageGenerationHandler := handler.NewImageGenerationHandler(imageGenerationService)
 	videoGenerationService := service.NewVideoGenerationService(settingReader, taskRepository, quotaService)
 	videoGenerationHandler := handler.NewVideoGenerationHandler(videoGenerationService)
@@ -64,7 +65,7 @@ func InitApp(ctx context.Context, cfg *config.Config) (*App, error) {
 	v2 := provideCORSOrigins(cfg)
 	engine := router.New(handlers, manager, userRepository, v2)
 	videoProviderFactory := provideVideoProviderFactory()
-	poller := provideWorker(taskRepository, settingReader, videoProviderFactory)
+	poller := provideWorker(taskRepository, settingReader, videoProviderFactory, resultArchiveService)
 	app := provideApp(engine, pool, userService, cfg, poller)
 	return app, nil
 }
@@ -126,8 +127,8 @@ func provideVideoProviderFactory() service.VideoProviderFactory {
 // 变参的构造函数做静态分析（它不知道要传几个、传什么 Option），所以这里
 // 用一个不带变参的薄包装把生产环境"零个 Option、用全部默认值"这个决定
 // 显式表达出来。
-func provideWorker(tasks repository.TaskRepository, settings service.SettingReader, factory service.VideoProviderFactory) *worker.Poller {
-	return worker.New(tasks, settings, factory)
+func provideWorker(tasks repository.TaskRepository, settings service.SettingReader, factory service.VideoProviderFactory, archiver service.ResultArchiver) *worker.Poller {
+	return worker.New(tasks, settings, factory, archiver)
 }
 
 func provideHandlers(
@@ -188,6 +189,6 @@ var providerSet = wire.NewSet(
 	provideCORSOrigins,
 	provideEncryptionKey,
 	provideSettingReader,
-	provideVideoProviderFactory, repository.NewUserRepository, repository.NewSettingRepository, repository.NewTaskRepository, repository.NewStatsRepository, service.NewAuthService, service.NewUserService, service.NewSettingService, service.NewUploadService, service.NewQuotaService, service.NewImageGenerationService, service.NewVideoGenerationService, service.NewOptimizeService, service.NewStatsService, handler.NewAuthHandler, handler.NewUserHandler, handler.NewHealthHandler, handler.NewSettingHandler, handler.NewCatalogHandler, handler.NewUploadHandler, handler.NewImageGenerationHandler, handler.NewVideoGenerationHandler, handler.NewDownloadHandler, handler.NewOptimizeHandler, handler.NewStatsHandler, provideHandlers,
+	provideVideoProviderFactory, service.NewResultArchiver, wire.Bind(new(service.ResultArchiver), new(*service.ResultArchiveService)), repository.NewUserRepository, repository.NewSettingRepository, repository.NewTaskRepository, repository.NewStatsRepository, service.NewAuthService, service.NewUserService, service.NewSettingService, service.NewUploadService, service.NewQuotaService, service.NewImageGenerationService, service.NewVideoGenerationService, service.NewOptimizeService, service.NewStatsService, handler.NewAuthHandler, handler.NewUserHandler, handler.NewHealthHandler, handler.NewSettingHandler, handler.NewCatalogHandler, handler.NewUploadHandler, handler.NewImageGenerationHandler, handler.NewVideoGenerationHandler, handler.NewDownloadHandler, handler.NewOptimizeHandler, handler.NewStatsHandler, provideHandlers,
 	provideWorker, router.New, provideApp,
 )

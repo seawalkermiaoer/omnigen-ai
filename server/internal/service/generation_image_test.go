@@ -50,7 +50,11 @@ func newImageService(t *testing.T, settings *fakeOptimizeSettings, factory *reco
 	taskRepo := newFakeTaskRepo()
 	userRepo := newFakeRepo()
 	quota := service.NewQuotaService(&legacyUnlimitedQuotaRepo{userRepo})
-	svc := service.NewImageGenerationServiceWithFactory(settings, taskRepo, quota, factory.Factory())
+	// 这些用例对归档没有任何意见，注入一个整体失败（即原样透传上游 URL）的
+	// archiver：这正是 OSS 未配置时的真实降级行为，于是它们对 ResultURLs 的
+	// 既有断言（上游 URL）保持成立，且顺带持续验证「归档不可用不影响生成」。
+	// 归档本身的行为由 newImageServiceWithArchiver 那组用例负责。
+	svc := service.NewImageGenerationServiceWithFactory(settings, taskRepo, quota, factory.Factory(), &scriptedArchiver{fail: true})
 	return svc, taskRepo
 }
 
@@ -68,7 +72,7 @@ func newImageServiceWithQuota(t *testing.T, settings *fakeOptimizeSettings, fact
 	taskRepo := newFakeTaskRepo()
 	userRepo := newFakeRepo()
 	quota := service.NewQuotaService(userRepo)
-	svc := service.NewImageGenerationServiceWithFactory(settings, taskRepo, quota, factory.Factory())
+	svc := service.NewImageGenerationServiceWithFactory(settings, taskRepo, quota, factory.Factory(), &scriptedArchiver{fail: true})
 	return svc, taskRepo, userRepo
 }
 
@@ -714,7 +718,7 @@ func TestGenerateImage_ProviderPanics_StillRefundsQuota(t *testing.T) {
 	taskRepo := newFakeTaskRepo()
 	userRepo := newFakeRepo()
 	quota := service.NewQuotaService(userRepo)
-	svc := service.NewImageGenerationServiceWithFactory(settings, taskRepo, quota, panicFactory)
+	svc := service.NewImageGenerationServiceWithFactory(settings, taskRepo, quota, panicFactory, &scriptedArchiver{fail: true})
 
 	u := seedUser(t, userRepo, "quota-panic", "password123", usermodel.RoleUser, usermodel.StatusActive)
 	total := 3
@@ -729,4 +733,167 @@ func TestGenerateImage_ProviderPanics_StillRefundsQuota(t *testing.T) {
 
 	assert.Equal(t, 0, userRepo.users[u.ID].QuotaUsed, "provider panic 也必须退回额度，否则用户被扣费却什么都拿不到")
 	assert.Empty(t, taskRepo.all(), "panic 展开时函数还没走到 Create，不应该落任何 task 行")
+}
+
+// ── 结果归档接线 ──────────────────────────────────────────────────────
+
+// newImageServiceWithArchiver 是归档相关测试的构造器：显式注入一个
+// ResultArchiver，其余依赖与 newImageService 相同（无配额约束）。
+func newImageServiceWithArchiver(t *testing.T, settings *fakeOptimizeSettings, factory *recordingImageFactory, archiver service.ResultArchiver) (*service.ImageGenerationService, *fakeTaskRepo) {
+	t.Helper()
+	taskRepo := newFakeTaskRepo()
+	userRepo := newFakeRepo()
+	quota := service.NewQuotaService(&legacyUnlimitedQuotaRepo{userRepo})
+	svc := service.NewImageGenerationServiceWithFactory(settings, taskRepo, quota, factory.Factory(), archiver)
+	return svc, taskRepo
+}
+
+// newImageServiceWithQuotaAndArchiver 同上，但走真实配额语义（未 seed 的
+// userID 会以 QUOTA_EXCEEDED 大声失败），供「归档失败不退款」那条用例使用。
+func newImageServiceWithQuotaAndArchiver(t *testing.T, settings *fakeOptimizeSettings, factory *recordingImageFactory, archiver service.ResultArchiver) (*service.ImageGenerationService, *fakeTaskRepo, *fakeUserRepo) {
+	t.Helper()
+	taskRepo := newFakeTaskRepo()
+	userRepo := newFakeRepo()
+	quota := service.NewQuotaService(userRepo)
+	svc := service.NewImageGenerationServiceWithFactory(settings, taskRepo, quota, factory.Factory(), archiver)
+	return svc, taskRepo, userRepo
+}
+
+// 归档成功时，落库的必须是 OSS URL，且一条上游 URL 都不能残留。
+//
+// 「不能残留」是这条用例的重点：设计文档明确排除了「先存上游、再更新成 OSS」
+// 的两步写法（那会引入中间态和并发更新问题），所以数据库里从第一次写入起
+// 就只应该有最终 URL。
+func TestGenerateImage_ArchivesResultsBeforePersisting(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	upstream := []string{
+		"https://webstatic.aiproxy.vip/output/a.png",
+		"https://webstatic.aiproxy.vip/output/b.png",
+	}
+	factory := &recordingImageFactory{result: &provider.ImageResult{
+		Images: upstream, Model: "qwen-image-plus",
+	}}
+	archiver := newScriptedArchiver()
+	svc, repo := newImageServiceWithArchiver(t, settings, factory, archiver)
+
+	task, err := svc.GenerateImage(context.Background(), 42, service.GenerateImageRequest{
+		Model: "qwen-image-plus", Prompt: "a cat",
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, archiver.calls, "必须调用一次归档")
+	assert.Equal(t, upstream, archiver.lastURLs, "交给归档的应该是上游原始 URL")
+
+	rows := repo.all()
+	require.Len(t, rows, 1)
+	for _, got := range [][]string{task.ResultURLs, rows[0].ResultURLs} {
+		require.Len(t, got, 2)
+		for i, u := range got {
+			assert.Contains(t, u, "aliyuncs.com/results/", "第 %d 条应该是 OSS URL，实际 %q", i, u)
+			assert.NotContains(t, u, "aiproxy.vip", "库里不允许残留任何上游 URL")
+		}
+	}
+}
+
+// OSS 未配置（或归档整体失败）时，生成仍然成功、接口不返回错误，
+// result_urls 退回上游 URL。这是整个归档特性最重要的不变量：归档是事后增强，
+// 绝不能把一次已经出图、已经扣 token、已经扣配额的成功翻译成失败。
+func TestGenerateImage_ArchiveUnavailable_StillSucceedsWithUpstreamURLs(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	upstream := []string{"https://webstatic.aiproxy.vip/output/a.png"}
+	factory := &recordingImageFactory{result: &provider.ImageResult{
+		Images: upstream, Model: "qwen-image-plus",
+	}}
+	archiver := newScriptedArchiver()
+	archiver.fail = true // 模拟 OSS 未配置 / 写入被拒
+	svc, repo := newImageServiceWithArchiver(t, settings, factory, archiver)
+
+	task, err := svc.GenerateImage(context.Background(), 42, service.GenerateImageRequest{
+		Model: "qwen-image-plus", Prompt: "a cat",
+	})
+
+	require.NoError(t, err, "归档失败绝不能让生成接口返回错误")
+	require.NotNil(t, task)
+	assert.Equal(t, generationmodel.StatusSucceeded, task.Status)
+	assert.Equal(t, upstream, task.ResultURLs)
+
+	rows := repo.all()
+	require.Len(t, rows, 1)
+	assert.Equal(t, generationmodel.StatusSucceeded, rows[0].Status)
+	assert.Equal(t, upstream, rows[0].ResultURLs)
+}
+
+// 归档失败不得触发配额退款——生成本身是成功的，用户拿到了图。
+//
+// 这条守的是 generation_image.go 里那套 charged 标志 + defer recover 的退款
+// 逻辑：归档被接进成功分支之后，绝不能有任何一条路径把归档失败误认成生成
+// 失败而去退款。退了款就等于用户白拿一次生成，而我们已经为它付过上游的钱。
+func TestGenerateImage_ArchiveFailure_DoesNotRefundQuota(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingImageFactory{result: &provider.ImageResult{
+		Images: []string{"https://webstatic.aiproxy.vip/output/a.png"}, Model: "qwen-image-plus",
+	}}
+	archiver := newScriptedArchiver()
+	archiver.fail = true
+	svc, taskRepo, userRepo := newImageServiceWithQuotaAndArchiver(t, settings, factory, archiver)
+
+	u := seedUser(t, userRepo, "archive-no-refund", "password123", usermodel.RoleUser, usermodel.StatusActive)
+	total := 3
+	u.QuotaTotal = &total
+
+	task, err := svc.GenerateImage(context.Background(), u.ID, service.GenerateImageRequest{
+		Model: "qwen-image-plus", Prompt: "x",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, userRepo.users[u.ID].QuotaUsed, "归档失败不是生成失败，额度必须照扣不退")
+	assert.True(t, task.QuotaCharged, "任务仍然是已计费的")
+
+	rows := taskRepo.all()
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].QuotaCharged, "落库的行也必须是已计费")
+}
+
+// 逐条降级：三条结果里第二条归档失败，另外两条仍然是 OSS URL。
+func TestGenerateImage_PartialArchiveFailure_DegradesPerResult(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	upstream := []string{
+		"https://webstatic.aiproxy.vip/output/a.png",
+		"https://webstatic.aiproxy.vip/output/b.png",
+		"https://webstatic.aiproxy.vip/output/c.png",
+	}
+	factory := &recordingImageFactory{result: &provider.ImageResult{
+		Images: upstream, Model: "qwen-image-plus",
+	}}
+	archiver := newScriptedArchiver()
+	one := 1
+	archiver.failIndex = &one
+	svc, repo := newImageServiceWithArchiver(t, settings, factory, archiver)
+
+	_, err := svc.GenerateImage(context.Background(), 42, service.GenerateImageRequest{
+		Model: "qwen-image-plus", Prompt: "x",
+	})
+	require.NoError(t, err)
+
+	rows := repo.all()
+	require.Len(t, rows, 1)
+	got := rows[0].ResultURLs
+	require.Len(t, got, 3)
+	assert.Contains(t, got[0], "aliyuncs.com")
+	assert.Equal(t, upstream[1], got[1], "失败的那条退回上游 URL")
+	assert.Contains(t, got[2], "aliyuncs.com")
+}
+
+// 上游失败时根本不该调用归档——没有结果可归档，而且那条路径要走退款。
+func TestGenerateImage_UpstreamFailure_DoesNotArchive(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingImageFactory{err: dashscope.ErrUpstreamHTTP.Wrap(errors.New("boom"))}
+	archiver := newScriptedArchiver()
+	svc, _ := newImageServiceWithArchiver(t, settings, factory, archiver)
+
+	_, err := svc.GenerateImage(context.Background(), 42, service.GenerateImageRequest{
+		Model: "qwen-image-plus", Prompt: "x",
+	})
+	require.Error(t, err)
+	assert.Equal(t, 0, archiver.calls, "上游没出图，不该有任何归档动作")
 }
