@@ -46,6 +46,12 @@
   letter-spacing: -0.01em;
 }
 
+.login-brand__logo-dim {
+  margin-left: 6px;
+  font-weight: 500;
+  color: var(--omnigen-text-muted);
+}
+
 .login-brand__tagline {
   margin: 0;
   font-size: 28px;

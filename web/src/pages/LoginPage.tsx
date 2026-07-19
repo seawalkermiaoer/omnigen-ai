@@ -80,7 +80,11 @@ export default function LoginPage() {
       <aside className="login-brand">
         <div className="login-brand__logo">
           <BrandMark size={32} />
-          <span>{t('app.title')}</span>
+          {/* 字标的排法必须和侧栏 (.shell-logo__text) 一致：「AI」压暗一档。
+              两处 lockup 长得不一样，用户登录前后会觉得是两个产品。 */}
+          <span>
+            OmniGen<span className="login-brand__logo-dim">AI</span>
+          </span>
         </div>
 
         <div>

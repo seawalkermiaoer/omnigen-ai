@@ -18,16 +18,38 @@
  * .shell-logo__mark / .login-brand__mark 的约定一致，见两处 CSS 文件头注释）。
  */
 
-/** 圆环半径与线宽，dasharray 依赖它们算周长，改动时要一起改。 */
+/** 圆环半径与线宽，下面的 dasharray / 旋转角都由它们算出来。 */
 const RADIUS = 6.25
 const STROKE = 2.25
 
-// 三段等长圆弧 + 三道等宽缺口。周长 2πr ≈ 39.27，一个「弧+缺口」的周期就是
-// 它的三分之一（≈13.09）。写成算式而不是硬编码 magic number，改半径时
-// dasharray 会自己跟着对。
+/**
+ * 缺口**看上去**该有多宽。
+ *
+ * 这里必须区分「名义缺口」和「视觉缺口」，第一版就栽在这上面：
+ * strokeLinecap="round" 会让每段弧的两端各多伸出 STROKE/2，于是名义 4 单位
+ * 的缺口实际只剩 4 − 2.25 = 1.75 单位。26px 下折合约 1.6 物理像素，
+ * 在非 Retina 屏上被抗锯齿一抹就连上了——渲染出来是一个**闭合的白环**加
+ * 中心点，读作「唱片 / 录制按钮 / 靶心」，光圈的语义完全消失。
+ * （实测确认，而不是推测：侧栏收起态 26px 在 1x 渲染下就已经不成立。）
+ *
+ * 所以 dasharray 里要填的是 VISUAL_GAP + STROKE，把圆头吃掉的那部分补回去。
+ */
+const VISUAL_GAP = 4
+const GAP = VISUAL_GAP + STROKE
+
+// 三段等长圆弧 + 三道等宽缺口。周长 2πr ≈ 39.27，一个「弧+缺口」的周期是
+// 它的三分之一。写成算式而不是硬编码 magic number，改半径/线宽时会自己对上。
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS
-const GAP = 4
 const DASH = CIRCUMFERENCE / 3 - GAP
+
+/**
+ * 让**一段弧的中心**落在 12 点方向。
+ *
+ * dasharray 从路径起点（3 点方向）开始铺，转 -90° 只是把起点挪到 12 点，
+ * 于是 12 点正好卡在一段弧的**开头**而不是中间——三个缺口落在不对称的位置，
+ * 静态看上去像是画歪了。再回转半段弧，图形就对竖直轴左右镜像对称。
+ */
+const ROTATION = -90 - (DASH / CIRCUMFERENCE) * 360 / 2
 
 interface BrandMarkProps {
   /** 边长（px）。默认 28，侧栏收起时用 26，登录页用 32。 */
@@ -48,15 +70,19 @@ export default function BrandMark({ size = 28 }: BrandMarkProps) {
       style={{ flexShrink: 0, display: 'block' }}
     >
       <defs>
+        {/* 底板比第一版压暗一档（#818cf8/#c084fc → #6366f1/#a855f7）。
+            不是审美偏好：原来白弧对底板的对比度只有 2.98:1，白色几乎陷进
+            底色里，是小尺寸下缺口糊掉的另一半根因。压暗后升到 4.5:1 上下，
+            弧和缺口同时变利落。 */}
         <linearGradient id="omnigen-brand-mark" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#818cf8" />
-          <stop offset="100%" stopColor="#c084fc" />
+          <stop offset="0%" stopColor="#6366f1" />
+          <stop offset="100%" stopColor="#a855f7" />
         </linearGradient>
       </defs>
 
       <rect width="28" height="28" rx="8.5" fill="url(#omnigen-brand-mark)" />
 
-      {/* 三段圆弧构成光圈。旋转 -90° 让缺口落在 12 点方向起算，视觉上对称。 */}
+      {/* 三段圆弧构成光圈，旋转量见 ROTATION。 */}
       <circle
         cx="14"
         cy="14"
@@ -65,9 +91,11 @@ export default function BrandMark({ size = 28 }: BrandMarkProps) {
         strokeWidth={STROKE}
         strokeLinecap="round"
         strokeDasharray={`${DASH} ${GAP}`}
-        transform="rotate(-90 14 14)"
+        transform={`rotate(${ROTATION} 14 14)`}
       />
-      <circle cx="14" cy="14" r="1.9" fill="#fff" />
+      {/* r 从 1.9 提到 2.4：原来中心点比环还弱，整体读作「空心环」而不是
+          「有焦点的镜头」，小尺寸下更是第一个消失的元素。 */}
+      <circle cx="14" cy="14" r="2.4" fill="#fff" />
     </svg>
   )
 }
