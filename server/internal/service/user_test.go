@@ -164,6 +164,27 @@ func TestUserService_Update_QuotaUnlimited(t *testing.T) {
 	assert.Nil(t, got.QuotaTotal, "QuotaUnlimited=true 应把额度置为不限量")
 }
 
+// 显式传 QuotaUnlimited=false（而不是不传）时，应当落到"设为具体值"这条
+// 分支，跟不传 QuotaUnlimited 时效果一样——只有 QuotaUnlimited 非 nil 且为
+// true 才应该赢。这条钉住 Update 里 switch 的第一个 case 判的是
+// `*req.QuotaUnlimited`（true 才短路），而不是`req.QuotaUnlimited != nil`
+// （只看有没有传）。
+func TestUserService_Update_QuotaTotal_WithExplicitFalseUnlimited(t *testing.T) {
+	svc, repo := newUserService(t)
+	admin := seedUser(t, repo, "admin", "password123", usermodel.RoleAdmin, usermodel.StatusActive)
+	original := 100
+	target := seedUser(t, repo, "victim", "password123", usermodel.RoleUser, usermodel.StatusActive)
+	target.QuotaTotal = &original
+
+	got, err := svc.Update(context.Background(), admin.ID, target.ID, usermodel.UpdateRequest{
+		QuotaTotal:     ptr(50),
+		QuotaUnlimited: ptr(false),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, got.QuotaTotal, "QuotaUnlimited=false 不应被误判为「改成不限量」")
+	assert.Equal(t, 50, *got.QuotaTotal)
+}
+
 // 未提供 QuotaTotal/QuotaUnlimited 时，原有额度不应被改动或清空——
 // 与 UpdateRequest 其余字段的"局部更新"语义一致。
 func TestUserService_Update_QuotaUntouchedWhenNotProvided(t *testing.T) {

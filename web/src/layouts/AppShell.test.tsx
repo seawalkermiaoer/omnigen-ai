@@ -110,4 +110,17 @@ describe('AppShell 剩余额度', () => {
     renderShell()
     expect(screen.getByTestId('quota-remaining')).toHaveStyle({ color: colors.textMuted })
   })
+
+  // 管理员可以把 quotaTotal 改到低于当前 quotaUsed（后端只校验 quotaTotal
+  // >= 0，不要求 >= quotaUsed），此时 total - used 是负数——展示层必须夹到
+  // 0，否则会显示"剩余 -5 次"，读起来像系统故障而不是一次正常的额度调整。
+  it('quotaUsed 超过 quotaTotal 时剩余次数显示为 0 而非负数', () => {
+    const overUsed: User = { ...bob, quotaTotal: 10, quotaUsed: 15 }
+    useAuthStore.setState({ token: 'tok', user: overUsed, initializing: false })
+    renderShell()
+    expect(screen.getByTestId('quota-remaining')).toHaveTextContent(
+      i18n.t('users.quotaRemaining', { count: 0 }),
+    )
+    expect(screen.getByTestId('quota-remaining')).toHaveStyle({ color: colors.warning })
+  })
 })

@@ -82,7 +82,12 @@ export default function AppShell() {
   }
 
   // quotaTotal 为 null 表示不限量，此时不展示剩余次数——见下方渲染处的说明。
-  const quotaRemaining = user?.quotaTotal == null ? null : user.quotaTotal - user.quotaUsed
+  // 管理员可以把 quotaTotal 改到低于当前 quotaUsed（后端校验只保证
+  // quotaTotal >= 0，不保证 >= quotaUsed），这里必须夹到 0，否则会显示
+  // "剩余 -5 次"——后端 ConsumeQuota 本身不受影响（quota_used < quota_total
+  // 一样会拦住），这纯粹是展示层的问题。
+  const quotaRemaining =
+    user?.quotaTotal == null ? null : Math.max(0, user.quotaTotal - user.quotaUsed)
 
   const effectiveCollapsed = collapsed || autoCollapsed
   const visibleItems = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin())
@@ -156,7 +161,11 @@ export default function AppShell() {
               ]}
             />
             {/* quotaRemaining 为 null 时（不限量）整块不渲染——一个裸数字配不上
-                分母会让人误以为额度快用完了，不如干脆不显示。 */}
+                分母会让人误以为额度快用完了，不如干脆不显示。
+                剩余为 0 时文案不做区分（用完了 vs 被管理员把额度调低到已用量
+                以下），两种情况用户能做的事完全一样——都是"当前不能再生成，
+                找管理员"，分开措辞除了多一套 i18n key 不会带来任何可执行的
+                额外信息。 */}
             {quotaRemaining !== null && (
               <Tooltip title={t('users.quotaRemainingTooltip')}>
                 <span
