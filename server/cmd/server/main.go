@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -27,7 +28,10 @@ func main() {
 func run() error {
 	ctx := context.Background()
 
-	cfg, err := config.Load()
+	configPath := flag.String("config", "config.yaml", "配置文件路径（YAML）")
+	flag.Parse()
+
+	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}

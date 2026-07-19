@@ -4,6 +4,7 @@ package internal
 
 import (
 	"context"
+	"encoding/base64"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/wire"
@@ -107,6 +108,20 @@ func provideCORSOrigins(cfg *config.Config) []string {
 	return cfg.CORSOrigins
 }
 
+// provideEncryptionKey 把 cfg.AppEncryptionKey（base64 字符串）解码成
+// SettingService 直接可用的 32 字节原始密钥。cfg.AppEncryptionKey 已经在
+// config.Load 里校验过是合法 base64 且解码后恰好 32 字节，这里的 err 理论上
+// 不可能非 nil；仍然照常返回而不是 panic/忽略，是因为"理论上不会发生"不等于
+// "允许在类型层面假装不会失败"——万一 Config 的构造路径将来出现绕过 Load()
+// 校验的第二条来源，这里也不会把一个畸形密钥悄悄传给 crypto 包。
+func provideEncryptionKey(cfg *config.Config) ([]byte, error) {
+	key, err := base64.StdEncoding.DecodeString(cfg.AppEncryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
 func provideApp(e *gin.Engine, p *pgxpool.Pool, u *service.UserService, cfg *config.Config, w *worker.Poller) *App {
 	return &App{Engine: e, Pool: p, Users: u, Config: cfg, Worker: w}
 }
@@ -117,6 +132,7 @@ var providerSet = wire.NewSet(
 	providePinger,
 	provideJWT,
 	provideCORSOrigins,
+	provideEncryptionKey,
 	provideSettingReader,
 	provideVideoProviderFactory,
 	repository.NewUserRepository,

@@ -28,7 +28,7 @@
 # 注意：若本机 brew postgresql 在运行会遮蔽该端口，需先 brew services stop postgresql@14
 
 cd server
-cp .env.example .env   # 填入 JWT_SECRET、BOOTSTRAP_ADMIN_PASSWORD、APP_ENCRYPTION_KEY
+cp config.yaml.example config.yaml   # 填入 jwt.secret、app_encryption_key、bootstrap.admin_password
 make migrate-up
 make run               # :8080
 
@@ -37,18 +37,24 @@ npm install
 npm run dev            # :5173（端口被占用时 Vite 会自动顺延到 5174~5177，CORS 已放行这个区间）
 ```
 
-### 新增环境变量
+### 配置
 
-除旧版沿用的数据库连接信息外，新版 `server/.env` 还需要：
+后端配置只有一份文件：`server/config.yaml`（已 gitignore，不会被提交；
+`server/config.yaml.example` 是提交进仓库的示例，含全部字段与说明）。没有环境
+变量覆盖、没有 `.env`——改配置就是编辑这份 YAML 并重启进程。启动时用
+`--config` 指定路径，默认是当前工作目录下的 `config.yaml`。
 
-| 变量 | 说明 |
+必填三项，缺失或格式不对会在启动时直接拒绝：
+
+| 字段 | 说明 |
 |------|------|
-| `JWT_SECRET` | 必填，缺失则拒绝启动。生成方式：`openssl rand -base64 32` |
-| `JWT_TTL` | 登录态有效期，默认 `168h` |
-| `BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD` | 首次启动且系统内无活跃管理员时，用于自举创建管理员账号 |
-| `APP_ENCRYPTION_KEY` | **必填**，缺失或解码后不是 32 字节则拒绝启动。用于加密 `app_settings` 表中的上游 API Key（AES-256-GCM）。生成方式：`openssl rand -base64 32`。**不要随意更换**——更换后已加密存储的旧密钥将无法再解密，需要清空 `app_settings` 表重新配置 |
-| `HTTP_PORT` | 后端监听端口，默认 `8080` |
-| `CORS_ORIGINS` | 允许跨域的前端 origin，逗号分隔；默认放行 `http://localhost:5173`~`5177` |
+| `jwt.secret` | 至少 32 字节，缺失或过短则拒绝启动。生成方式：`openssl rand -base64 32` |
+| `app_encryption_key` | base64 编码的 32 字节，缺失或解码后不是 32 字节则拒绝启动。用于加密 `app_settings` 表中的上游 API Key（AES-256-GCM）。生成方式：`openssl rand -base64 32`。**不要随意更换**——更换后已加密存储的旧密钥将无法再解密，需要清空 `app_settings` 表重新配置 |
+| `bootstrap.admin_password` | 首次启动且系统内无活跃管理员时，用于自举创建管理员账号 |
+
+其余字段（`http.port`、`database.*`、`jwt.ttl`、`bootstrap.admin_username`、
+`cors.origins`）都有默认值，详见 `config.yaml.example` 里的注释。配置文件里
+出现未声明的字段名（typo）会在启动时直接报错，不会被静默忽略。
 
 > 注意：图片上传目前**不做服务端压缩**——旧版 README 曾提到 `sharp` 压缩，但旧代码里
 > `sharp` 只是被引入、从未被调用；新版 Go 后端同样没有实现压缩，上传即原图（≤12MB 走

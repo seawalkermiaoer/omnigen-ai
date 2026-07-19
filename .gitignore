@@ -3,6 +3,11 @@
 .env.local
 .env.*.local
 
+# Go 后端配置——持有 jwt.secret / app_encryption_key / database.password /
+# bootstrap.admin_password 四个密钥，绝不提交。server/config.yaml.example
+# 是提交进仓库的无密钥示例，不受本条影响。
+server/config.yaml
+
 # Dependencies
 node_modules/
 

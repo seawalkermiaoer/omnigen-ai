@@ -1,3 +1,7 @@
+# DB_URL/TEST_DB_URL 只喂给下面的 migrate CLI 与测试harness（TEST_DB_URL 由
+# internal/repository 的测试通过 os.Getenv 读取，供测试连接独立的
+# omnigen_test 库），跟应用自身的配置无关——应用运行时的全部配置
+# （包括数据库连接）来自 server/config.yaml，见 `run` 目标。
 DB_URL      ?= postgres://postgres:123456@localhost:5432/omnigen?sslmode=disable
 TEST_DB_URL ?= postgres://postgres:123456@localhost:5432/omnigen_test?sslmode=disable
 
@@ -39,5 +43,8 @@ test: migrate-test-up
 wire:
 	$(WIRE) ./internal/...
 
+# 需要 server/config.yaml 存在（cp config.yaml.example config.yaml 并填好
+# jwt.secret / app_encryption_key / bootstrap.admin_password）；缺失时
+# config.Load 会拒绝启动并报出查找路径。
 run:
 	go run ./cmd/server

@@ -2,16 +2,17 @@
 // 以密文形式存进 Postgres 的 app_settings 表，而不是像旧系统那样留在浏览器
 // localStorage 里。
 //
-// 密钥来自环境变量 APP_ENCRYPTION_KEY：32 字节，base64 编码，用
-// `openssl rand -base64 32` 生成。这已经是具备完整熵的随机字节，直接拿来做
-// AES key，不经过 PBKDF2/scrypt 之类的密钥派生——KDF 是为人类口令这种低熵
-// 输入设计的，用在这里只会增加开销，不增加安全性。
+// 密钥由调用方显式传入（32 字节，来自 config.Config.AppEncryptionKey 解码后
+// 的原始字节），这已经是具备完整熵的随机字节，直接拿来做 AES key，不经过
+// PBKDF2/scrypt 之类的密钥派生——KDF 是为人类口令这种低熵输入设计的，用在
+// 这里只会增加开销，不增加安全性。
 //
-// 每次 Encrypt/Decrypt 调用都从环境变量重新读取并校验密钥，而不是进程启动时
-// 缓存一份：一是避免测试用 t.Setenv 切换密钥时读到陈旧值，二是让
-// APP_ENCRYPTION_KEY 缺失/损坏时每次调用都能立刻暴露问题，而不是只在进程刚
-// 启动那一刻检查过就永远放行。config.Load 在启动时也会做同样的校验以尽早
-// 失败，两处校验逻辑独立、互不依赖。
+// 这个包不再自己从环境变量读取密钥：整个后端的配置只有 config.yaml 一份
+// 来源，crypto 包若在内部悄悄读 os.Getenv("APP_ENCRYPTION_KEY")，会让密钥
+// 出现两条独立的、可能互相不一致的来源路径。密钥的校验（base64、长度）已
+// 经在 config.Load 里做过一次，这里的 KeySize 检查是第二层防御——防止有人
+// 绕过 config.Load 直接构造一个长度不对的 []byte 传进来（例如测试代码手滑），
+// 不依赖调用方已经校验过这个前提。
 package crypto
 
 import (
@@ -21,12 +22,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 )
-
-// KeyEnvVar 是加密密钥所在的环境变量名。
-const KeyEnvVar = "APP_ENCRYPTION_KEY"
 
 // KeySize 是 AES-256 所需的原始密钥字节数。
 const KeySize = 32
@@ -39,29 +36,12 @@ var ErrInvalidFormat = errors.New("crypto: 密文格式错误，应为 iv:tag:ci
 // 探测"猜中了哪一部分"的信号，故意合并成一种失败。
 var ErrDecryptFailed = errors.New("crypto: 解密失败")
 
-// loadKey 读取并校验 APP_ENCRYPTION_KEY。返回的错误只描述"配置哪里不对"，
-// 不回显任何环境变量的实际取值——即便取值本身就是不合法的垃圾数据，
-// 把它原样塞进错误信息也会把潜在的密钥材料写进日志。
-func loadKey() ([]byte, error) {
-	raw := os.Getenv(KeyEnvVar)
-	if raw == "" {
-		return nil, fmt.Errorf("crypto: 环境变量 %s 未设置", KeyEnvVar)
-	}
-	key, err := base64.StdEncoding.DecodeString(raw)
-	if err != nil {
-		return nil, fmt.Errorf("crypto: 环境变量 %s 不是合法的 base64", KeyEnvVar)
-	}
-	if len(key) != KeySize {
-		return nil, fmt.Errorf("crypto: 环境变量 %s 解码后必须是 %d 字节，实际 %d 字节；生成方式：openssl rand -base64 32",
-			KeyEnvVar, KeySize, len(key))
-	}
-	return key, nil
-}
+// ErrInvalidKeySize 表示传入的密钥长度不是 KeySize（32）字节。
+var ErrInvalidKeySize = errors.New("crypto: 密钥长度不是 32 字节")
 
-func newGCM() (cipher.AEAD, error) {
-	key, err := loadKey()
-	if err != nil {
-		return nil, err
+func newGCM(key []byte) (cipher.AEAD, error) {
+	if len(key) != KeySize {
+		return nil, fmt.Errorf("%w: 实际 %d 字节", ErrInvalidKeySize, len(key))
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -75,7 +55,7 @@ func newGCM() (cipher.AEAD, error) {
 }
 
 // Encrypt 用 AES-256-GCM 加密 plaintext，返回 "iv:tag:ciphertext" 三段 base64
-// （标准 padding）用 ":" 拼接的字符串。
+// （标准 padding）用 ":" 拼接的字符串。key 必须是 KeySize（32）字节。
 //
 // aad（Additional Authenticated Data）不参与加密，但参与认证：解密时必须传入
 // 完全相同的 aad，否则即便密文本身完整无损也会解密失败。调用方必须传入这份
@@ -88,8 +68,8 @@ func newGCM() (cipher.AEAD, error) {
 // 这里手动按 Overhead() 切开、分别存成两段，是为了让存储格式本身在
 // iv/tag/ciphertext 的边界上自解释，不依赖"tag 固定 16 字节"这种硬编码假设
 // 去反向切割存量数据。
-func Encrypt(plaintext, aad string) (string, error) {
-	gcm, err := newGCM()
+func Encrypt(key []byte, plaintext, aad string) (string, error) {
+	gcm, err := newGCM(key)
 	if err != nil {
 		return "", err
 	}
@@ -111,15 +91,16 @@ func Encrypt(plaintext, aad string) (string, error) {
 	}, ":"), nil
 }
 
-// Decrypt 解密 Encrypt 产出的密文。aad 必须与加密时传入的一致。
+// Decrypt 解密 Encrypt 产出的密文。key 必须是加密时使用的同一把 KeySize
+// （32）字节密钥，aad 必须与加密时传入的一致。
 //
 // 输入校验分三层，确保任何畸形输入都以干净的 error 返回，绝不 panic：
 //  1. 段数必须恰好是 3；
 //  2. 每一段必须是合法 base64；
 //  3. IV 解码后的长度必须等于 GCM 的 NonceSize——标准库 cipher.gcm.Open
 //     对长度不对的 nonce 是直接 panic，必须在调用前手动拦住。
-func Decrypt(ciphertext, aad string) (string, error) {
-	gcm, err := newGCM()
+func Decrypt(key []byte, ciphertext, aad string) (string, error) {
+	gcm, err := newGCM(key)
 	if err != nil {
 		return "", err
 	}

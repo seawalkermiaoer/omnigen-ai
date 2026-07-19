@@ -8,6 +8,7 @@ package internal
 
 import (
 	"context"
+	"encoding/base64"
 	"github.com/chenhao/omnigen-ai/server/internal/config"
 	"github.com/chenhao/omnigen-ai/server/internal/handler"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/jwtx"
@@ -37,7 +38,11 @@ func InitApp(ctx context.Context, cfg *config.Config) (*App, error) {
 	pinger := providePinger(pool)
 	healthHandler := handler.NewHealthHandler(pinger)
 	settingRepository := repository.NewSettingRepository(db)
-	settingService := service.NewSettingService(settingRepository)
+	v, err := provideEncryptionKey(cfg)
+	if err != nil {
+		return nil, err
+	}
+	settingService := service.NewSettingService(settingRepository, v)
 	settingHandler := handler.NewSettingHandler(settingService)
 	catalogHandler := handler.NewCatalogHandler()
 	settingReader := provideSettingReader(settingService)
@@ -52,8 +57,8 @@ func InitApp(ctx context.Context, cfg *config.Config) (*App, error) {
 	optimizeService := service.NewOptimizeService(settingReader)
 	optimizeHandler := handler.NewOptimizeHandler(optimizeService)
 	handlers := provideHandlers(authHandler, userHandler, healthHandler, settingHandler, catalogHandler, uploadHandler, imageGenerationHandler, videoGenerationHandler, downloadHandler, optimizeHandler)
-	v := provideCORSOrigins(cfg)
-	engine := router.New(handlers, manager, userRepository, v)
+	v2 := provideCORSOrigins(cfg)
+	engine := router.New(handlers, manager, userRepository, v2)
 	videoProviderFactory := provideVideoProviderFactory()
 	poller := provideWorker(taskRepository, settingReader, videoProviderFactory)
 	app := provideApp(engine, pool, userService, cfg, poller)
@@ -151,6 +156,20 @@ func provideCORSOrigins(cfg *config.Config) []string {
 	return cfg.CORSOrigins
 }
 
+// provideEncryptionKey 把 cfg.AppEncryptionKey（base64 字符串）解码成
+// SettingService 直接可用的 32 字节原始密钥。cfg.AppEncryptionKey 已经在
+// config.Load 里校验过是合法 base64 且解码后恰好 32 字节，这里的 err 理论上
+// 不可能非 nil；仍然照常返回而不是 panic/忽略，是因为"理论上不会发生"不等于
+// "允许在类型层面假装不会失败"——万一 Config 的构造路径将来出现绕过 Load()
+// 校验的第二条来源，这里也不会把一个畸形密钥悄悄传给 crypto 包。
+func provideEncryptionKey(cfg *config.Config) ([]byte, error) {
+	key, err := base64.StdEncoding.DecodeString(cfg.AppEncryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
 func provideApp(e *gin.Engine, p *pgxpool.Pool, u *service.UserService, cfg *config.Config, w *worker.Poller) *App {
 	return &App{Engine: e, Pool: p, Users: u, Config: cfg, Worker: w}
 }
@@ -161,6 +180,7 @@ var providerSet = wire.NewSet(
 	providePinger,
 	provideJWT,
 	provideCORSOrigins,
+	provideEncryptionKey,
 	provideSettingReader,
 	provideVideoProviderFactory, repository.NewUserRepository, repository.NewSettingRepository, repository.NewTaskRepository, service.NewAuthService, service.NewUserService, service.NewSettingService, service.NewUploadService, service.NewImageGenerationService, service.NewVideoGenerationService, service.NewOptimizeService, handler.NewAuthHandler, handler.NewUserHandler, handler.NewHealthHandler, handler.NewSettingHandler, handler.NewCatalogHandler, handler.NewUploadHandler, handler.NewImageGenerationHandler, handler.NewVideoGenerationHandler, handler.NewDownloadHandler, handler.NewOptimizeHandler, provideHandlers,
 	provideWorker, router.New, provideApp,

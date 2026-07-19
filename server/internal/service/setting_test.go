@@ -16,21 +16,15 @@ import (
 	"github.com/chenhao/omnigen-ai/server/internal/service"
 )
 
-// testEncryptionKey 与 crypto_test.go / config_test.go 是同一把合法测试密钥：
-// 32 原始字节的 base64 编码，满足 AES-256 的长度要求。
-const testEncryptionKey = "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE="
-
-func setEncryptionKey(t *testing.T) {
-	t.Helper()
-	t.Setenv(crypto.KeyEnvVar, testEncryptionKey)
-}
+// testEncryptionKey 是与 crypto_test.go 同一把合法测试密钥：32 字节原始数据，
+// 直接传给 NewSettingServiceWithTester，不再经由环境变量。
+var testEncryptionKey = []byte("01234567890123456789012345678901")[:32]
 
 func newSettingService(t *testing.T) (*service.SettingService, *fakeSettingRepo, *fakeConnectionTester) {
 	t.Helper()
-	setEncryptionKey(t)
 	repo := newFakeSettingRepo()
 	tester := &fakeConnectionTester{t: t}
-	return service.NewSettingServiceWithTester(repo, tester), repo, tester
+	return service.NewSettingServiceWithTester(repo, testEncryptionKey, tester), repo, tester
 }
 
 func settingByKey(t *testing.T, resp *settingmodel.SettingsResponse, key settingmodel.Key) settingmodel.SettingResponse {
@@ -99,12 +93,12 @@ func TestSettingService_AADBindsCiphertextToItsOwnKey(t *testing.T) {
 	require.NotEmpty(t, stored.Value)
 
 	// 直接用同一份密文冒充 t8star 的密文，AAD 用错了 key，必须解密失败。
-	_, err = crypto.Decrypt(stored.Value, string(settingmodel.KeyT8starAPIKey))
+	_, err = crypto.Decrypt(testEncryptionKey, stored.Value, string(settingmodel.KeyT8starAPIKey))
 	require.Error(t, err)
 
 	// 用正确的 AAD 解密仍然成功——证明上面失败确实是 AAD 不匹配导致的，
 	// 不是密文本身就坏了。
-	plain, err := crypto.Decrypt(stored.Value, string(settingmodel.KeyDashscopeAPIKey))
+	plain, err := crypto.Decrypt(testEncryptionKey, stored.Value, string(settingmodel.KeyDashscopeAPIKey))
 	require.NoError(t, err)
 	assert.Equal(t, "sk-dashscope-real-key", plain)
 }

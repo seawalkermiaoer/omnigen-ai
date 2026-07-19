@@ -11,43 +11,31 @@ import (
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/crypto"
 )
 
-// testKey 是合法的 32 字节密钥（base64 编码），供测试使用。
-// 通过 setKey 写入 APP_ENCRYPTION_KEY。
-const testKey = "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=" // base64("01234567890123456789012345678901"), 32 raw bytes
-
-func setKey(t *testing.T) {
-	t.Helper()
-	t.Setenv(crypto.KeyEnvVar, testKey)
-}
+// testKey 是合法的 32 字节密钥，供测试直接传入 Encrypt/Decrypt。
+var testKey = []byte("01234567890123456789012345678901")[:32]
 
 func TestEncryptDecrypt_RoundTrips(t *testing.T) {
-	setKey(t)
-
-	ciphertext, err := crypto.Encrypt("sk-super-secret-value", "dashscope_api_key")
+	ciphertext, err := crypto.Encrypt(testKey, "sk-super-secret-value", "dashscope_api_key")
 	require.NoError(t, err)
 	require.NotEmpty(t, ciphertext)
 
-	plaintext, err := crypto.Decrypt(ciphertext, "dashscope_api_key")
+	plaintext, err := crypto.Decrypt(testKey, ciphertext, "dashscope_api_key")
 	require.NoError(t, err)
 	assert.Equal(t, "sk-super-secret-value", plaintext)
 }
 
 func TestEncrypt_EmptyPlaintextRoundTrips(t *testing.T) {
-	setKey(t)
-
-	ciphertext, err := crypto.Encrypt("", "dashscope_api_key")
+	ciphertext, err := crypto.Encrypt(testKey, "", "dashscope_api_key")
 	require.NoError(t, err)
 
-	plaintext, err := crypto.Decrypt(ciphertext, "dashscope_api_key")
+	plaintext, err := crypto.Decrypt(testKey, ciphertext, "dashscope_api_key")
 	require.NoError(t, err)
 	assert.Equal(t, "", plaintext)
 }
 
 // 密文必须是三段 base64 用 ":" 拼接。
 func TestEncrypt_ProducesThreeColonSeparatedSegments(t *testing.T) {
-	setKey(t)
-
-	ciphertext, err := crypto.Encrypt("hello", "some_key")
+	ciphertext, err := crypto.Encrypt(testKey, "hello", "some_key")
 	require.NoError(t, err)
 
 	parts := strings.Split(ciphertext, ":")
@@ -61,19 +49,17 @@ func TestEncrypt_ProducesThreeColonSeparatedSegments(t *testing.T) {
 // 同一明文两次加密必须产出不同密文：IV 每次都要重新生成，
 // 否则相同明文会暴露相同密文，泄露"两处配置用的是同一个 key"这类信息。
 func TestEncrypt_SamePlaintextProducesDifferentCiphertext(t *testing.T) {
-	setKey(t)
-
-	a, err := crypto.Encrypt("same-secret", "k")
+	a, err := crypto.Encrypt(testKey, "same-secret", "k")
 	require.NoError(t, err)
-	b, err := crypto.Encrypt("same-secret", "k")
+	b, err := crypto.Encrypt(testKey, "same-secret", "k")
 	require.NoError(t, err)
 
 	assert.NotEqual(t, a, b)
 
 	// 但两者都必须能正确解密回同一明文。
-	pa, err := crypto.Decrypt(a, "k")
+	pa, err := crypto.Decrypt(testKey, a, "k")
 	require.NoError(t, err)
-	pb, err := crypto.Decrypt(b, "k")
+	pb, err := crypto.Decrypt(testKey, b, "k")
 	require.NoError(t, err)
 	assert.Equal(t, "same-secret", pa)
 	assert.Equal(t, "same-secret", pb)
@@ -83,36 +69,30 @@ func TestEncrypt_SamePlaintextProducesDifferentCiphertext(t *testing.T) {
 // 把 dashscope 的密文拿去用 t8star 的 AAD 解密，必须失败——
 // 否则把一行密文拷到另一行，解密会"成功"并返回一个有效但错误的凭证。
 func TestDecrypt_FailsOnAADMismatch(t *testing.T) {
-	setKey(t)
-
-	ciphertext, err := crypto.Encrypt("sk-dashscope-value", "dashscope_api_key")
+	ciphertext, err := crypto.Encrypt(testKey, "sk-dashscope-value", "dashscope_api_key")
 	require.NoError(t, err)
 
-	_, err = crypto.Decrypt(ciphertext, "t8star_api_key")
+	_, err = crypto.Decrypt(testKey, ciphertext, "t8star_api_key")
 	require.Error(t, err)
 
 	// 正确的 AAD 必须仍然可用，证明失败确实是因为 AAD 不匹配，
 	// 不是密文本身已经损坏。
-	plaintext, err := crypto.Decrypt(ciphertext, "dashscope_api_key")
+	plaintext, err := crypto.Decrypt(testKey, ciphertext, "dashscope_api_key")
 	require.NoError(t, err)
 	assert.Equal(t, "sk-dashscope-value", plaintext)
 }
 
 func TestDecrypt_FailsOnEmptyAADWhenEncryptedWithNonEmptyAAD(t *testing.T) {
-	setKey(t)
-
-	ciphertext, err := crypto.Encrypt("value", "some_key")
+	ciphertext, err := crypto.Encrypt(testKey, "value", "some_key")
 	require.NoError(t, err)
 
-	_, err = crypto.Decrypt(ciphertext, "")
+	_, err = crypto.Decrypt(testKey, ciphertext, "")
 	require.Error(t, err)
 }
 
 // 篡改三段中的任意一段都必须让 Decrypt 失败，不能 panic。
 func TestDecrypt_FailsOnTamperedSegments(t *testing.T) {
-	setKey(t)
-
-	ciphertext, err := crypto.Encrypt("sk-tamper-me", "k")
+	ciphertext, err := crypto.Encrypt(testKey, "sk-tamper-me", "k")
 	require.NoError(t, err)
 	parts := strings.Split(ciphertext, ":")
 	require.Len(t, parts, 3)
@@ -135,7 +115,7 @@ func TestDecrypt_FailsOnTamperedSegments(t *testing.T) {
 	for name, tampered := range cases {
 		t.Run(name, func(t *testing.T) {
 			require.NotPanics(t, func() {
-				_, err := crypto.Decrypt(tampered, "k")
+				_, err := crypto.Decrypt(testKey, tampered, "k")
 				assert.Error(t, err)
 			})
 		})
@@ -144,8 +124,6 @@ func TestDecrypt_FailsOnTamperedSegments(t *testing.T) {
 
 // 段数不是 3 必须是干净的格式错误，不能 panic。
 func TestDecrypt_FailsCleanlyOnWrongSegmentCount(t *testing.T) {
-	setKey(t)
-
 	cases := []string{
 		"",
 		"onlyonesegment",
@@ -156,7 +134,7 @@ func TestDecrypt_FailsCleanlyOnWrongSegmentCount(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c, func(t *testing.T) {
 			require.NotPanics(t, func() {
-				_, err := crypto.Decrypt(c, "k")
+				_, err := crypto.Decrypt(testKey, c, "k")
 				assert.Error(t, err)
 			})
 		})
@@ -165,8 +143,6 @@ func TestDecrypt_FailsCleanlyOnWrongSegmentCount(t *testing.T) {
 
 // 任一段是非法 base64 必须报错，不能 panic。
 func TestDecrypt_FailsCleanlyOnGarbageBase64(t *testing.T) {
-	setKey(t)
-
 	cases := map[string]string{
 		"iv":         "not!base64:AAAA:AAAA",
 		"tag":        "AAAA:not!base64:AAAA",
@@ -177,7 +153,7 @@ func TestDecrypt_FailsCleanlyOnGarbageBase64(t *testing.T) {
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			require.NotPanics(t, func() {
-				_, err := crypto.Decrypt(c, "k")
+				_, err := crypto.Decrypt(testKey, c, "k")
 				assert.Error(t, err)
 			})
 		})
@@ -187,38 +163,27 @@ func TestDecrypt_FailsCleanlyOnGarbageBase64(t *testing.T) {
 // 合法 base64 但长度错误的 IV（GCM 的 nonce）必须报错而非 panic——
 // 标准库 cipher.gcm.Open 对长度不对的 nonce 是 panic，必须在调用前拦住。
 func TestDecrypt_FailsCleanlyOnWrongLengthIV(t *testing.T) {
-	setKey(t)
-
 	shortIV := base64.StdEncoding.EncodeToString([]byte("short"))
 	tampered := shortIV + ":AAAAAAAAAAAAAAAA:AAAAAAAAAAAAAAAA"
 
 	require.NotPanics(t, func() {
-		_, err := crypto.Decrypt(tampered, "k")
+		_, err := crypto.Decrypt(testKey, tampered, "k")
 		assert.Error(t, err)
 	})
 }
 
 func TestEncrypt_FailsWithoutKey(t *testing.T) {
-	t.Setenv(crypto.KeyEnvVar, "")
-
-	_, err := crypto.Encrypt("secret", "k")
+	_, err := crypto.Encrypt(nil, "secret", "k")
 	require.Error(t, err)
-}
-
-func TestEncrypt_FailsOnInvalidBase64Key(t *testing.T) {
-	t.Setenv(crypto.KeyEnvVar, "not-valid-base64!!!")
-
-	_, err := crypto.Encrypt("secret", "k")
-	require.Error(t, err)
+	assert.ErrorIs(t, err, crypto.ErrInvalidKeySize)
 }
 
 func TestEncrypt_FailsOnWrongLengthKey(t *testing.T) {
-	// 合法 base64，但解码后只有 16 字节，不满足 AES-256 的 32 字节要求。
-	shortKey := base64.StdEncoding.EncodeToString(make([]byte, 16))
-	t.Setenv(crypto.KeyEnvVar, shortKey)
+	shortKey := make([]byte, 16)
 
-	_, err := crypto.Encrypt("secret", "k")
+	_, err := crypto.Encrypt(shortKey, "secret", "k")
 	require.Error(t, err)
+	assert.ErrorIs(t, err, crypto.ErrInvalidKeySize)
 }
 
 func TestMask_HidesMiddleKeepsHeadAndTail(t *testing.T) {
@@ -251,24 +216,21 @@ func TestMask_DoesNotEqualInputForNonTrivialSecret(t *testing.T) {
 
 // 错误信息不得包含明文或密钥材料。
 func TestErrors_DoNotLeakPlaintextOrKeyMaterial(t *testing.T) {
-	setKey(t)
-
 	const plaintext = "sk-super-duper-secret-plaintext-marker"
-	ciphertext, err := crypto.Encrypt(plaintext, "k")
+	ciphertext, err := crypto.Encrypt(testKey, plaintext, "k")
 	require.NoError(t, err)
 
-	_, err = crypto.Decrypt(ciphertext, "wrong-aad")
+	_, err = crypto.Decrypt(testKey, ciphertext, "wrong-aad")
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), plaintext)
-	assert.NotContains(t, err.Error(), testKey)
+	assert.NotContains(t, err.Error(), string(testKey))
 
-	_, err = crypto.Decrypt("garbage", "k")
+	_, err = crypto.Decrypt(testKey, "garbage", "k")
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), plaintext)
-	assert.NotContains(t, err.Error(), testKey)
+	assert.NotContains(t, err.Error(), string(testKey))
 
-	t.Setenv(crypto.KeyEnvVar, "")
-	_, err = crypto.Encrypt(plaintext, "k")
+	_, err = crypto.Encrypt(nil, plaintext, "k")
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), plaintext)
 }

@@ -13,7 +13,7 @@ import (
 // SettingReader (defined in optimize.go, shared by every service that only
 // needs decrypted app_settings values) is UploadService's dependency here
 // too — narrowed to an interface so tests don't have to spin up the real
-// SettingService (crypto, APP_ENCRYPTION_KEY, a SettingRepository) just to
+// SettingService (crypto, an encryption key, a SettingRepository) just to
 // exercise OSS config resolution.
 
 // defaultOSSBucket/defaultOSSRegion mirror server.js's OSS_CONFIG fallbacks

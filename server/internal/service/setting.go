@@ -40,20 +40,24 @@ type ConnectionTester interface {
 // SettingService 承载配置与密钥的业务规则：加解密、"空值=不修改"语义、
 // 脱敏响应、上游连通性探测。
 type SettingService struct {
-	settings repository.SettingRepository
-	tester   ConnectionTester
+	settings      repository.SettingRepository
+	tester        ConnectionTester
+	encryptionKey []byte
 }
 
 // NewSettingService 构造生产用的 SettingService，TestConnection 走真正的
-// dashscope.Client（见 dashscopeConnectionTester）。
-func NewSettingService(settings repository.SettingRepository) *SettingService {
-	return NewSettingServiceWithTester(settings, newDashscopeConnectionTester())
+// dashscope.Client（见 dashscopeConnectionTester）。encryptionKey 必须是
+// config.Config.AppEncryptionKey base64 解码后的 32 字节原始密钥——由 wire
+// 的 provideEncryptionKey 在装配时从 *config.Config 解出并注入，
+// SettingService 自己不读取任何配置来源。
+func NewSettingService(settings repository.SettingRepository, encryptionKey []byte) *SettingService {
+	return NewSettingServiceWithTester(settings, encryptionKey, newDashscopeConnectionTester())
 }
 
 // NewSettingServiceWithTester 允许调用方（生产环境接入真正的 provider 客户端、
 // 测试环境注入假实现）指定 ConnectionTester。
-func NewSettingServiceWithTester(settings repository.SettingRepository, tester ConnectionTester) *SettingService {
-	return &SettingService{settings: settings, tester: tester}
+func NewSettingServiceWithTester(settings repository.SettingRepository, encryptionKey []byte, tester ConnectionTester) *SettingService {
+	return &SettingService{settings: settings, tester: tester, encryptionKey: encryptionKey}
 }
 
 // Get 返回全部配置项的脱敏视图，固定按 settingmodel.AllKeys 的顺序、
@@ -81,7 +85,7 @@ func (s *SettingService) Get(ctx context.Context) (*settingmodel.SettingsRespons
 		if !ok {
 			row = settingmodel.Setting{Key: string(k), IsSecret: k.IsSecret()}
 		}
-		plain, err := decryptIfSecret(row)
+		plain, err := s.decryptIfSecret(row)
 		if err != nil {
 			return nil, err
 		}
@@ -104,20 +108,20 @@ func (s *SettingService) GetDecrypted(ctx context.Context, key settingmodel.Key)
 		}
 		return "", err
 	}
-	return decryptIfSecret(*row)
+	return s.decryptIfSecret(*row)
 }
 
 // decryptIfSecret 把一条可能是密文的 Setting 转成明文 Value。非 secret 项、
 // 或 secret 项但当前是空字符串（未配置/已清空）原样返回，不尝试解密——
 // crypto.Decrypt 只认 Encrypt 产出的 "iv:tag:ciphertext" 格式，拿空串去解会
 // 直接报格式错误。
-func decryptIfSecret(s settingmodel.Setting) (string, error) {
-	if !s.IsSecret || s.Value == "" {
-		return s.Value, nil
+func (s *SettingService) decryptIfSecret(row settingmodel.Setting) (string, error) {
+	if !row.IsSecret || row.Value == "" {
+		return row.Value, nil
 	}
-	plain, err := crypto.Decrypt(s.Value, s.Key)
+	plain, err := crypto.Decrypt(s.encryptionKey, row.Value, row.Key)
 	if err != nil {
-		return "", apperr.ErrInternal.Wrap(fmt.Errorf("解密配置项 %s 失败: %w", s.Key, err))
+		return "", apperr.ErrInternal.Wrap(fmt.Errorf("解密配置项 %s 失败: %w", row.Key, err))
 	}
 	return plain, nil
 }
@@ -155,7 +159,7 @@ func (s *SettingService) Update(ctx context.Context, actorID int64, req settingm
 		case item.Clear:
 			value = ""
 		case isSecret:
-			enc, err := crypto.Encrypt(value, string(item.Key))
+			enc, err := crypto.Encrypt(s.encryptionKey, value, string(item.Key))
 			if err != nil {
 				return nil, apperr.ErrInternal.Wrap(fmt.Errorf("加密配置项 %s 失败: %w", item.Key, err))
 			}
