@@ -16,6 +16,8 @@
 
 ## 每个任务开工前必读
 
+- **验证幂等守卫时，单笔场景会给出假通过。** Task 3 实测踩到：退款路径上有两道独立守卫（`quota_charged = true` 与 `quota_used > 0`）。用户只有一笔未结清扣费时，拆掉前者，后者仍然拦住第二次扣减，测试因为错误的理由保持绿色。必须造**两笔**已计费任务、只对其中一笔重复退款——真的双退才会偷走另一笔的扣费而暴露出来。后面再加类似守卫时同理。
+
 - **改后端代码后必须手动重启 Go 服务。** Vite 热更新前端，Go 不会。本项目已经因此产生过一次假 bug（前端发新 setting key、旧后端不认，报「提交的内容不合法」）。
 - **前端类型检查用 `npx tsc -b --force`，不是 `tsc --noEmit`。** 根 tsconfig 是 `"files": []` + project references，裸跑 tsc 什么都不检查就退出 0。
 - **Postgres 是 Docker 的 `postgres-17`（17.7），:5432，密码 `123456`。** 若报 PostgreSQL 14.x，是 Homebrew 实例又起来遮蔽了 Docker——停下报 BLOCKED，别绕。
