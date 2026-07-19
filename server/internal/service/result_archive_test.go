@@ -214,7 +214,9 @@ func TestArchive_SecondItemFails_OnlyThatItemFallsBack(t *testing.T) {
 
 func TestArchive_UploadFails_ThatItemFallsBack(t *testing.T) {
 	up := upstreamServer(t)
-	store := &fakeArchiveStore{failOn: func(key string) bool { return strings.HasPrefix(key, "results/7/1-") }}
+	// 让第二条（index 1）失败：键里已不含 index，改用调用序号来选。
+	var seen int
+	store := &fakeArchiveStore{failOn: func(string) bool { seen++; return seen == 2 }}
 	a := newTestArchiver(store, maxArchiveBytes)
 
 	urls := []string{up.URL + "/ok1.png", up.URL + "/ok2.png"}
@@ -321,7 +323,11 @@ func TestArchive_RedirectWithinAllowlist_Followed(t *testing.T) {
 
 // ── 对象键 ────────────────────────────────────────────────────────────────
 
-var archiveKeyPattern = regexp.MustCompile(`^results/7/0-[0-9a-f]{8}\.png$`)
+// 键按**日期**分区，不含 taskID —— 图片是同步生成的，归档发生在落库之前，
+// 那一刻根本还没有 taskID。原先键里带 taskID 的写法在图片这条路上只能传 0，
+// 结果是所有图片结果全堆进 results/0/ 一个目录。日期分区顺带让 OSS 的生命
+// 周期规则（按前缀删除 N 天前的对象）能直接落到这个键上。
+var archiveKeyPattern = regexp.MustCompile(`^results/\d{4}/\d{2}/\d{2}/[0-9a-f]{8}\.png$`)
 
 func TestArchive_ObjectKeyShapeAndExtension(t *testing.T) {
 	up := upstreamServer(t)

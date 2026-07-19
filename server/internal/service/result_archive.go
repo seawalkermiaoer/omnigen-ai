@@ -163,7 +163,7 @@ func (a *ResultArchiveService) archiveOne(ctx context.Context, store ossx.Store,
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	key, err := archiveObjectKey(taskID, index, contentType)
+	key, err := archiveObjectKey(contentType)
 	if err != nil {
 		return "", err
 	}
@@ -174,12 +174,24 @@ func (a *ResultArchiveService) archiveOne(ctx context.Context, store ossx.Store,
 	return store.PutPublic(ctx, key, &cappedReader{r: resp.Body, limit: a.maxBytes}, contentType)
 }
 
-// archiveObjectKey 生成 results/{taskID}/{index}-{8位随机}{ext}。
+// archiveObjectKey 生成 results/{YYYY}/{MM}/{DD}/{8位随机}{ext}。
 //
-// 随机段不是装饰：对象是 public-read 的，可预测的键意味着任何人都能按
-// taskID/index 遍历出别人的生成结果。扩展名从 Content-Type 推导并经
-// mimeext.Sanitize 过滤，所以上游 header 里的路径分隔符/换行进不了键。
-func archiveObjectKey(taskID int64, index int, contentType string) (string, error) {
+// **按日期分区，不带 taskID。** 这一版曾经是 results/{taskID}/{index}-...，
+// 但那个形状和「归档必须发生在落库之前」这条要求直接冲突：图片是同步生成的，
+// 归档那一刻数据库行还没写、根本没有 ID，只能传 0，于是所有图片结果全堆进
+// results/0/ 一个目录，按任务分目录的便利完全落空。
+//
+// 换成日期分区把冲突消掉，并且顺带更有用：OSS 的生命周期规则是按前缀匹配的，
+// 「删除 N 天前的结果」直接就能落到这个键上；而 taskID→URL 的映射本来就完整
+// 记在 generation_tasks.result_urls 里，不需要靠对象键再存一份。
+//
+// 随机段不是装饰：对象是 public-read 的，可预测的键意味着任何人都能遍历出
+// 别人的生成结果。它同时也是同一天内的唯一性来源——键里已经没有 taskID 和
+// index 了，去掉随机段会让同一天的结果互相覆盖。
+//
+// 扩展名从 Content-Type 推导并经 mimeext.Sanitize 过滤，所以上游 header 里的
+// 路径分隔符/换行进不了键。
+func archiveObjectKey(contentType string) (string, error) {
 	var buf [4]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		// 随机数取不到时宁可放弃归档也不退化成可枚举的键。
@@ -189,7 +201,8 @@ func archiveObjectKey(taskID int64, index int, contentType string) (string, erro
 	if ext := mimeext.FromContentType(contentType); ext != "" {
 		suffix = "." + ext
 	}
-	return fmt.Sprintf("results/%d/%d-%s%s", taskID, index, hex.EncodeToString(buf[:]), suffix), nil
+	return fmt.Sprintf("results/%s/%s%s",
+		time.Now().UTC().Format("2006/01/02"), hex.EncodeToString(buf[:]), suffix), nil
 }
 
 // cappedReader 在累计读取超过 limit 时报错。用它而不是 io.LimitReader 是

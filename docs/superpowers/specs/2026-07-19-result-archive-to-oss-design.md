@@ -95,12 +95,25 @@ PutPublic(ctx context.Context, key string, body io.Reader, contentType string) (
 ### 对象键
 
 ```
-results/{taskID}/{index}-{8位随机}{ext}
+results/{YYYY}/{MM}/{DD}/{8位随机}{ext}
 ```
 
 带随机段是为了让键不可枚举：public-read 之下，可预测的键意味着任何人都能
 遍历出别人的生成结果。`{ext}` 从 Content-Type 推导，复用 download.go 里已有的
 `extFromContentType` / `sanitizeExt`。
+
+**2026-07-19 修正：原方案写的是 `results/{taskID}/{index}-{8位随机}{ext}`，
+它和本文档下一节「归档发生在写库之前」这条要求直接冲突，实现时才暴露出来。**
+图片是同步生成的，归档那一刻数据库行还没写、根本没有 taskID，只能传 0，
+结果是所有图片结果堆进 `results/0/` 一个目录，按任务分目录的便利完全落空。
+（视频侧没有这个问题——行已存在。）
+
+改为按日期分区把冲突消掉，并且顺带更有用：OSS 的生命周期规则按前缀匹配，
+「删除 N 天前的结果」直接能落到这个键上；而 taskID→URL 的映射本来就完整记在
+`generation_tasks.result_urls` 里，不需要靠对象键再存一份。
+
+随机段在新形状下还多担了一层职责：键里已经没有 taskID 和 index，它同时是
+同一天内的唯一性来源，去掉会让同一天的结果互相覆盖。
 
 ## 挂载点
 
