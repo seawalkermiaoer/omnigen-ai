@@ -10,16 +10,23 @@
 # 这是当初刻意做的决定，不为了迁就 compose 的习惯把 env 逻辑再加回来——
 # 那等于让同一份配置有两个来源，最终一定会出现「改了一处没生效」的排查。
 
+# 镜像全部来自阿里云 ACR：服务器在国内，拉不动 Docker Hub / gcr.io。
+#
+# api / web 是本仓库 CI 构建后推上去的；postgres 是用
+# .github/workflows/mirror-base-images.yml 从 Docker Hub 搬运过去的
+# ——它是唯一由服务器**直接**拉取的第三方镜像，不搬运的话 compose 会卡在这一步
+# （api/web 的基础镜像层已经打包在成品镜像里，不受影响）。
+
 name: omnigen
 
 services:
   postgres:
-    image: postgres:17
+    image: crpi-2pvke2xiketaqi7e.cn-chengdu.personal.cr.aliyuncs.com/ladr_xh/postgres:17
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       # 与 deploy/config.yaml 里的 database.password 必须一致。
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 或 shell 里设置 POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 里设置 POSTGRES_PASSWORD}
       POSTGRES_DB: omnigen
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -41,7 +48,7 @@ services:
   # migrate CLI 干的），所以必须有这一步，否则 api 会对着一个空库启动。
   # migrate CLI 和 migrations 目录都已烤进 api 镜像，见 server/Dockerfile。
   migrate:
-    image: twwch/omnigen-ai:api-latest
+    image: crpi-2pvke2xiketaqi7e.cn-chengdu.personal.cr.aliyuncs.com/ladr_xh/omnigen-api:latest
     build:
       context: ./server
     restart: 'no'
@@ -57,7 +64,7 @@ services:
       - 'up'
 
   api:
-    image: twwch/omnigen-ai:api-latest
+    image: crpi-2pvke2xiketaqi7e.cn-chengdu.personal.cr.aliyuncs.com/ladr_xh/omnigen-api:latest
     build:
       context: ./server
     restart: unless-stopped
@@ -72,14 +79,14 @@ services:
       # 只读挂载：容器没有任何理由改写自己的配置。
       # 注意 deploy/config.yaml 里 database.host 必须写 postgres（compose 的
       # 服务名），不是 localhost —— localhost 在容器里指向容器自己。
-      - ./deploy/config.yaml:/app/config.yaml:ro
+      - ./config.yaml:/app/config.yaml:ro
     # 不对外暴露 8080：外部流量一律经 web 的 nginx 进来，那里同时负责
     # 静态资源与 /api 反代，同源部署也就不需要 CORS。
     expose:
       - '8080'
 
   web:
-    image: twwch/omnigen-ai:web-latest
+    image: crpi-2pvke2xiketaqi7e.cn-chengdu.personal.cr.aliyuncs.com/ladr_xh/omnigen-web:latest
     build:
       context: ./web
     restart: unless-stopped

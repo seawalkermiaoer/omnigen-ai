@@ -41,3 +41,7 @@ api.md
 
 # 部署配置，持有真实密钥（对应 deploy/config.example.yaml）
 deploy/config.yaml
+
+# 部署用配置（docker-compose.yml 挂载的就是它）。持有全部四个密钥，
+# 且本仓库是公开的 —— 少这一条就等于把管理员口令和加密密钥推上 GitHub。
+/config.yaml

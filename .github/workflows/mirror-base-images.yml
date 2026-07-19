@@ -1,0 +1,65 @@
+name: mirror base images
+
+# 把部署时**由服务器直接拉取**的第三方镜像搬运到阿里云 ACR。
+#
+# 为什么需要这个：服务器在国内，拉不动 Docker Hub / gcr.io。
+# 我们自己构建的 api / web 镜像不受影响——基础镜像（distroless、nginx）的层
+# 已经打包进成品镜像里，从 ACR 拉一次就全有了。但 docker-compose.yml 里的
+# postgres:17 是服务器**自己**去 Docker Hub 拉的，那一步会直接卡死。
+#
+# 手动触发即可：基础镜像很少变，没必要每次 push 都搬一遍。
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: '源镜像（Docker Hub 等公共仓库）'
+        required: true
+        default: 'postgres:17'
+      target:
+        description: '目标仓库名（不含 registry 与 namespace），留空则沿用源镜像名'
+        required: false
+        default: ''
+
+env:
+  REGISTRY: crpi-2pvke2xiketaqi7e.cn-chengdu.personal.cr.aliyuncs.com
+  NAMESPACE: ladr_xh
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Mirror
+        run: |
+          set -euo pipefail
+          SRC='${{ inputs.source }}'
+          NAME='${{ inputs.target }}'
+
+          # 目标仓库名留空时从源镜像推导：postgres:17 -> postgres，
+          # library/postgres:17 -> postgres。tag 原样保留。
+          TAG="${SRC##*:}"
+          if [ "$TAG" = "$SRC" ]; then TAG=latest; fi
+          if [ -z "$NAME" ]; then
+            NAME="${SRC%%:*}"
+            NAME="${NAME##*/}"
+          fi
+          DST="${REGISTRY}/${NAMESPACE}/${NAME}:${TAG}"
+
+          echo "搬运 $SRC -> $DST"
+
+          # 只搬 amd64。源镜像多半是多架构清单，直接 pull 会按 runner 架构挑一个，
+          # 而服务器是 amd64——显式指定，避免哪天 runner 换成 arm 就静默搬错架构。
+          docker pull --platform linux/amd64 "$SRC"
+          docker tag "$SRC" "$DST"
+          docker push "$DST"
+
+          echo "完成：$DST"
+          echo "在 docker-compose.yml 里把 image 改成上面这个地址即可。"
