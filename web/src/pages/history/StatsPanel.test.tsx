@@ -239,3 +239,52 @@ describe('StatsPanel', () => {
     expect(screen.getByText(i18n.t('stats.totalCalls'))).toBeInTheDocument()
   })
 })
+
+/**
+ * 回归测试覆盖的 bug：按天图表的 tooltip 原本是 marginTop:8 的**普通文档流
+ * 元素**，渲染在 SVG 下方。两个问题：
+ *
+ * 1. 位置完全脱离鼠标——用户 hover 右侧的柱子，提示却出现在图表左下角，
+ *    要来回移动视线才能把「哪根柱子」和「什么数值」对上。
+ * 2. 更糟的是它一出现就占据文档流高度，把下面的内容整体往下顶；鼠标进出
+ *    柱子时反复插入/移除，页面就在那里一跳一跳。
+ *
+ * 改为绝对定位跟随光标。同时 pointerEvents 必须是 none——否则 tooltip 会
+ * 盖在光标下方把 mouseleave 抢走：隐藏 → 光标重新落到柱子上 → 又显示，
+ * 形成一个自激的闪烁循环，比原来的毛病更难查。
+ */
+describe('按天图表的 tooltip 跟随光标', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useAuthStore.setState({ token: 'tok', user: admin, initializing: false })
+    vi.mocked(statsApi.getReport).mockResolvedValue(REPORT)
+    vi.mocked(userApi.list).mockResolvedValue({ total: 2, items: [admin, normalUser] })
+  })
+
+  it('tooltip 绝对定位在光标处，且不吃鼠标事件', async () => {
+    const user = userEvent.setup()
+    renderPanel()
+    await screen.findByRole('img', { name: i18n.t('stats.chartAriaLabel') })
+
+    const bar = screen.getAllByRole('button', { name: /2026-07-17/ })[0]
+    await user.hover(bar)
+
+    const tip = await screen.findByTestId('stats-day-tooltip')
+    expect(tip).toHaveStyle({ position: 'absolute' })
+    // 关键：不吃鼠标事件，否则会形成显示/隐藏的自激循环
+    expect(tip).toHaveStyle({ pointerEvents: 'none' })
+    // 关键：不再占据文档流高度（原来是 marginTop:8 的 inline-block）
+    expect(tip.style.marginTop).toBe('')
+  })
+
+  it('键盘聚焦同样能出 tooltip（不是纯 hover-only）', async () => {
+    renderPanel()
+    await screen.findByRole('img', { name: i18n.t('stats.chartAriaLabel') })
+
+    const bar = screen.getAllByRole('button', { name: /2026-07-18/ })[0]
+    bar.focus()
+
+    const tip = await screen.findByTestId('stats-day-tooltip')
+    expect(within(tip).getByText('2026-07-18')).toBeInTheDocument()
+  })
+})

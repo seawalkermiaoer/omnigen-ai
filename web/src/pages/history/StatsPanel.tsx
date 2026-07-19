@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Card,
   Collapse,
@@ -144,8 +144,40 @@ interface ByDayChartProps {
  * （键盘可达，不是纯 hover-only）；图表下方另有可展开的数据表格，
  * 给不方便看图的场景一个等价的文本入口。
  */
+/**
+ * tooltip 相对光标的偏移。放在右下方，避开光标本身与它的热区。
+ */
+const TOOLTIP_OFFSET = 12
+
 function ByDayChart({ data, t }: ByDayChartProps) {
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
+  // 位置和索引一起存：tooltip 要跟着光标走，就必须知道光标在哪。
+  // 拆成两个 state 会让「显示哪一天」和「显示在哪里」有一帧不同步，
+  // 表现为 tooltip 先在旧位置闪一下再跳到新位置。
+  const [hover, setHover] = useState<{ index: number; x: number; y: number } | null>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  /** 把一次鼠标事件换算成相对图表容器的像素坐标。 */
+  const trackPointer = (index: number, e: { clientX: number; clientY: number }) => {
+    const rect = wrapRef.current?.getBoundingClientRect()
+    if (!rect) return
+    setHover({ index, x: e.clientX - rect.left, y: e.clientY - rect.top })
+  }
+
+  /**
+   * 键盘聚焦没有光标位置，改为锚到这根柱子自己的中心。
+   * viewBox 是固定的 800 宽、CSS 上按 width:100% 缩放，所以要按实际渲染宽度
+   * 换算，不能直接拿 viewBox 坐标当像素用。
+   */
+  const anchorToBar = (index: number) => {
+    const rect = wrapRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const scale = rect.width / width
+    setHover({
+      index,
+      x: (paddingLeft + barSlot * index + barSlot / 2) * scale,
+      y: rect.height / 2,
+    })
+  }
 
   if (data.length === 0) {
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('stats.byDayEmpty')} style={{ padding: '24px 0' }} />
@@ -173,7 +205,7 @@ function ByDayChart({ data, t }: ByDayChartProps) {
   const labelStep = Math.max(1, Math.ceil(data.length / 8))
 
   return (
-    <div>
+    <div ref={wrapRef} style={{ position: 'relative' }}>
       <Space size={16} style={{ marginBottom: 8 }}>
         <LegendSwatch color={colors.success} label={t('stats.legendSucceeded')} />
         <LegendSwatch color={colors.error} label={t('stats.legendFailed')} />
@@ -201,7 +233,7 @@ function ByDayChart({ data, t }: ByDayChartProps) {
           const succeededY = baselineY - succeededHeight
           const failedHeight = baselineY - yFor(d.failed)
           const failedY = succeededHeight > 0 ? succeededY - gap - failedHeight : baselineY - failedHeight
-          const isHovered = hoverIndex === i
+          const isHovered = hover?.index === i
           const succeededPath = barPath(x, succeededY, barWidth, succeededHeight, d.failed === 0)
           const failedPath = barPath(x, failedY, barWidth, failedHeight, true)
 
@@ -211,10 +243,13 @@ function ByDayChart({ data, t }: ByDayChartProps) {
               tabIndex={0}
               role="button"
               aria-label={`${dayjs(d.day).format('YYYY-MM-DD')}: ${t('stats.legendSucceeded')} ${d.succeeded}, ${t('stats.legendFailed')} ${d.failed}`}
-              onMouseEnter={() => setHoverIndex(i)}
-              onMouseLeave={() => setHoverIndex(null)}
-              onFocus={() => setHoverIndex(i)}
-              onBlur={() => setHoverIndex(null)}
+              onMouseEnter={(e) => trackPointer(i, e)}
+              // 必须持续跟踪而不是只在 enter 时取一次：命中区域有整个 barSlot
+              // 那么宽，光标在同一根柱子里横向移动时 tooltip 也应该跟着走。
+              onMouseMove={(e) => trackPointer(i, e)}
+              onMouseLeave={() => setHover(null)}
+              onFocus={() => anchorToBar(i)}
+              onBlur={() => setHover(null)}
               style={{ cursor: 'pointer', outline: 'none' }}
             >
               {/* 透明命中区域，比可视柱宽——保证窄柱在密集图表里也有可靠的悬浮/点击范围。 */}
@@ -243,28 +278,42 @@ function ByDayChart({ data, t }: ByDayChartProps) {
         )}
       </svg>
 
-      {hoverIndex !== null && (
+      {hover !== null && (
         <div
           role="status"
           data-testid="stats-day-tooltip"
           style={{
-            marginTop: 8,
+            position: 'absolute',
+            left: hover.x + TOOLTIP_OFFSET,
+            top: hover.y + TOOLTIP_OFFSET,
+            // 靠近右边缘时翻到光标左侧，否则 tooltip 会被卡片裁掉。
+            // 用 transform 而不是改 left：不需要知道 tooltip 自己多宽，
+            // 也就不需要先渲染一次量尺寸再重排（那会看见一次跳动）。
+            transform:
+              wrapRef.current && hover.x > wrapRef.current.clientWidth * 0.7
+                ? `translateX(calc(-100% - ${TOOLTIP_OFFSET * 2}px))`
+                : undefined,
+            // 关键：tooltip 绝不能吃鼠标事件。它就浮在光标旁边，一旦可命中，
+            // 就会把柱子的 mouseleave 抢走 —— 隐藏、光标重新落回柱子、又显示，
+            // 形成自激的闪烁循环。
+            pointerEvents: 'none',
+            zIndex: 1,
+            whiteSpace: 'nowrap',
             padding: '6px 10px',
             borderRadius: 6,
             background: colors.bgElevated,
             border: `1px solid ${colors.border}`,
             fontSize: 12,
-            display: 'inline-block',
           }}
         >
-          <Text strong>{dayjs(data[hoverIndex].day).format('YYYY-MM-DD')}</Text>
+          <Text strong>{dayjs(data[hover.index].day).format('YYYY-MM-DD')}</Text>
           <div>
             <span style={{ color: colors.success }} aria-hidden>●</span> {t('stats.legendSucceeded')}:{' '}
-            <Text strong>{data[hoverIndex].succeeded}</Text>
+            <Text strong>{data[hover.index].succeeded}</Text>
           </div>
           <div>
             <span style={{ color: colors.error }} aria-hidden>●</span> {t('stats.legendFailed')}:{' '}
-            <Text strong>{data[hoverIndex].failed}</Text>
+            <Text strong>{data[hover.index].failed}</Text>
           </div>
         </div>
       )}
