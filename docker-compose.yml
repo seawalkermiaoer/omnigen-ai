@@ -1,0 +1,92 @@
+# omnigen-ai 部署编排。
+#
+#   cp deploy/config.example.yaml deploy/config.yaml
+#   # 编辑 deploy/config.yaml，填好四个必填项（见文件内注释）
+#   docker compose up -d
+#
+# 配置为什么是挂载文件而不是 environment：
+# 应用的配置是**纯 YAML、没有任何环境变量兜底**（internal/config/config.go 里
+# 一个 os.Getenv 都没有，字段名写错会在启动时直接拒绝启动而不是静默取默认值）。
+# 这是当初刻意做的决定，不为了迁就 compose 的习惯把 env 逻辑再加回来——
+# 那等于让同一份配置有两个来源，最终一定会出现「改了一处没生效」的排查。
+
+name: omnigen
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      # 与 deploy/config.yaml 里的 database.password 必须一致。
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 或 shell 里设置 POSTGRES_PASSWORD}
+      POSTGRES_DB: omnigen
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # 带上 -d omnigen：不指定库时 pg_isready 只验证「服务端在监听」，
+      # 而初始化脚本尚未建库的那一小段时间里它就已经是健康的了，
+      # 下面的 migrate 会抢跑并失败。
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d omnigen']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # 默认不对宿主机暴露 5432。数据库只需要被同一个 compose 网络里的
+    # api/migrate 访问；开出去就等于把它暴露在公网上，只靠一个密码挡着。
+    # 确实需要本机连进去调试时再临时打开下面两行。
+    # ports:
+    #   - '5432:5432'
+
+  # 一次性迁移。应用启动时**不会**自己跑迁移（迁移一直是 Makefile 里的
+  # migrate CLI 干的），所以必须有这一步，否则 api 会对着一个空库启动。
+  # migrate CLI 和 migrations 目录都已烤进 api 镜像，见 server/Dockerfile。
+  migrate:
+    image: twwch/omnigen-ai:api-latest
+    build:
+      context: ./server
+    restart: 'no'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ['/app/migrate']
+    command:
+      - '-path'
+      - '/app/migrations'
+      - '-database'
+      - 'postgres://postgres:${POSTGRES_PASSWORD:?}@postgres:5432/omnigen?sslmode=disable'
+      - 'up'
+
+  api:
+    image: twwch/omnigen-ai:api-latest
+    build:
+      context: ./server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # 等迁移这个一次性容器**跑完并成功退出**再启动，而不是等它「启动」——
+      # 后者对一次性任务没有意义。
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      # 只读挂载：容器没有任何理由改写自己的配置。
+      # 注意 deploy/config.yaml 里 database.host 必须写 postgres（compose 的
+      # 服务名），不是 localhost —— localhost 在容器里指向容器自己。
+      - ./deploy/config.yaml:/app/config.yaml:ro
+    # 不对外暴露 8080：外部流量一律经 web 的 nginx 进来，那里同时负责
+    # 静态资源与 /api 反代，同源部署也就不需要 CORS。
+    expose:
+      - '8080'
+
+  web:
+    image: twwch/omnigen-ai:web-latest
+    build:
+      context: ./web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - '${HTTP_PORT:-8000}:80'
+
+volumes:
+  pgdata:

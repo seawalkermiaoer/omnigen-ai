@@ -38,3 +38,6 @@ api.md
 .gstack/
 
 .superpowers/
+
+# 部署配置，持有真实密钥（对应 deploy/config.example.yaml）
+deploy/config.yaml

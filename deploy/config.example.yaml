@@ -1,0 +1,76 @@
+# omnigen-ai 的 docker-compose 部署配置。
+#
+#   cp deploy/config.example.yaml deploy/config.yaml
+#   # 填好下面四个必填项，然后 docker compose up -d
+#
+# 与 server/config.yaml.example 的差别只有两处，但都是致命的：
+#   1. database.host 是 postgres（compose 服务名），不是 localhost —— 容器里的
+#      localhost 指向容器自己，填 localhost 会连不上数据库。
+#   2. database.password 必须与 compose 的 POSTGRES_PASSWORD 完全一致。
+#
+# 这个文件会以只读方式挂进 api 容器的 /app/config.yaml。它持有真实密钥，
+# 记得加进 .gitignore（deploy/config.yaml 已加）。
+
+# omnigen-ai 后端配置示例。
+#
+# 用法：
+#   cp config.yaml.example config.yaml
+#   # 编辑 config.yaml，至少填好 jwt.secret / app_encryption_key /
+#   # bootstrap.admin_password 这三项（下面标了"必填"的）
+#   make run
+#
+# config.yaml 已加入 .gitignore，不会被提交——它会持有真实密钥。这份
+# .example 文件才是提交进仓库的版本，仅作为字段说明与默认值参考，不含任何
+# 真实凭证。
+#
+# 配置只有这一份 YAML 文件，没有环境变量覆盖、没有 .env、没有 fallback
+# 链。字段名手误（例如把 secret 写成 scret）会在启动时直接报错拒绝启动，
+# 不会被静默忽略。
+
+http:
+  # 后端监听端口。
+  port: 8080
+
+database:
+  host: postgres
+  port: 5432
+  user: postgres
+  # 本地开发默认口令；生产环境务必替换。
+  password: "在这里填写，必须与 compose 的 POSTGRES_PASSWORD 一致"
+  name: omnigen
+  # Postgres 的 sslmode，本地开发用 disable；生产环境视部署方式可能需要
+  # require/verify-full。
+  sslmode: disable
+
+jwt:
+  # 必填，至少 32 字节。生成：openssl rand -base64 32
+  # 缺失或过短都会在启动时被拒绝——太短的密钥可被暴力破解，从而伪造任意
+  # 用户的登录态。
+  secret: ""
+  # 登录态有效期，Go duration 格式（如 168h、2h30m）。
+  ttl: 168h
+
+# 必填，base64 编码的 32 字节。生成：openssl rand -base64 32
+# 用于加密 app_settings 表里的上游 API Key（AES-256-GCM）。
+# 轮换此密钥会导致已存储的上游凭证无法解密，需要清空 app_settings 表重新配置。
+app_encryption_key: ""
+
+bootstrap:
+  admin_username: admin
+  # 必填。仅在系统中不存在任何活跃管理员时使用，用于首次启动自举创建管理员
+  # 账号；系统里已有活跃管理员时这一项会被忽略，不会覆盖已有账号。
+  admin_password: ""
+
+cors:
+  # 允许跨域请求的前端 origin 列表。
+  #
+  # 默认放行 Vite 常用的 http://localhost:5173~5177（Vite 遇到端口被占用会
+  # 自动往上找，写死单个端口在实际开发中很容易踩坑）。生产环境走同源部署
+  # 或反向代理，一般不需要配置本项；如果前端跑在其他端口/域名（例如自定义
+  # Vite 端口、局域网 IP、预览环境域名），在这里显式列出。
+  origins:
+    - http://localhost:5173
+    - http://localhost:5174
+    - http://localhost:5175
+    - http://localhost:5176
+    - http://localhost:5177

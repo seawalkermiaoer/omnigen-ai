@@ -1,0 +1,151 @@
+name: build & release
+
+# 每次推 main 与每个版本 tag 都构建并推送两个镜像（api + web）；
+# 打 tag 时额外用 tag message + 自动生成的提交摘要切一个 GitHub Release。
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+env:
+  IMAGE: twwch/omnigen-ai
+
+jobs:
+  # ── 闸门：不让坏镜像出厂 ───────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      # CI 里不起数据库，因此跳过 internal/repository —— 它是唯一连真实
+      # Postgres 的包（db_test.go 的 testDSN / testhelper_test.go；全仓搜过
+      # TEST_DB_URL、pgxpool、repository.NewPool 三个入口，只有这一个包命中，
+      # 其余各层测试用的都是假实现）。
+      #
+      # 代价要清楚：被跳掉的不是边角料，而是
+      #   - ConsumeQuota 的并发不超发测试（全项目唯一的并发正确性测试）
+      #   - TestNewPool_SchemaIsMigrated（迁移真的应用过的守卫）
+      #   - 全部 SQL 语句本身的正确性
+      # 这些只能靠本地 `make test` 覆盖。要让 CI 也守住，就得把 postgres
+      # service 加回来 —— 那是一个独立决定，不是这里顺手改一行的事。
+      - name: Backend tests (skip DB-backed repository package)
+        working-directory: server
+        run: go test $(go list ./... | grep -v '/internal/repository$') -count=1
+
+      - name: Backend vet
+        working-directory: server
+        run: go vet ./...
+
+      # 与 web/Dockerfile 及开发机保持同一个 node 大版本。
+      # npm ci 对锁文件是严格的：锁文件必须在 linux 上生成，否则会缺少
+      # linux 专有的 wasm 回退依赖而直接失败（详见 web/Dockerfile 的注释）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # 注意 lint 用的是 oxlint（package.json 里就是它），不是 eslint；
+      # 仓库里没有 eslint 配置，`npx eslint` 会报找不到 config。
+      #
+      # 类型检查不单独跑 `tsc --noEmit`：根 tsconfig 是 files:[] + project
+      # references，裸跑 tsc 什么都不检查就退出 0。真正的类型检查在
+      # `npm run build`（它是 `tsc -b && vite build`）里。
+      - name: Frontend lint + tests + build
+        working-directory: web
+        run: |
+          npm ci
+          npm run lint
+          npm test
+          npm run build
+
+  # ── 构建并推送 twwch/omnigen-ai:api-* 与 :web-* ────────────────────────
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # --- API 镜像（tags: api-latest, api-<sha>, api-v1.2.3）---
+      - name: Metadata (api)
+        id: meta_api
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+            prefix=api-
+          tags: |
+            type=raw,value=latest
+            type=ref,event=tag
+            type=sha,enable=${{ github.ref == 'refs/heads/main' }}
+      - name: Build & push (api)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./server
+          push: true
+          tags: ${{ steps.meta_api.outputs.tags }}
+          labels: ${{ steps.meta_api.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta_api.outputs.version }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      # --- 前端镜像（tags: web-latest, web-<sha>, web-v1.2.3）---
+      - name: Metadata (web)
+        id: meta_web
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+            prefix=web-
+          tags: |
+            type=raw,value=latest
+            type=ref,event=tag
+            type=sha,enable=${{ github.ref == 'refs/heads/main' }}
+      - name: Build & push (web)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          push: true
+          tags: ${{ steps.meta_web.outputs.tags }}
+          labels: ${{ steps.meta_web.outputs.labels }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+  # ── 打 tag 时：用 tag message + 自动摘要切一个 GitHub Release ───────────
+  release:
+    needs: docker
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Extract tag message
+        id: tag
+        run: |
+          {
+            echo 'body<<__OMNIGEN_EOF__'
+            git tag -l --format='%(contents)' "${GITHUB_REF_NAME}"
+            echo '__OMNIGEN_EOF__'
+          } >> "$GITHUB_OUTPUT"
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.tag.outputs.body }}
+          generate_release_notes: true

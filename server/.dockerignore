@@ -1,0 +1,9 @@
+# config.yaml 持有 4 个真实密钥（jwt.secret / app_encryption_key /
+# database.password / bootstrap.admin_password）。它已经在 .gitignore 里，
+# 这里再挡一道：绝不能被 COPY . . 顺手烤进镜像层——镜像层是可被任何人
+# docker history / docker save 翻出来的。
+config.yaml
+
+*_test.go
+Makefile
+bin/
