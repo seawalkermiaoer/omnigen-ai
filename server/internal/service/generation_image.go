@@ -160,13 +160,25 @@ func (s *ImageGenerationService) GenerateImage(
 	// defer 是兜底，不是主路径：失败分支会显式退款并把 charged 置
 	// false，因为 defer 在 return 之后才运行，来不及影响即将创建的
 	// task 行的 QuotaCharged 字段。defer 只在没有显式处理的错误路径
-	// 上生效——比如 s.tasks.Create 自身失败、或 panic 展开。
+	// 上生效——比如 s.tasks.Create 自身失败。
+	//
+	// panic 是单独判断的：panic 展开时函数根本不会执行到任何 return
+	// 语句，命名返回值 retErr 保持零值 nil，只判断 retErr != nil 会
+	// 完全漏掉这条路径——用户被扣费，provider panic，
+	// middleware.Recovery 在更外层拦住并吐出干净的 500，从外部看起来
+	// 什么都没错，但额度已经凭空消失了。recover() 拿到非 nil 就说明
+	// 正在 panic 展开，同样要退款；退款后必须把 panic 重新抛出去，
+	// 交还给 middleware.Recovery 继续做它的事——这里不能吞掉 panic。
 	defer func() {
-		if charged && retErr != nil {
+		r := recover()
+		if charged && (retErr != nil || r != nil) {
 			if refundErr := s.quota.Refund(ctx, userID); refundErr != nil {
 				slog.Error("退回额度失败", "userID", userID, "error", refundErr)
 			}
 			charged = false
+		}
+		if r != nil {
+			panic(r)
 		}
 	}()
 

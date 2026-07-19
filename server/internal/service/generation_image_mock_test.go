@@ -220,26 +220,41 @@ func (f *fakeTaskRepo) all() []*generationmodel.Task {
 
 var _ repository.TaskRepository = (*fakeTaskRepo)(nil)
 
-// autoProvisioningUserRepo wraps a *fakeUserRepo so image-generation tests
-// written before quota existed — which pass in arbitrary literal userIDs
-// like 42/7/99 that were never "created" through repo.Create — keep working
-// unmodified: ConsumeQuota/RefundQuota lazily provision an unlimited-quota
-// user for an id it hasn't seen before, on first use. Tests that care about
-// quota specifically call userRepo.add(...) themselves before invoking
-// GenerateImage, and that seeded entry (with its own QuotaTotal) takes
-// precedence — auto-provisioning only fires when the id is still absent.
-type autoProvisioningUserRepo struct {
+// legacyUnlimitedQuotaRepo exists ONLY so the ~25 pre-quota tests in this
+// file — which pass arbitrary literal userIDs (42, 7, 99...) that were never
+// "created" through repo.Create — keep compiling and passing unmodified. It
+// wraps a *fakeUserRepo and lazily invents an unlimited-quota user for any
+// id it hasn't seen before, on first ConsumeQuota call.
+//
+// This is a deliberate hole in fidelity: the real repository (and the plain
+// *fakeUserRepo it mirrors) rejects an unseeded id with QUOTA_EXCEEDED —
+// that collapsed-error behavior is pinned by
+// TestFakeUserRepo_ConsumeQuota_MissingUserMatchesRealSemantics specifically
+// so nothing quietly drifts away from it. This type exists to route around
+// that guard for tests that predate quota and have no opinion about it, not
+// to relax the guard itself.
+//
+// DO NOT use this for a quota-sensitive test. Any test that seeds a
+// QuotaTotal, asserts on QuotaUsed, or otherwise cares whether quota
+// enforcement actually ran must go through newImageServiceWithQuota, which
+// uses a plain *fakeUserRepo instead — there, an unseeded userID fails
+// loudly with QUOTA_EXCEEDED (or panics on a nil map lookup during a direct
+// mutation) rather than silently getting unlimited credit. Routing a
+// quota-sensitive test through this type would let it pass without ever
+// exercising a limit — the same shape as the fakeUserRepo.Update bug this
+// project already shipped once.
+type legacyUnlimitedQuotaRepo struct {
 	*fakeUserRepo
 }
 
-func (r *autoProvisioningUserRepo) ConsumeQuota(ctx context.Context, id int64) error {
+func (r *legacyUnlimitedQuotaRepo) ConsumeQuota(ctx context.Context, id int64) error {
 	if _, ok := r.users[id]; !ok {
 		r.users[id] = &usermodel.User{ID: id, Username: fmt.Sprintf("auto-%d", id)}
 	}
 	return r.fakeUserRepo.ConsumeQuota(ctx, id)
 }
 
-var _ repository.UserRepository = (*autoProvisioningUserRepo)(nil)
+var _ repository.UserRepository = (*legacyUnlimitedQuotaRepo)(nil)
 
 // imageProviderFunc lets a plain function satisfy provider.ImageProvider,
 // mirroring optimizeProviderFunc in optimize_mock_test.go.

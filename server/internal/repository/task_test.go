@@ -138,6 +138,51 @@ func TestTaskRepo_Create_EmptyResultURLsRoundTripsAsEmptySliceNotNil(t *testing.
 	})
 }
 
+// TestTaskRepo_Create_QuotaChargedRoundTrips 直接对着真实 Postgres 验证
+// quota_charged 这一列——INSERT 的列清单/占位符位置、taskColumns/
+// scanTaskRow 的扫描顺序，任何一处手误错位都只会在这里被抓到；内存版
+// fakeTaskRepo 只是整体拷贝一份 struct，不会经过真实 SQL 的列序，测不出
+// 这类漂移。这个项目已经在列/扫描顺序上踩过坑（见 scanUserRow 的文档
+// 注释），quota_charged 值得单独锁一次。true 和 false 各测一次，防止
+// "布尔列永远读出零值"这种更隐蔽的失败被误判为通过。
+func TestTaskRepo_Create_QuotaChargedRoundTrips(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("task-owner-quota-charged", usermodel.RoleUser)
+		require.NoError(t, userRepo.Create(ctx, u))
+
+		repo := repository.NewTaskRepository(tx)
+
+		charged := &generationmodel.Task{
+			UserID:       u.ID,
+			Mode:         generationmodel.TaskModeImgGen,
+			Model:        "qwen-image",
+			Status:       generationmodel.StatusSucceeded,
+			Prompt:       "charged",
+			QuotaCharged: true,
+		}
+		require.NoError(t, repo.Create(ctx, charged))
+
+		got, err := repo.GetByIDForUser(ctx, charged.ID, u.ID)
+		require.NoError(t, err)
+		assert.True(t, got.QuotaCharged, "QuotaCharged=true 必须原样往返")
+
+		notCharged := &generationmodel.Task{
+			UserID:       u.ID,
+			Mode:         generationmodel.TaskModeImgGen,
+			Model:        "qwen-image",
+			Status:       generationmodel.StatusFailed,
+			Prompt:       "refunded",
+			QuotaCharged: false,
+		}
+		require.NoError(t, repo.Create(ctx, notCharged))
+
+		got2, err := repo.GetByIDForUser(ctx, notCharged.ID, u.ID)
+		require.NoError(t, err)
+		assert.False(t, got2.QuotaCharged, "QuotaCharged=false 也必须原样往返，不能读出上一行的值")
+	})
+}
+
 func TestTaskRepo_GetByIDForUser_OwnershipIsolation_ReturnsNotFound(t *testing.T) {
 	withTx(t, func(ctx context.Context, tx repository.DB) {
 		userRepo := repository.NewUserRepository(tx)

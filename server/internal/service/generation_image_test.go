@@ -40,23 +40,34 @@ func dashscopeSettings(overrides map[settingmodel.Key]string) *fakeOptimizeSetti
 	return newFakeOptimizeSettings(values)
 }
 
+// newImageService is for the ~25 pre-quota tests in this file that pass
+// arbitrary literal userIDs and have no opinion about quota. It goes through
+// legacyUnlimitedQuotaRepo (generation_image_mock_test.go), which invents an
+// unlimited-quota user for any id on first use — see that type's doc comment
+// for why quota-sensitive tests must NOT use this constructor.
 func newImageService(t *testing.T, settings *fakeOptimizeSettings, factory *recordingImageFactory) (*service.ImageGenerationService, *fakeTaskRepo) {
 	t.Helper()
-	svc, repo, _ := newImageServiceWithQuota(t, settings, factory)
-	return svc, repo
+	taskRepo := newFakeTaskRepo()
+	userRepo := newFakeRepo()
+	quota := service.NewQuotaService(&legacyUnlimitedQuotaRepo{userRepo})
+	svc := service.NewImageGenerationServiceWithFactory(settings, taskRepo, quota, factory.Factory())
+	return svc, taskRepo
 }
 
-// newImageServiceWithQuota is like newImageService but also returns the
-// underlying fakeUserRepo, for the quota-focused tests that need to seed a
-// specific QuotaTotal and/or assert on QuotaUsed afterwards. See
-// autoProvisioningUserRepo's doc comment (generation_image_mock_test.go) for
-// why every other test in this file can keep using arbitrary literal
-// userIDs without seeding anything here.
+// newImageServiceWithQuota is for tests that actually exercise quota
+// enforcement: it wires the plain *fakeUserRepo directly, with none of
+// legacyUnlimitedQuotaRepo's auto-provisioning. An unseeded userID here
+// fails loudly with QUOTA_EXCEEDED (fakeUserRepo's real-semantics-faithful
+// "unknown user" branch, see mock_test.go) instead of silently getting
+// unlimited credit — a quota test that reuses a bare literal userID by
+// accident will fail immediately rather than passing without ever
+// exercising a limit. Callers must seed a user (seedUser) and set its
+// QuotaTotal before calling GenerateImage.
 func newImageServiceWithQuota(t *testing.T, settings *fakeOptimizeSettings, factory *recordingImageFactory) (*service.ImageGenerationService, *fakeTaskRepo, *fakeUserRepo) {
 	t.Helper()
 	taskRepo := newFakeTaskRepo()
 	userRepo := newFakeRepo()
-	quota := service.NewQuotaService(&autoProvisioningUserRepo{userRepo})
+	quota := service.NewQuotaService(userRepo)
 	svc := service.NewImageGenerationServiceWithFactory(settings, taskRepo, quota, factory.Factory())
 	return svc, taskRepo, userRepo
 }
@@ -684,4 +695,38 @@ func TestGenerateImage_ValidationFailure_DoesNotTouchQuota(t *testing.T) {
 			assert.Empty(t, taskRepo.all(), "校验失败不落库")
 		})
 	}
+}
+
+// panic 展开时函数不会走到任何 return 语句，命名返回值 retErr 因此仍是
+// 零值 nil——只判断 retErr 会完全漏掉这条路径：用户被扣费，provider
+// panic，middleware.Recovery 在更外层拦住并吐出干净的 500，从外部看
+// 什么都没错，但额度已经凭空消失了。这个测试用一个会 panic 的假
+// provider 复现该场景：扣费之后、provider 调用本身 panic，defer 必须
+// 依然退款，并把 panic 原样重新抛出去交给 middleware.Recovery——不能
+// 在这里悄悄吞掉。
+func TestGenerateImage_ProviderPanics_StillRefundsQuota(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	panicFactory := func(catalog.Protocol, string, string, string, string) provider.ImageProvider {
+		return imageProviderFunc(func(context.Context, provider.ImageRequest) (*provider.ImageResult, error) {
+			panic("boom: provider 内部崩溃")
+		})
+	}
+	taskRepo := newFakeTaskRepo()
+	userRepo := newFakeRepo()
+	quota := service.NewQuotaService(userRepo)
+	svc := service.NewImageGenerationServiceWithFactory(settings, taskRepo, quota, panicFactory)
+
+	u := seedUser(t, userRepo, "quota-panic", "password123", usermodel.RoleUser, usermodel.StatusActive)
+	total := 3
+	u.QuotaTotal = &total
+
+	assert.PanicsWithValue(t, "boom: provider 内部崩溃", func() {
+		_, _ = svc.GenerateImage(context.Background(), u.ID, service.GenerateImageRequest{
+			Model:  "qwen-image-plus",
+			Prompt: "x",
+		})
+	}, "panic 必须原样重新抛出，交给 middleware.Recovery 处理，不能被这里悄悄吞掉")
+
+	assert.Equal(t, 0, userRepo.users[u.ID].QuotaUsed, "provider panic 也必须退回额度，否则用户被扣费却什么都拿不到")
+	assert.Empty(t, taskRepo.all(), "panic 展开时函数还没走到 Create，不应该落任何 task 行")
 }
