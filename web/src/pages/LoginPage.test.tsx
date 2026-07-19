@@ -92,3 +92,40 @@ describe('LoginPage', () => {
     expect(screen.getByTestId('locale-switch')).toBeInTheDocument()
   })
 })
+
+/**
+ * 回归测试覆盖的改动：左栏原先摆着六个纯 CSS 渐变方块（3×2 网格），
+ * 视觉上像是作品示例，实际上不是任何真实产出——是假内容。而真正有信息量
+ * 的三项能力被压在最底下当灰色小字。
+ *
+ * 现在能力提到主位（标题 + 一行说明 + 图标），装饰降级为背景环境光。
+ * 这条测试钉住两件事：能力说明确实渲染出来了，以及假方块没有回来。
+ */
+describe('登录页左栏展示真实能力，而不是假作品格', () => {
+  it('三项能力各有标题与说明', () => {
+    renderLogin()
+
+    for (const key of ['featureImage', 'featureVideo', 'featureHistory'] as const) {
+      expect(screen.getByText(i18n.t(`login.${key}`))).toBeInTheDocument()
+      expect(screen.getByText(i18n.t(`login.${key}Desc`))).toBeInTheDocument()
+    }
+  })
+
+  it('不再渲染任何装饰性作品占位方块', () => {
+    const { container } = renderLogin()
+
+    expect(container.querySelector('.login-brand__grid')).toBeNull()
+    expect(container.querySelectorAll('.login-brand__tile')).toHaveLength(0)
+  })
+
+  // 品牌标记从纯 CSS 渐变方块换成了内联 SVG（components/BrandMark.tsx）。
+  // 用户反馈时截图里还是旧方块，怀疑过是没渲染出来——这条测试用来排除
+  // 「组件根本没渲染」这种可能，把问题定位到浏览器缓存/热更新那一侧。
+  it('渲染的是 BrandMark 内联 SVG，不是 CSS 色块', () => {
+    const { container } = renderLogin()
+
+    const mark = container.querySelector('.login-brand__logo svg')
+    expect(mark).not.toBeNull()
+    expect(container.querySelector('.login-brand__mark')).toBeNull()
+  })
+})

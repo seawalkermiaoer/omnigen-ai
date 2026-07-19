@@ -1,6 +1,7 @@
 /*
  * 色值均通过 CSS 变量（由 LoginPage.tsx 注入，来源为 @/theme 的 colors）传入。
- * 唯一例外：渐变色块（.login-brand__tile）是装饰性作品占位，非 UI 主色，见组件内注释。
+ * 唯一例外：左栏的环境光（.login-brand::before）是装饰性光效，非 UI 主色。
+ * 品牌标记见 components/BrandMark.tsx。
  */
 
 .login-shell {
@@ -9,7 +10,13 @@
   background: var(--omnigen-bg-base);
 }
 
+/* 左栏的装饰改为一层环境光，替代原先六个假装是作品示例的渐变方块。
+   刻意做成明显抽象的光晕：它不冒充任何真实产出，只负责让大片深色不至于
+   空得发死。isolation + ::before 让光晕留在内容之下。 */
 .login-brand {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   flex: 1.15;
   display: flex;
   flex-direction: column;
@@ -17,6 +24,17 @@
   padding: 48px 40px;
   background: var(--omnigen-bg-base);
   border-right: 1px solid var(--omnigen-border);
+}
+
+.login-brand::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(680px 460px at 12% 26%, rgba(129, 140, 248, 0.16), transparent 68%),
+    radial-gradient(560px 420px at 78% 82%, rgba(192, 132, 252, 0.12), transparent 70%);
+  pointer-events: none;
 }
 
 .login-brand__logo {
@@ -28,16 +46,8 @@
   letter-spacing: -0.01em;
 }
 
-.login-brand__mark {
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-  /* 装饰性品牌色块，不受主题色约束（见组件内注释）。 */
-  background: linear-gradient(135deg, #6366f1, #a855f7);
-  flex-shrink: 0;
-}
-
 .login-brand__tagline {
+  margin: 0;
   font-size: 28px;
   line-height: 1.4;
   font-weight: 600;
@@ -47,25 +57,58 @@
   color: var(--omnigen-text-base);
 }
 
-.login-brand__grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  max-width: 420px;
-}
-
-.login-brand__tile {
-  aspect-ratio: 1;
-  border-radius: 12px;
-  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
 .login-brand__features {
+  list-style: none;
+  margin: 40px 0 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 32px;
+  gap: 22px;
+  max-width: 440px;
+}
+
+.login-brand__feature {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+/* 图标托在一个低对比度的圆角底上，而不是裸放——裸图标在大段留白里显得
+   像随手掉的字符，有个底才读得出是一组并列的条目。 */
+.login-brand__feature-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: var(--omnigen-bg-elevated);
+  border: 1px solid var(--omnigen-border);
+  color: var(--omnigen-primary);
+  font-size: 16px;
+}
+
+.login-brand__feature-title {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--omnigen-text-base);
+}
+
+.login-brand__feature-desc {
+  display: block;
+  margin-top: 2px;
   font-size: 13px;
+  line-height: 1.6;
+  color: var(--omnigen-text-muted);
+}
+
+.login-brand__footnote {
+  margin: 0;
+  max-width: 440px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--omnigen-text-muted);
 }

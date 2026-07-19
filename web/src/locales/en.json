@@ -27,6 +27,10 @@
     "brandTagline": "One console for image and video generation",
     "featureImage": "Image generation and editing",
     "featureVideo": "Text, image and reference to video",
+        "featureImageDesc": "Text-to-image, image-to-image, and reference-based editing",
+    "featureVideoDesc": "The server takes over polling — closing the tab won't lose the task",
+    "featureHistoryDesc": "Every run's parameters, results and usage stay traceable and reusable",
+    "brandFootnote": "Upstream credentials are configured by admins and encrypted server-side — never in the browser",
     "featureHistory": "Full history of every run"
   },
   "common": {

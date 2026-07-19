@@ -1,8 +1,16 @@
 import { useState, type CSSProperties } from 'react'
 import { Alert, Button, Form, Input, Segmented, Typography } from 'antd'
-import { LockOutlined, UserOutlined } from '@ant-design/icons'
+import {
+  HistoryOutlined,
+  LockOutlined,
+  PictureOutlined,
+  UserOutlined,
+  VideoCameraOutlined,
+} from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+
+import BrandMark from '@/components/BrandMark'
 
 import { useAuthStore } from '@/stores/auth'
 import { useApiError } from '@/hooks/useApiError'
@@ -15,14 +23,19 @@ const { Text } = Typography
 
 // 左半屏的能力展示：装饰性渐变色块，非 UI 色彩系统的一部分。
 // 子项目 3（图片生成）完成后可替换为系统真实生成的作品缩略图，届时本数组整体移除。
-const TILE_GRADIENTS = [
-  'linear-gradient(135deg, #7c3aed, #2563eb)',
-  'linear-gradient(135deg, #db2777, #f59e0b)',
-  'linear-gradient(135deg, #059669, #14b8a6)',
-  'linear-gradient(135deg, #f43f5e, #7c3aed)',
-  'linear-gradient(135deg, #0ea5e9, #6366f1)',
-  'linear-gradient(135deg, #f59e0b, #db2777)',
-]
+/**
+ * 左侧展示的三项能力。原先这里是六个纯 CSS 渐变方块，摆成 3×2 的网格假装
+ * 是作品示例——它们不是任何真实产出，只是装饰，而真正有信息量的三行能力
+ * 说明被压在最底下当灰色小字。现在把能力提到主位，装饰降级为背景光。
+ *
+ * 图标沿用 AppShell 侧栏导航同一套，让登录页承诺的能力与登录后看到的入口
+ * 在视觉上对得上。
+ */
+const BRAND_FEATURES = [
+  { key: 'featureImage', icon: <PictureOutlined /> },
+  { key: 'featureVideo', icon: <VideoCameraOutlined /> },
+  { key: 'featureHistory', icon: <HistoryOutlined /> },
+] as const
 
 // 注入给 LoginPage.css 使用的主题色变量，全部来自 @/theme 的 colors。
 const shellStyle: CSSProperties = {
@@ -66,24 +79,28 @@ export default function LoginPage() {
     <div className="login-shell" style={shellStyle}>
       <aside className="login-brand">
         <div className="login-brand__logo">
-          <span className="login-brand__mark" />
+          <BrandMark size={32} />
           <span>{t('app.title')}</span>
         </div>
 
         <div>
-          <div className="login-brand__tagline">{t('login.brandTagline')}</div>
-          <div className="login-brand__grid">
-            {TILE_GRADIENTS.map((bg) => (
-              <div key={bg} className="login-brand__tile" style={{ background: bg }} />
+          <h1 className="login-brand__tagline">{t('login.brandTagline')}</h1>
+          <ul className="login-brand__features">
+            {BRAND_FEATURES.map(({ key, icon }) => (
+              <li key={key} className="login-brand__feature">
+                <span className="login-brand__feature-icon" aria-hidden>
+                  {icon}
+                </span>
+                <span>
+                  <span className="login-brand__feature-title">{t(`login.${key}`)}</span>
+                  <span className="login-brand__feature-desc">{t(`login.${key}Desc`)}</span>
+                </span>
+              </li>
             ))}
-          </div>
+          </ul>
         </div>
 
-        <div className="login-brand__features">
-          <span>{t('login.featureImage')}</span>
-          <span>{t('login.featureVideo')}</span>
-          <span>{t('login.featureHistory')}</span>
-        </div>
+        <p className="login-brand__footnote">{t('login.brandFootnote')}</p>
       </aside>
 
       <main className="login-form-pane">

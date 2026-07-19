@@ -27,6 +27,10 @@
     "brandTagline": "一个控制台，接管图片与视频生成",
     "featureImage": "图片生成与编辑",
     "featureVideo": "文生 · 图生 · 参考生视频",
+        "featureImageDesc": "文生图、图生图，以及基于参考图的编辑",
+    "featureVideoDesc": "提交后由服务端接管轮询，关掉页面任务也不会丢",
+    "featureHistoryDesc": "每次生成的参数、结果与用量都可回溯、可复用",
+    "brandFootnote": "上游凭证由管理员统一配置、加密存储于服务端，不进浏览器",
     "featureHistory": "全流程历史留痕"
   },
   "common": {

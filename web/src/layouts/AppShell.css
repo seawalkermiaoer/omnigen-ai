@@ -1,7 +1,17 @@
 /*
  * 色值均通过 CSS 变量（由 AppShell.tsx 注入，来源为 @/theme 的 colors）传入。
- * 唯一例外：Logo 色块渐变（.shell-logo__mark）是装饰性品牌标记，非 UI 主色。
+ * 品牌标记已抽成 components/BrandMark.tsx（内联 SVG），它的渐变是装饰性品牌色，
+ * 同样不走主题 token——理由见该组件的注释。
  */
+
+/* 侧栏与顶栏不随内容滚动：外层 Layout 锁死 100vh 且 overflow:hidden，
+   滚动条只出现在 .shell-content 上。用 flex 高度约束而不是 position:fixed
+   ——fixed 要手工补 margin-left/padding-top 让内容避让，而侧栏宽度会随
+   折叠状态在 220/64 之间变，那个补偿值就得跟着同步，多一处必然漂移的耦合。 */
+.shell-main {
+  height: 100vh;
+  min-height: 0;
+}
 
 .shell-logo {
   height: 56px;
@@ -14,20 +24,19 @@
   white-space: nowrap;
 }
 
-.shell-logo__mark {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  /* 装饰性品牌色块，不受主题色约束（见文件头注释）。 */
-  background: linear-gradient(135deg, #6366f1, #a855f7);
-  flex-shrink: 0;
-}
-
 .shell-logo__text {
   font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--omnigen-text-base);
+}
+
+/* 「AI」压暗一档并留出字距，让「OmniGen」成为视觉重心——两个词同等权重时
+   整块字读起来是平的，抓不住名字本身。 */
+.shell-logo__text-dim {
+  margin-left: 5px;
+  font-weight: 500;
+  color: var(--omnigen-text-muted);
 }
 
 /* 侧栏导航项：内嵌圆角胶囊，而非贴边高亮——呼应 Linear/Vercel 式暗色控制台观感。 */
@@ -51,6 +60,7 @@
 
 .shell-header {
   height: 56px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -157,9 +167,20 @@
   white-space: nowrap;
 }
 
+/* min-height:0 是必需的，不是冗余：flex 子项的默认 min-height 是 auto，
+   会被内容撑开而拒绝收缩，overflow:auto 就永远不生效——滚动条会跑到整页
+   上去，侧栏和顶栏跟着一起滚，正是要修的毛病。 */
 .shell-content {
+  flex: 1;
+  min-height: 0;
   padding: 20px;
   overflow: auto;
+}
+
+/* 导航项多到超过一屏时，让侧栏自己滚，而不是把 logo 顶出可视区。 */
+.shell-nav {
+  overflow-y: auto;
+  max-height: calc(100vh - 56px);
 }
 
 @media (prefers-reduced-motion: reduce) {

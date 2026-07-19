@@ -12,6 +12,7 @@ import { useAuthStore } from '@/stores/auth'
 import { colors } from '@/theme'
 import { getStoredLocale, setLocale, type Locale } from '@/i18n'
 import ChangePasswordModal from '@/components/ChangePasswordModal'
+import BrandMark from '@/components/BrandMark'
 import './AppShell.css'
 
 const { Header, Sider, Content } = Layout
@@ -102,7 +103,7 @@ export default function AppShell() {
   }
 
   return (
-    <Layout style={{ minHeight: '100vh', ...shellVars }}>
+    <Layout style={{ height: '100vh', overflow: 'hidden', ...shellVars }}>
       <Sider
         collapsible
         collapsed={effectiveCollapsed}
@@ -114,8 +115,12 @@ export default function AppShell() {
         onBreakpoint={(broken) => setAutoCollapsed(broken)}
       >
         <div className="shell-logo">
-          <span className="shell-logo__mark" />
-          {!effectiveCollapsed && <span className="shell-logo__text">{t('app.title')}</span>}
+          <BrandMark size={26} />
+          {!effectiveCollapsed && (
+            <span className="shell-logo__text">
+              OmniGen<span className="shell-logo__text-dim">AI</span>
+            </span>
+          )}
         </div>
         <Menu
           className="shell-nav"
@@ -134,7 +139,7 @@ export default function AppShell() {
         />
       </Sider>
 
-      <Layout>
+      <Layout className="shell-main">
         <Header className="shell-header">
           <div className="shell-header__left">
             <Tooltip title={effectiveCollapsed ? t('common.expand') : t('common.collapse')}>
