@@ -72,6 +72,7 @@ func (f *fakeDownloadTaskRepo) DeleteForUser(context.Context, int64, int64) erro
 func (f *fakeDownloadTaskRepo) DeleteAllForUser(context.Context, int64) (int64, error) {
 	return 0, nil
 }
+func (f *fakeDownloadTaskRepo) RefundQuotaForTask(context.Context, int64) error { return nil }
 
 var _ repository.TaskRepository = (*fakeDownloadTaskRepo)(nil)
 

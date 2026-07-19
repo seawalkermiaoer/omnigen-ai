@@ -52,7 +52,7 @@ func InitApp(ctx context.Context, cfg *config.Config) (*App, error) {
 	quotaService := service.NewQuotaService(userRepository)
 	imageGenerationService := service.NewImageGenerationService(settingReader, taskRepository, quotaService)
 	imageGenerationHandler := handler.NewImageGenerationHandler(imageGenerationService)
-	videoGenerationService := service.NewVideoGenerationService(settingReader, taskRepository)
+	videoGenerationService := service.NewVideoGenerationService(settingReader, taskRepository, quotaService)
 	videoGenerationHandler := handler.NewVideoGenerationHandler(videoGenerationService)
 	downloadHandler := handler.NewDownloadHandler(taskRepository)
 	optimizeService := service.NewOptimizeService(settingReader)

@@ -27,6 +27,16 @@ type fakeTaskRepo struct {
 	// claimCalls records every ClaimPending invocation's returned task ids,
 	// letting shutdown tests assert exactly how many batches were claimed.
 	claimCalls [][]int64
+
+	// quotaUsed mirrors just enough of the real users.quota_used column to
+	// let the quota tests observe RefundQuotaForTask's effect: incremented
+	// by seed() whenever a seeded task has QuotaCharged=true, decremented by
+	// RefundQuotaForTask. This is deliberately a per-user counter, not a
+	// per-task flag, so TestPoller_AlreadyRefunded_DoesNotRefundTwice can
+	// assert "refunded once, not twice" as a number instead of only a
+	// before/after boolean — a double refund and a single refund both leave
+	// QuotaCharged at false, but only the count tells them apart.
+	quotaUsed map[int64]int
 }
 
 func newFakeTaskRepo() *fakeTaskRepo {
@@ -45,6 +55,12 @@ func (f *fakeTaskRepo) seed(t generationmodel.Task, createdAt time.Time) int64 {
 	t.CreatedAt = createdAt
 	t.UpdatedAt = createdAt
 	f.tasks[id] = &t
+	if t.QuotaCharged {
+		if f.quotaUsed == nil {
+			f.quotaUsed = map[int64]int{}
+		}
+		f.quotaUsed[t.UserID]++
+	}
 	return id
 }
 
@@ -192,6 +208,37 @@ func (f *fakeTaskRepo) claimCallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.claimCalls)
+}
+
+// RefundQuotaForTask mirrors the real CTE in repository/task.go: it only
+// takes effect when the task exists AND is still QuotaCharged — the second
+// call on the same task id is a no-op, both on the flag and on quotaUsed.
+// This is the fake's half of Task 3's core guarantee; the poller tests that
+// exercise it never see a real Postgres CTE, so this method's fidelity is
+// what actually stands between "the guard is tested" and "the guard looks
+// tested".
+func (f *fakeTaskRepo) RefundQuotaForTask(_ context.Context, taskID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[taskID]
+	if !ok || !t.QuotaCharged {
+		return nil
+	}
+	t.QuotaCharged = false
+	t.UpdatedAt = time.Now()
+	if f.quotaUsed[t.UserID] > 0 {
+		f.quotaUsed[t.UserID]--
+	}
+	return nil
+}
+
+// quotaUsedFor is a test-only accessor for the per-user counter RefundQuotaForTask
+// maintains — see the quotaUsed field doc for why tests assert on this
+// number rather than only on a task's QuotaCharged flag.
+func (f *fakeTaskRepo) quotaUsedFor(userID int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.quotaUsed[userID]
 }
 
 var _ repository.TaskRepository = (*fakeTaskRepo)(nil)

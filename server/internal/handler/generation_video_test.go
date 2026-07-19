@@ -130,6 +130,21 @@ func (f *fakeVideoTaskRepo) DeleteAllForUser(_ context.Context, userID int64) (i
 	return n, nil
 }
 
+// RefundQuotaForTask is unused by this file's tests — they exercise the
+// HTTP submission path, not worker-side async refund — but is implemented
+// with the same quota_charged-gated idempotency as the real CTE so this
+// fake keeps satisfying repository.TaskRepository faithfully.
+func (f *fakeVideoTaskRepo) RefundQuotaForTask(_ context.Context, taskID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[taskID]
+	if !ok || !t.QuotaCharged {
+		return nil
+	}
+	t.QuotaCharged = false
+	return nil
+}
+
 var _ repository.TaskRepository = (*fakeVideoTaskRepo)(nil)
 
 type fakeVideoSettings struct {
@@ -187,7 +202,8 @@ func newVideoGenTestEnv(t *testing.T, factory service.VideoProviderFactory) (*gi
 		settingmodel.KeyRegion:          "cn-beijing",
 	}}
 	tasksRepo := newFakeVideoTaskRepo()
-	videoSvc := service.NewVideoGenerationServiceWithFactory(settings, tasksRepo, factory)
+	quota := service.NewQuotaService(repo)
+	videoSvc := service.NewVideoGenerationServiceWithFactory(settings, tasksRepo, quota, factory)
 	videoH := handler.NewVideoGenerationHandler(videoSvc)
 
 	r := gin.New()

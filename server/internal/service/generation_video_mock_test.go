@@ -75,3 +75,19 @@ func (p recordingVideoProvider) PollTask(_ context.Context, _ string) (*provider
 }
 
 var _ provider.VideoProvider = recordingVideoProvider{}
+
+// panicVideoProvider always panics from CreateVideoTask — used by
+// TestCreateVideoTask_ProviderPanics_StillRefundsQuota to prove the quota
+// defer's recover()-then-repanic path, mirroring imageProviderFunc's panic
+// case in generation_image_mock_test.go.
+type panicVideoProvider struct{}
+
+func (panicVideoProvider) CreateVideoTask(context.Context, provider.VideoRequest) (string, error) {
+	panic("boom: provider 内部崩溃")
+}
+
+func (panicVideoProvider) PollTask(context.Context, string) (*provider.TaskResult, error) {
+	return nil, nil
+}
+
+var _ provider.VideoProvider = panicVideoProvider{}

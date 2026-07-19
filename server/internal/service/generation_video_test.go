@@ -11,16 +11,39 @@ import (
 
 	generationmodel "github.com/chenhao/omnigen-ai/server/internal/model/generation"
 	settingmodel "github.com/chenhao/omnigen-ai/server/internal/model/setting"
+	usermodel "github.com/chenhao/omnigen-ai/server/internal/model/user"
 	"github.com/chenhao/omnigen-ai/server/internal/pkg/apperr"
+	"github.com/chenhao/omnigen-ai/server/internal/provider"
 	"github.com/chenhao/omnigen-ai/server/internal/provider/dashscope"
 	"github.com/chenhao/omnigen-ai/server/internal/service"
 )
 
+// newVideoService is for the pre-quota tests in this file that pass
+// arbitrary literal userIDs and have no opinion about quota — mirrors
+// newImageService in generation_image_test.go, including the same
+// legacyUnlimitedQuotaRepo escape hatch and the same "do not use this for a
+// quota-sensitive test" rule (see that type's doc comment).
 func newVideoService(t *testing.T, settings *fakeOptimizeSettings, factory *recordingVideoFactory) (*service.VideoGenerationService, *fakeTaskRepo) {
 	t.Helper()
 	repo := newFakeTaskRepo()
-	svc := service.NewVideoGenerationServiceWithFactory(settings, repo, factory.Factory())
+	userRepo := newFakeRepo()
+	quota := service.NewQuotaService(&legacyUnlimitedQuotaRepo{userRepo})
+	svc := service.NewVideoGenerationServiceWithFactory(settings, repo, quota, factory.Factory())
 	return svc, repo
+}
+
+// newVideoServiceWithQuota is for tests that actually exercise quota
+// enforcement — mirrors newImageServiceWithQuota exactly: a plain
+// *fakeUserRepo with none of legacyUnlimitedQuotaRepo's auto-provisioning,
+// so an unseeded userID fails loudly with QUOTA_EXCEEDED instead of quietly
+// getting unlimited credit.
+func newVideoServiceWithQuota(t *testing.T, settings *fakeOptimizeSettings, factory *recordingVideoFactory) (*service.VideoGenerationService, *fakeTaskRepo, *fakeUserRepo) {
+	t.Helper()
+	repo := newFakeTaskRepo()
+	userRepo := newFakeRepo()
+	quota := service.NewQuotaService(userRepo)
+	svc := service.NewVideoGenerationServiceWithFactory(settings, repo, quota, factory.Factory())
+	return svc, repo, userRepo
 }
 
 func mediaOf(t *testing.T, factory *recordingVideoFactory) []map[string]any {
@@ -693,4 +716,163 @@ func TestCreateVideoTask_R2V_InvalidRatio_Rejected(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, apperr.ErrValidation))
 	assert.Equal(t, 0, factory.calls)
+}
+
+// ── 配额接入 ──────────────────────────────────────────────────────────
+//
+// 四个用例与 generation_image_test.go 的配额用例同构：视频是异步的，但
+// CreateVideoTask 提交给上游那一次调用仍然是同步的（拿到的是任务 id，
+// 不是最终结果），所以扣费/失败退款的规则与图片完全一样——只是"成功"在
+// 这里意味着落一行 PENDING，不是 SUCCEEDED。真正的异步失败退款（worker
+// 判定 FAILED/超时）由 internal/worker 的测试覆盖，不在这里。
+
+// 额度耗尽时必须在调用上游之前就拦住——不能先花钱再报错。
+func TestCreateVideoTask_QuotaExhausted_NeverCallsUpstream(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingVideoFactory{taskID: "t-1"}
+	svc, taskRepo, userRepo := newVideoServiceWithQuota(t, settings, factory)
+
+	u := seedUser(t, userRepo, "video-quota-exhausted", "password123", usermodel.RoleUser, usermodel.StatusActive)
+	zero := 0
+	u.QuotaTotal = &zero
+
+	_, err := svc.CreateVideoTask(context.Background(), u.ID, service.CreateVideoTaskRequest{
+		Model:  "happyhorse-1.1-t2v",
+		Prompt: "x",
+	})
+
+	assertCode(t, err, "QUOTA_EXCEEDED")
+	assert.Equal(t, 0, factory.calls, "额度耗尽不应该打任何上游请求")
+	assert.Empty(t, taskRepo.all(), "额度耗尽不应该落任何 task 行")
+}
+
+func TestCreateVideoTask_Success_ConsumesOneAndMarksCharged(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	factory := &recordingVideoFactory{taskID: "t-1"}
+	svc, taskRepo, userRepo := newVideoServiceWithQuota(t, settings, factory)
+
+	u := seedUser(t, userRepo, "video-quota-success", "password123", usermodel.RoleUser, usermodel.StatusActive)
+	total := 2
+	u.QuotaTotal = &total
+
+	task, err := svc.CreateVideoTask(context.Background(), u.ID, service.CreateVideoTaskRequest{
+		Model:  "happyhorse-1.1-t2v",
+		Prompt: "x",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, userRepo.users[u.ID].QuotaUsed, "成功一次应该扣 1")
+	assert.True(t, task.QuotaCharged, "成功提交的任务应该标记为已计费")
+
+	rows := taskRepo.all()
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].QuotaCharged, "落库的行也应该标记为已计费")
+	assert.Equal(t, generationmodel.StatusPending, rows[0].Status)
+}
+
+func TestCreateVideoTask_UpstreamFailure_RefundsAndMarksNotCharged(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	upstreamErr := apperr.ErrValidation.Wrap(errors.New("boom"))
+	factory := &recordingVideoFactory{err: upstreamErr}
+	svc, taskRepo, userRepo := newVideoServiceWithQuota(t, settings, factory)
+
+	u := seedUser(t, userRepo, "video-quota-refund", "password123", usermodel.RoleUser, usermodel.StatusActive)
+	total := 3
+	u.QuotaTotal = &total
+
+	_, err := svc.CreateVideoTask(context.Background(), u.ID, service.CreateVideoTaskRequest{
+		Model:  "happyhorse-1.1-t2v",
+		Prompt: "x",
+	})
+	require.Error(t, err)
+
+	assert.Equal(t, 0, userRepo.users[u.ID].QuotaUsed, "上游失败应该退回额度")
+
+	rows := taskRepo.all()
+	require.Len(t, rows, 1, "上游失败也必须落一行 FAILED")
+	assert.Equal(t, generationmodel.StatusFailed, rows[0].Status)
+	assert.False(t, rows[0].QuotaCharged, "退款后的 FAILED 行不应该标记为已计费")
+}
+
+// 校验阶段失败（模型不存在 / 地域不允许 / 凭证未配置）不该动额度。
+func TestCreateVideoTask_ValidationFailure_DoesNotTouchQuota(t *testing.T) {
+	tests := []struct {
+		name     string
+		settings map[settingmodel.Key]string
+		req      service.CreateVideoTaskRequest
+	}{
+		{
+			name: "未知模型",
+			req: service.CreateVideoTaskRequest{
+				Model:  "does-not-exist",
+				Prompt: "x",
+			},
+		},
+		{
+			name:     "地域不允许",
+			settings: map[settingmodel.Key]string{settingmodel.KeyRegion: "us-east-1"},
+			req: service.CreateVideoTaskRequest{
+				Model:  "wan2.7-r2v",
+				Prompt: "x",
+				Images: []service.R2VMediaImage{{URL: "https://example.com/1.png"}},
+			},
+		},
+		{
+			name:     "凭证未配置",
+			settings: map[settingmodel.Key]string{settingmodel.KeyDashscopeAPIKey: ""},
+			req: service.CreateVideoTaskRequest{
+				Model:  "happyhorse-1.1-t2v",
+				Prompt: "x",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := dashscopeSettings(tc.settings)
+			factory := &recordingVideoFactory{taskID: "t-1"}
+			svc, taskRepo, userRepo := newVideoServiceWithQuota(t, settings, factory)
+
+			u := seedUser(t, userRepo, "video-quota-validation-"+tc.name, "password123", usermodel.RoleUser, usermodel.StatusActive)
+			total := 5
+			u.QuotaTotal = &total
+
+			_, err := svc.CreateVideoTask(context.Background(), u.ID, tc.req)
+
+			require.Error(t, err)
+			assert.Equal(t, 0, userRepo.users[u.ID].QuotaUsed, "校验失败不该动额度")
+			assert.Equal(t, 0, factory.calls, "校验失败不应该打任何上游请求")
+			assert.Empty(t, taskRepo.all(), "校验失败不落库")
+		})
+	}
+}
+
+// panic 展开时函数不会走到任何 return 语句，命名返回值 retErr 因此仍是
+// 零值 nil——同 generation_image.go 的 TestGenerateImage_ProviderPanics_
+// StillRefundsQuota，这里复现同一场景在视频路径上：扣费之后、provider
+// 调用本身 panic，defer 必须依然退款，并把 panic 原样重新抛出去交给
+// middleware.Recovery——不能在这里悄悄吞掉。
+func TestCreateVideoTask_ProviderPanics_StillRefundsQuota(t *testing.T) {
+	settings := dashscopeSettings(nil)
+	panicFactory := func(string, string, string, string) provider.VideoProvider {
+		return panicVideoProvider{}
+	}
+	taskRepo := newFakeTaskRepo()
+	userRepo := newFakeRepo()
+	quota := service.NewQuotaService(userRepo)
+	svc := service.NewVideoGenerationServiceWithFactory(settings, taskRepo, quota, panicFactory)
+
+	u := seedUser(t, userRepo, "video-quota-panic", "password123", usermodel.RoleUser, usermodel.StatusActive)
+	total := 3
+	u.QuotaTotal = &total
+
+	assert.PanicsWithValue(t, "boom: provider 内部崩溃", func() {
+		_, _ = svc.CreateVideoTask(context.Background(), u.ID, service.CreateVideoTaskRequest{
+			Model:  "happyhorse-1.1-t2v",
+			Prompt: "x",
+		})
+	}, "panic 必须原样重新抛出，交给 middleware.Recovery 处理，不能被这里悄悄吞掉")
+
+	assert.Equal(t, 0, userRepo.users[u.ID].QuotaUsed, "provider panic 也必须退回额度，否则用户被扣费却什么都拿不到")
+	assert.Empty(t, taskRepo.all(), "panic 展开时函数还没走到 Create，不应该落任何 task 行")
 }

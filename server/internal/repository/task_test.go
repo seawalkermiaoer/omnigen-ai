@@ -555,3 +555,112 @@ func TestTaskRepo_DeleteAllForUser_NoTasks_ReturnsZeroNoError(t *testing.T) {
 		assert.Equal(t, int64(0), deleted)
 	})
 }
+
+// ── RefundQuotaForTask ──────────────────────────────────────────────
+//
+// Idempotency here is a SQL property (the CTE's WHERE quota_charged = true
+// gate), not something a Go-level in-memory double can prove — these run
+// against real Postgres, unlike the worker package's fake-repo-backed poller
+// tests that exercise the same contract at the Go level.
+
+func TestTaskRepo_RefundQuotaForTask_RefundsAndFlipsCharged(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("refund-task-owner", usermodel.RoleUser)
+		total := 5
+		u.QuotaTotal = &total
+		require.NoError(t, userRepo.Create(ctx, u))
+		require.NoError(t, userRepo.ConsumeQuota(ctx, u.ID))
+
+		repo := repository.NewTaskRepository(tx)
+		task := sampleTask(u.ID)
+		task.Status = generationmodel.StatusPending
+		task.QuotaCharged = true
+		require.NoError(t, repo.Create(ctx, task))
+
+		require.NoError(t, repo.RefundQuotaForTask(ctx, task.ID))
+
+		gotUser, err := userRepo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 0, gotUser.QuotaUsed, "退款应该让 quota_used 回到 0")
+
+		gotTask, err := repo.GetByIDForUser(ctx, task.ID, u.ID)
+		require.NoError(t, err)
+		assert.False(t, gotTask.QuotaCharged, "退款应该把 quota_charged 翻转成 false")
+	})
+}
+
+// 重复调用（worker 因重试/重启重复处理同一个任务）必须只生效一次——这是
+// quota_charged 存在的唯一理由，且这条不变量由 CTE 的
+// WHERE quota_charged = true 保证，只能在真实 Postgres 上证明。
+func TestTaskRepo_RefundQuotaForTask_AlreadyRefunded_DoesNotRefundTwice(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("refund-task-twice", usermodel.RoleUser)
+		total := 5
+		u.QuotaTotal = &total
+		require.NoError(t, userRepo.Create(ctx, u))
+		// 两份独立的计费——不是一份：如果这个用户全程只欠 1 份额度，
+		// "退两次"和"退一次"在 quota_used 上都会落在 0（第二次会被
+		// users.quota_used > 0 那道独立守卫挡住），quota_charged 那道
+		// 守卫是否真的生效就无法单从 quota_used 的数值上分辨出来。见
+		// worker 包 TestPoller_AlreadyRefunded_DoesNotRefundTwice 的
+		// 同一处注释——这个坑在验证 Step 5 时被踩到过一次。
+		require.NoError(t, userRepo.ConsumeQuota(ctx, u.ID))
+		require.NoError(t, userRepo.ConsumeQuota(ctx, u.ID))
+
+		repo := repository.NewTaskRepository(tx)
+		taskA := sampleTask(u.ID)
+		taskA.Status = generationmodel.StatusPending
+		taskA.QuotaCharged = true
+		require.NoError(t, repo.Create(ctx, taskA))
+
+		taskB := sampleTask(u.ID)
+		taskB.Status = generationmodel.StatusPending
+		taskB.QuotaCharged = true
+		require.NoError(t, repo.Create(ctx, taskB))
+
+		require.NoError(t, repo.RefundQuotaForTask(ctx, taskA.ID))
+		gotUser, err := userRepo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 1, gotUser.QuotaUsed, "第一次退款只应该退掉任务 A 自己的那一份，任务 B 仍然欠着")
+
+		require.NoError(t, repo.RefundQuotaForTask(ctx, taskA.ID))
+		gotUser, err = userRepo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 1, gotUser.QuotaUsed, "第二次对同一个任务的退款必须是无操作——不能连带把任务 B 尚未退的额度也退掉")
+	})
+}
+
+// 从未计费的任务（quota_charged 从建库起就是 false，比如同步成功的图片
+// 任务）不应该被退款影响到——WHERE quota_charged = true 从一开始就不匹配。
+func TestTaskRepo_RefundQuotaForTask_NeverCharged_NoOp(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		userRepo := repository.NewUserRepository(tx)
+		u := sampleUser("refund-task-nevercharged", usermodel.RoleUser)
+		total := 5
+		u.QuotaTotal = &total
+		require.NoError(t, userRepo.Create(ctx, u))
+		require.NoError(t, userRepo.ConsumeQuota(ctx, u.ID)) // 由某个别的任务扣的，与本任务无关
+
+		repo := repository.NewTaskRepository(tx)
+		task := sampleTask(u.ID)
+		task.QuotaCharged = false
+		require.NoError(t, repo.Create(ctx, task))
+
+		require.NoError(t, repo.RefundQuotaForTask(ctx, task.ID))
+
+		gotUser, err := userRepo.GetByID(ctx, u.ID)
+		require.NoError(t, err)
+		assert.Equal(t, 1, gotUser.QuotaUsed, "任务从未计费，不应该退掉别的额度")
+	})
+}
+
+// 不存在的任务 id 是无操作，不是错误——同 RefundQuota 对不存在用户 id 的
+// 处理方式，worker 侧调用可能因竞态看到一个已经被删除的任务行。
+func TestTaskRepo_RefundQuotaForTask_UnknownTaskID_NoOpNoError(t *testing.T) {
+	withTx(t, func(ctx context.Context, tx repository.DB) {
+		repo := repository.NewTaskRepository(tx)
+		assert.NoError(t, repo.RefundQuotaForTask(ctx, 9_999_999))
+	})
+}

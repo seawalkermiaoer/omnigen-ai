@@ -191,6 +191,25 @@ func (f *fakeTaskRepo) DeleteAllForUser(_ context.Context, userID int64) (int64,
 	return n, nil
 }
 
+// RefundQuotaForTask is unused by the generation_image/generation_video
+// service tests in this file — those exercise QuotaService.Refund directly
+// against *fakeUserRepo, not the task-scoped worker-side refund path (see
+// internal/worker's own fakeTaskRepo for that, which the poller tests
+// actually exercise). It's still implemented, with the same
+// quota_charged-gated idempotency the real CTE has, purely so *fakeTaskRepo
+// keeps satisfying repository.TaskRepository.
+func (f *fakeTaskRepo) RefundQuotaForTask(_ context.Context, taskID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tasks[taskID]
+	if !ok || !t.QuotaCharged {
+		return nil
+	}
+	t.QuotaCharged = false
+	t.UpdatedAt = time.Now()
+	return nil
+}
+
 // get is a test-only accessor for a single task's current in-memory state
 // (worker tests poll this after each cycle instead of round-tripping
 // through GetByIDForUser, which requires knowing the owning userID).

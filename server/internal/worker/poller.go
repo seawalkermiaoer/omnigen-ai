@@ -202,6 +202,7 @@ func (p *Poller) pollTask(ctx context.Context, pv provider.VideoProvider, t gene
 		if err := p.tasks.UpdateStatus(ctx, t.ID, generationmodel.StatusFailed, apperr.ErrTaskTimeout.Code(), "任务超过 30 分钟未完成"); err != nil {
 			slog.Error("worker: 标记任务超时失败失败", "taskID", t.ID, "err", err)
 		}
+		p.refundQuota(ctx, t.ID)
 		delete(p.failureCounts, t.ID)
 		return
 	}
@@ -248,6 +249,10 @@ func (p *Poller) pollTask(ctx context.Context, pv provider.VideoProvider, t gene
 		if err := p.tasks.UpdateStatus(ctx, t.ID, generationmodel.Status(status), "", errMsg); err != nil {
 			slog.Error("worker: 更新任务终态失败", "taskID", t.ID, "err", err)
 		}
+		// FAILED 与 CANCELED 都意味着这次生成没有交付结果，退回额度——
+		// CANCELED 虽然设计文档只点名了"FAILED 或超时"，但用户没拿到任何
+		// 东西这一点和 FAILED 完全一样，没有理由区别对待。
+		p.refundQuota(ctx, t.ID)
 
 	default:
 		// PENDING / RUNNING（或上游未来新增的其它在飞状态字面量）：这是一次
@@ -275,7 +280,21 @@ func (p *Poller) recordFailure(ctx context.Context, t generationmodel.Task) {
 	if err := p.tasks.UpdateStatus(ctx, t.ID, generationmodel.StatusFailed, apperr.ErrTaskPollFailed.Code(), "连续多次轮询未获得有效的上游响应"); err != nil {
 		slog.Error("worker: 标记任务轮询失败失败", "taskID", t.ID, "err", err)
 	}
+	p.refundQuota(ctx, t.ID)
 	delete(p.failureCounts, t.ID)
+}
+
+// refundQuota calls TaskRepository.RefundQuotaForTask and only logs on
+// error — same "best-effort compensation, never mask the original failure"
+// rule as QuotaService.Refund in the request path (see quota.go's doc). The
+// idempotency guard (quota_charged=true) lives entirely in
+// RefundQuotaForTask itself; pollTask calls this unconditionally on every
+// terminal-failure/timeout path without first checking t.QuotaCharged —
+// that's the point of the guard living in the repository, not here.
+func (p *Poller) refundQuota(ctx context.Context, taskID int64) {
+	if err := p.tasks.RefundQuotaForTask(ctx, taskID); err != nil {
+		slog.Error("worker: 退回任务额度失败", "taskID", taskID, "err", err)
+	}
 }
 
 // extractSuccess pulls the result URL(s), usage, and note out of a

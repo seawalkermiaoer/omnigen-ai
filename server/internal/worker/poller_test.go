@@ -24,6 +24,10 @@ func seedPendingTask(repo *fakeTaskRepo, upstreamID string, createdAt time.Time)
 		Status:         generationmodel.StatusPending,
 		UpstreamTaskID: &uid,
 		Prompt:         "x",
+		// 真实的 CreateVideoTask 提交时总是先扣费再落 PENDING 行（见
+		// generation_video.go），所以任何测试都不应该假装一个"从未被计费"
+		// 的在飞任务——这里默认 true，与生产行为的不变量保持一致。
+		QuotaCharged: true,
 	}, createdAt)
 }
 
@@ -339,6 +343,95 @@ func TestPoller_TaskDeletedMidPoll_SucceededResponse_DoesNotCrash_DoesNotResurre
 
 // 同一场景在"仍是 RUNNING"（非终态）响应下必须一样安全——default 分支里
 // 那次可能触发的 UpdateStatus 同样要能吞下 ErrTaskNotFound。
+// ── 配额退回 ────────────────────────────────────────────────────────
+
+// 任务判定失败时退回额度，并把 quota_charged 置 false。
+func TestPoller_TaskFailed_RefundsQuota(t *testing.T) {
+	repo := newFakeTaskRepo()
+	id := seedPendingTask(repo, "up-1", time.Now())
+	require.Equal(t, 1, repo.quotaUsedFor(1), "种子任务应该已经计费")
+
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{
+		"up-1": {{result: &provider.TaskResult{
+			Status: string(generationmodel.StatusFailed),
+			Raw:    map[string]any{"output": map[string]any{"task_status": "FAILED", "message": "upstream rejected"}},
+		}}},
+	})
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	p.PollOnce(context.Background())
+
+	got := repo.get(id)
+	assert.Equal(t, generationmodel.StatusFailed, got.Status)
+	assert.False(t, got.QuotaCharged, "判定失败必须把 quota_charged 置 false")
+	assert.Equal(t, 0, repo.quotaUsedFor(1), "判定失败必须退回额度")
+}
+
+// 已退过的任务（quota_charged=false）再次被处理不会重复退款。这是
+// quota_charged 存在的唯一理由，必须直接测——不经过 pollTask 的状态机，
+// 直接调用两次 RefundQuotaForTask 本身，模拟 worker 因重试/重启对同一个
+// 任务重复处理。
+func TestPoller_AlreadyRefunded_DoesNotRefundTwice(t *testing.T) {
+	repo := newFakeTaskRepo()
+	// 同一个用户有两个已计费的在飞任务（quotaUsed 从 2 起步）——这一点
+	// 是必须的：如果这个用户全程只欠了 1 份额度，"退两次"和"退一次"在
+	// quota_used 上都会落在 0（第二次会被 users.quota_used > 0 那道独立
+	// 守卫挡住），guard 是否生效就无法从 quotaUsed 的数值上分辨出来。
+	// 两份在飞任务时，只退第一个任务两次，必须只影响它自己那一份，
+	// 第二个任务的额度必须原封不动地还欠着——这才是 quota_charged 守卫
+	// 真正在防的事情：不能因为重复处理任务 A，就把任务 B 尚未退的额度
+	// 也搭进去退掉。
+	idA := seedPendingTask(repo, "up-A", time.Now())
+	seedPendingTask(repo, "up-B", time.Now())
+	require.Equal(t, 2, repo.quotaUsedFor(1), "两个已计费任务，quotaUsed 应该是 2")
+
+	require.NoError(t, repo.RefundQuotaForTask(context.Background(), idA))
+	assert.Equal(t, 1, repo.quotaUsedFor(1), "第一次退款只应该退掉任务 A 自己的那一份")
+	assert.False(t, repo.get(idA).QuotaCharged)
+
+	require.NoError(t, repo.RefundQuotaForTask(context.Background(), idA))
+	assert.Equal(t, 1, repo.quotaUsedFor(1), "第二次对同一个任务的退款必须是无操作——不能连带把任务 B 尚未退的额度也退掉")
+}
+
+// 超时终止也要退款。
+func TestPoller_Timeout_RefundsQuota(t *testing.T) {
+	repo := newFakeTaskRepo()
+	old := time.Now().Add(-31 * time.Minute)
+	id := seedPendingTask(repo, "up-1", old)
+	require.Equal(t, 1, repo.quotaUsedFor(1))
+
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{})
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	p.PollOnce(context.Background())
+
+	got := repo.get(id)
+	assert.Equal(t, generationmodel.StatusFailed, got.Status)
+	require.NotNil(t, got.ErrorCode)
+	assert.Equal(t, apperr.ErrTaskTimeout.Code(), *got.ErrorCode)
+	assert.False(t, got.QuotaCharged, "超时判定也必须把 quota_charged 置 false")
+	assert.Equal(t, 0, repo.quotaUsedFor(1), "超时判定必须退回额度")
+}
+
+// 成功的任务不退款。
+func TestPoller_Succeeded_DoesNotRefund(t *testing.T) {
+	repo := newFakeTaskRepo()
+	id := seedPendingTask(repo, "up-1", time.Now())
+	require.Equal(t, 1, repo.quotaUsedFor(1))
+
+	pv := newScriptedVideoProvider(map[string][]scriptedPoll{
+		"up-1": {succeeded("https://cdn.example.com/v.mp4")},
+	})
+	p := worker.New(repo, defaultFakeSettings(), fixedVideoFactory(pv))
+
+	p.PollOnce(context.Background())
+
+	got := repo.get(id)
+	assert.Equal(t, generationmodel.StatusSucceeded, got.Status)
+	assert.True(t, got.QuotaCharged, "成功的任务不应该被退款，quota_charged 应保持 true")
+	assert.Equal(t, 1, repo.quotaUsedFor(1), "成功的任务不应该退回额度")
+}
+
 func TestPoller_TaskDeletedMidPoll_RunningResponse_DoesNotCrash(t *testing.T) {
 	repo := newFakeTaskRepo()
 	id := seedPendingTask(repo, "up-1", time.Now())

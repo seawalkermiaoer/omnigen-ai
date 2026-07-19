@@ -147,23 +147,30 @@ func NewDashScopeVideoProviderFactory() VideoProviderFactory {
 // /api/tasks/:id). Creating a task is asynchronous — the upstream call only
 // hands back a task id to poll; the row lands as PENDING and is advanced by
 // internal/worker.Poller, not by this service.
+//
+// 配额在提交时扣、失败时当场退——同步的一半（upstream 调用本身失败）与
+// generation_image.go 完全对称。异步的一半（PENDING 任务后续被判定
+// FAILED/超时）不归这里管：那是 internal/worker.Poller 通过
+// repository.TaskRepository.RefundQuotaForTask 完成的，因为只有 worker
+// 才知道一个 PENDING 任务最终有没有成功。
 type VideoGenerationService struct {
 	settings SettingReader
 	tasks    repository.TaskRepository
 	factory  VideoProviderFactory
+	quota    *QuotaService
 }
 
 // NewVideoGenerationService constructs the production service, wired to the
 // real DashScope client.
-func NewVideoGenerationService(settings SettingReader, tasks repository.TaskRepository) *VideoGenerationService {
-	return NewVideoGenerationServiceWithFactory(settings, tasks, NewDashScopeVideoProviderFactory())
+func NewVideoGenerationService(settings SettingReader, tasks repository.TaskRepository, quota *QuotaService) *VideoGenerationService {
+	return NewVideoGenerationServiceWithFactory(settings, tasks, quota, NewDashScopeVideoProviderFactory())
 }
 
 // NewVideoGenerationServiceWithFactory allows tests to inject a fake
 // VideoProviderFactory — no real network, no real database (tasks is an
 // interface too).
-func NewVideoGenerationServiceWithFactory(settings SettingReader, tasks repository.TaskRepository, factory VideoProviderFactory) *VideoGenerationService {
-	return &VideoGenerationService{settings: settings, tasks: tasks, factory: factory}
+func NewVideoGenerationServiceWithFactory(settings SettingReader, tasks repository.TaskRepository, quota *QuotaService, factory VideoProviderFactory) *VideoGenerationService {
+	return &VideoGenerationService{settings: settings, tasks: tasks, factory: factory, quota: quota}
 }
 
 // CreateVideoTask validates against the catalog, fetches credentials, calls
@@ -171,7 +178,9 @@ func NewVideoGenerationServiceWithFactory(settings SettingReader, tasks reposito
 // the persisted *generationmodel.Task — callers must use task.ID (the local
 // row id), never task.UpstreamTaskID, to address this task in any later
 // GetTask/ListTasks call.
-func (s *VideoGenerationService) CreateVideoTask(ctx context.Context, userID int64, req CreateVideoTaskRequest) (*generationmodel.Task, error) {
+func (s *VideoGenerationService) CreateVideoTask(
+	ctx context.Context, userID int64, req CreateVideoTaskRequest,
+) (task *generationmodel.Task, retErr error) {
 	model, ok := catalog.ByID(req.Model)
 	if !ok {
 		return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 未知的模型 %q", req.Model))
@@ -216,6 +225,32 @@ func (s *VideoGenerationService) CreateVideoTask(ctx context.Context, userID int
 		return nil, err
 	}
 
+	// 扣费点：所有校验之后、真正调上游之前——同 generation_image.go。校验
+	// 失败不该动额度；而一旦要发请求就必须先扣，否则并发下会超发。见
+	// docs/superpowers/specs/2026-07-19-quota-and-stats-design.md「扣减点与退回点」。
+	if err := s.quota.Consume(ctx, userID); err != nil {
+		return nil, err
+	}
+	charged := true
+	// defer 是兜底，不是主路径：失败分支会显式退款并把 charged 置 false，
+	// 因为 defer 在 return 之后才运行，来不及影响即将创建的 task 行的
+	// QuotaCharged 字段。panic 单独判断：panic 展开时函数根本不会执行到
+	// 任何 return 语句，命名返回值 retErr 保持零值 nil，只判断
+	// retErr != nil 会完全漏掉这条路径——见 generation_image.go 同一处的
+	// 详细注释，这里的道理完全一样。
+	defer func() {
+		r := recover()
+		if charged && (retErr != nil || r != nil) {
+			if refundErr := s.quota.Refund(ctx, userID); refundErr != nil {
+				slog.Error("退回额度失败", "userID", userID, "error", refundErr)
+			}
+			charged = false
+		}
+		if r != nil {
+			panic(r)
+		}
+	}()
+
 	payload := buildVideoPayload(model, mode, req, media, params)
 
 	p := s.factory(apiKey, region, workspaceID, endpoint)
@@ -223,7 +258,7 @@ func (s *VideoGenerationService) CreateVideoTask(ctx context.Context, userID int
 	// 上游状态归一化：同 generation_image.go，见 upstream_error.go 顶部注释。
 	callErr = normalizeUpstreamError(callErr)
 
-	task := &generationmodel.Task{
+	task = &generationmodel.Task{
 		UserID:    userID,
 		Mode:      mode,
 		Model:     req.Model,
@@ -233,10 +268,19 @@ func (s *VideoGenerationService) CreateVideoTask(ctx context.Context, userID int
 	}
 
 	if callErr != nil {
+		// 显式退款并翻转 charged：这条 FAILED 行必须以 QuotaCharged=false
+		// 落库，而 defer 运行得太晚，赶不上这次 Create。task.QuotaCharged
+		// 是从 charged 派生的（不是硬编码 false），同 generation_image.go。
+		if refundErr := s.quota.Refund(ctx, userID); refundErr != nil {
+			slog.Error("退回额度失败", "userID", userID, "error", refundErr)
+		}
+		charged = false
+
 		code, msg := errorCodeAndMessage(callErr)
 		task.Status = generationmodel.StatusFailed
 		task.ErrorCode = &code
 		task.ErrorMessage = &msg
+		task.QuotaCharged = charged
 		if createErr := s.tasks.Create(ctx, task); createErr != nil {
 			// 落库失败不能掩盖真正的上游失败原因——调用方需要看到的是
 			// callErr（比如"上游拒绝"），不是这个次生的数据库错误。
@@ -247,6 +291,7 @@ func (s *VideoGenerationService) CreateVideoTask(ctx context.Context, userID int
 
 	task.Status = generationmodel.StatusPending
 	task.UpstreamTaskID = &upstreamID
+	task.QuotaCharged = charged
 	if err := s.tasks.Create(ctx, task); err != nil {
 		return nil, err
 	}

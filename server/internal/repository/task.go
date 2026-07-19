@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 
@@ -47,6 +48,14 @@ type TaskRepository interface {
 	// DeleteAllForUser 清空某用户名下的全部任务，返回实际删除的行数。
 	// 该用户没有任何任务时返回 (0, nil)，不是错误。
 	DeleteAllForUser(ctx context.Context, userID int64) (int64, error)
+	// RefundQuotaForTask 在同一条语句里退回用户额度并把任务标记为未计费。
+	// 以 quota_charged = true 为条件，保证重复调用只生效一次——轮询 worker
+	// 可能因重试或重启重复处理同一个任务，没有这个守卫就会退第二次，凭空
+	// 送额度。
+	//
+	// 签名只接受 taskID，不接受 userID：谁的额度要退完全由这一行自己的
+	// user_id 决定，调用方不可能传一对不匹配的 (taskID, userID) 退错人。
+	RefundQuotaForTask(ctx context.Context, taskID int64) error
 }
 
 type taskRepository struct{ db DB }
@@ -322,6 +331,36 @@ func (r *taskRepository) DeleteAllForUser(ctx context.Context, userID int64) (in
 		return 0, apperr.ErrInternal.Wrap(fmt.Errorf("清空生成任务失败: %w", err))
 	}
 	return tag.RowsAffected(), nil
+}
+
+// RefundQuotaForTask 用一条 CTE 把「翻转 quota_charged」与「退回用户额度」
+// 绑在同一条语句里：第一步的 UPDATE 只在 quota_charged 仍是 true 时才会
+// 匹配到行并 RETURNING user_id；第二步的 UPDATE 以那个（可能为空的）
+// user_id 集合为条件。若任务已经被退过款（quota_charged 已是 false），
+// 第一步匹配不到行，flipped 为空，第二步的 WHERE id = (SELECT ...) 天然
+// 匹配不到任何用户行——天然幂等，不需要额外加锁或先查后写。
+func (r *taskRepository) RefundQuotaForTask(ctx context.Context, taskID int64) error {
+	const q = `
+		WITH flipped AS (
+			UPDATE generation_tasks SET quota_charged = false, updated_at = now()
+			WHERE id = $1 AND quota_charged = true
+			RETURNING user_id
+		)
+		UPDATE users SET quota_used = quota_used - 1, updated_at = now()
+		WHERE id = (SELECT user_id FROM flipped) AND quota_used > 0`
+	tag, err := r.db.Exec(ctx, q, taskID)
+	if err != nil {
+		return apperr.ErrInternal.Wrap(fmt.Errorf("退回任务额度失败: %w", err))
+	}
+	if tag.RowsAffected() == 0 {
+		// 0 行有几种预期内的可能，且无法在这里区分：任务已经被退过款、
+		// 任务本来就不存在、或该用户的 quota_used 已经是 0。同
+		// repository/user.go RefundQuota 的 0 行分支——不能报错（那会打断
+		// 一次正在补偿的重试路径），但也不能完全沉默，记一条 debug 日志，
+		// 让"预期内的重复退款"与"退款静默丢失"至少能在日志里区分开。
+		slog.Debug("任务额度退回未影响任何行", "taskID", taskID)
+	}
+	return nil
 }
 
 func (r *taskRepository) ClaimPending(ctx context.Context, limit int) ([]generationmodel.Task, error) {
