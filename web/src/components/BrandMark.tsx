@@ -40,7 +40,18 @@ const GAP = VISUAL_GAP + STROKE
 // 三段等长圆弧 + 三道等宽缺口。周长 2πr ≈ 39.27，一个「弧+缺口」的周期是
 // 它的三分之一。写成算式而不是硬编码 magic number，改半径/线宽时会自己对上。
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS
-const DASH = CIRCUMFERENCE / 3 - GAP
+
+/**
+ * 保留两位小数。
+ *
+ * 直接把算式结果塞进 SVG 属性会渲染成 `6.8399693899574725` 这样的 16 位浮点：
+ * 属性值是噪音，而且和 public/favicon.svg 里写死的字面量对不上——两者本该
+ * 是同一个造型，却因为精度差异无法逐字段比对（BrandMark.test.tsx 正是靠
+ * 逐字段比对来防止两处漂移的）。两位小数在 28 单位的坐标系里远超所需精度。
+ */
+const round2 = (n: number) => Number(n.toFixed(2))
+
+const DASH = round2(CIRCUMFERENCE / 3 - GAP)
 
 /**
  * 让**一段弧的中心**落在 12 点方向。
@@ -49,7 +60,7 @@ const DASH = CIRCUMFERENCE / 3 - GAP
  * 于是 12 点正好卡在一段弧的**开头**而不是中间——三个缺口落在不对称的位置，
  * 静态看上去像是画歪了。再回转半段弧，图形就对竖直轴左右镜像对称。
  */
-const ROTATION = -90 - (DASH / CIRCUMFERENCE) * 360 / 2
+const ROTATION = round2(-90 - ((DASH / CIRCUMFERENCE) * 360) / 2)
 
 interface BrandMarkProps {
   /** 边长（px）。默认 28，侧栏收起时用 26，登录页用 32。 */
