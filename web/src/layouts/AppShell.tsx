@@ -1,7 +1,7 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import { Avatar, Dropdown, Layout, Menu, Segmented, Tooltip, Typography } from 'antd'
 import {
-  EditOutlined, HistoryOutlined, LogoutOutlined, MenuFoldOutlined,
+  EditOutlined, FileTextOutlined, HistoryOutlined, LinkOutlined, LogoutOutlined, MenuFoldOutlined,
   MenuUnfoldOutlined, PictureOutlined, PlayCircleOutlined, SettingOutlined, TeamOutlined,
   UserOutlined, VideoCameraOutlined,
 } from '@ant-design/icons'
@@ -39,6 +39,8 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'r2v', path: '/r2v', icon: <VideoCameraOutlined />, labelKey: 'nav.r2v' },
   { key: 'i2v', path: '/i2v', icon: <VideoCameraOutlined />, labelKey: 'nav.i2v' },
   { key: 't2v', path: '/t2v', icon: <PlayCircleOutlined />, labelKey: 'nav.t2v' },
+  { key: 'f2v', path: '/f2v', icon: <FileTextOutlined />, labelKey: 'nav.f2v' },
+  { key: 'l2v', path: '/l2v', icon: <LinkOutlined />, labelKey: 'nav.l2v' },
   { key: 'imggen', path: '/imggen', icon: <PictureOutlined />, labelKey: 'nav.imggen' },
   { key: 'imgedit', path: '/imgedit', icon: <EditOutlined />, labelKey: 'nav.imgedit' },
   { key: 'history', path: '/history', icon: <HistoryOutlined />, labelKey: 'nav.history' },

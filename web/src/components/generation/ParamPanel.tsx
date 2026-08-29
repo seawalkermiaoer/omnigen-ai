@@ -38,7 +38,10 @@ function formatSizeLabel(size: string): string {
  *   - 数量上限：开启 enable_sequential 时用 SequentialMaxN，否则用 MaxN；
  *     当前值超出新上限时自动回落，不依赖调用方自己钳制。
  *   - thinking_mode / enable_sequential / negative_prompt / seed / watermark /
- *     prompt_extend：分别只在 model.Supports 里出现同名参数时渲染。
+ *     prompt_extend / audio：分别只在 model.Supports 里出现同名参数时渲染。
+ *     audio（生成的视频带不带声音）只有 wan3.0 有；同理 wan3.0 的
+ *     Supports 里没有 negative_prompt，所以在它上面这个输入框不会出现——
+ *     Supports 第一次真正用来"减"控件而不只是"加"。
  *
  * 新增一个 Sizes/MaxN/Supports 组合不同的模型，本组件不需要任何改动。
  */
@@ -54,6 +57,7 @@ export default function ParamPanel({ model, value, onChange, disabled }: ParamPa
   const supportsSeed = !!model && modelSupportsParam(model, ParamName.Seed)
   const supportsWatermark = !!model && modelSupportsParam(model, ParamName.Watermark)
   const supportsPromptExtend = !!model && modelSupportsParam(model, ParamName.PromptExtend)
+  const supportsAudio = !!model && modelSupportsParam(model, ParamName.Audio)
 
   const effectiveMaxN = useMemo(() => {
     if (!model) return 1
@@ -140,6 +144,17 @@ export default function ParamPanel({ model, value, onChange, disabled }: ParamPa
             disabled={disabled}
             checked={!!value.watermark}
             onChange={(watermark) => onChange({ ...value, watermark })}
+          />
+        </Flex>
+      )}
+
+      {supportsAudio && (
+        <Flex vertical gap={4} data-testid="param-audio">
+          <Text type="secondary">{t('generation.paramAudio')}</Text>
+          <Switch
+            disabled={disabled}
+            checked={value.audio ?? true}
+            onChange={(audio) => onChange({ ...value, audio })}
           />
         </Flex>
       )}

@@ -11,6 +11,7 @@ import I2VPage from './I2VPage'
 import { catalogApi, generationApi, uploadApi } from '@/api/generation'
 import { useAuthStore } from '@/stores/auth'
 import type { CatalogModel, GenerationTask, ReuseGenerationState } from '@/types/generation'
+import { legacyI2VFields } from '@/components/generation/__fixtures__/catalog'
 
 vi.mock('@/api/generation', () => ({
   catalogApi: { list: vi.fn() },
@@ -67,6 +68,7 @@ const happyhorseI2V: CatalogModel = {
   MinImageEdge: 300,
   RatioMin: 0.4,
   RatioMax: 2.5,
+  ...legacyI2VFields,
 }
 
 const wanI2V: CatalogModel = {
@@ -82,6 +84,8 @@ const wanI2V: CatalogModel = {
   MinImageEdge: 240,
   RatioMin: 0.125,
   RatioMax: 8,
+  ...legacyI2VFields,
+  VideoProfile: 'wan2.7',
 }
 
 const pendingTask: GenerationTask = {

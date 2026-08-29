@@ -19,8 +19,23 @@ export type Capability =
   | 't2v'
   | 'i2v'
   | 'r2v'
+  | 'f2v'
+  | 'l2v'
   | 'optimize_text'
   | 'optimize_vision'
+
+/**
+ * 视频类能力，顺序与 catalog.go 的 videoCapabilities 一致（也是左侧导航
+ * 里五个视频页面的顺序）。用它判断一个模型的模式是否唯一：wan3.0 之前
+ * 每个视频模型恰好只有一种，wan3.0 有五种，提交时必须带 mode。
+ */
+export const VIDEO_CAPABILITIES: Capability[] = ['t2v', 'i2v', 'r2v', 'f2v', 'l2v']
+
+/**
+ * catalog.go 的 VideoProfile：视频模型的"代际"，决定素材面板长什么样。
+ * 空串是 happyhorse 系列——这是后端零值，不是"未知"。
+ */
+export type VideoProfile = '' | 'wan2.7' | 'wan3.0'
 
 export type Protocol = 'dashscope' | 'openai'
 
@@ -32,9 +47,17 @@ export const ParamName = {
   PromptExtend: 'prompt_extend',
   Seed: 'seed',
   Watermark: 'watermark',
+  Audio: 'audio',
 } as const
 
 export type ParamName = (typeof ParamName)[keyof typeof ParamName]
+
+/** catalog.go 的 MediaLimits：按 media type 分别计数的上限（wan3.0）。 */
+export interface MediaLimits {
+  ReferenceImages: number
+  ReferenceVideos: number
+  ReferenceAudios: number
+}
 
 export interface CatalogModel {
   ID: string
@@ -49,6 +72,23 @@ export interface CatalogModel {
   MinImageEdge: number
   RatioMin: number
   RatioMax: number
+
+  // ── 视频模型专属 ────────────────────────────────────────────────
+  // resolution/duration/ratio 的取值范围过去是本仓库里写死两遍的常量
+  // （service 的 videoResolutions 等 + web 的 videoParams.ts），前提是
+  // "所有视频模型取值都一样"。wan3.0 打破了这个前提，于是它们跟
+  // Sizes/MaxN 一样成了目录字段，由后端单向驱动这里的控件。
+  VideoProfile: VideoProfile
+  Resolutions: string[] | null
+  DefaultResolution: string
+  DurationMin: number
+  DurationMax: number
+  DefaultDuration: number
+  SmartDuration: boolean
+  Ratios: string[] | null
+  DefaultRatio: string
+  I2VAutoRatio: boolean
+  MediaLimits: MediaLimits
 }
 
 export interface CatalogResponse {
@@ -65,9 +105,23 @@ export function modelSupportsParam(model: CatalogModel, param: ParamName): boole
   return (model.Supports ?? []).includes(param)
 }
 
+/** model.VideoCapabilities 的前端等价物（顺序稳定，见 VIDEO_CAPABILITIES）。 */
+export function modelVideoCapabilities(model: CatalogModel): Capability[] {
+  return VIDEO_CAPABILITIES.filter((c) => modelHasCapability(model, c))
+}
+
+/**
+ * 提交时是否必须显式带 mode。后端对单能力模型会自行推断，所以只有
+ * 多能力模型（wan3.0）才需要——但页面一律带上更简单也更明确，这个函数
+ * 主要用于"这个模型在本页面之外还能做别的"这类提示。
+ */
+export function modelIsMultiModeVideo(model: CatalogModel): boolean {
+  return modelVideoCapabilities(model).length > 1
+}
+
 // ── 生成任务（generation_tasks，即历史记录） ─────────────────────────────
 
-export type TaskMode = 'imggen' | 'imgedit' | 't2v' | 'i2v' | 'r2v'
+export type TaskMode = 'imggen' | 'imgedit' | 't2v' | 'i2v' | 'r2v' | 'f2v' | 'l2v'
 
 export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELED'
 
@@ -153,6 +207,7 @@ export interface ParamPanelValues {
   seed?: number
   watermark?: boolean
   promptExtend?: boolean
+  audio?: boolean
 }
 
 // ── 图片生成/编辑（POST /api/generate/image） ────────────────────────────
@@ -188,20 +243,35 @@ export interface VideoMediaVideo {
   referenceVoice?: string
 }
 
+/** 参考音频（wan3.0 独有），没有 referenceVoice 兄弟字段。 */
+export interface VideoMediaAudio {
+  url: string
+}
+
 /** 与 handler.createVideoTaskRequestBody 的 JSON 字段一一对应。 */
 export interface GenerateVideoRequest {
   model: string
   prompt?: string
+  /**
+   * 后端对单能力模型可以自行推断模式，但五个视频页面一律显式带上：
+   * wan3.0 一个 model id 同时具备 t2v/i2v/r2v/f2v/l2v，不带就会被拒。
+   */
+  mode?: TaskMode
   images?: VideoMediaImage[]
   videos?: VideoMediaVideo[]
+  audios?: VideoMediaAudio[]
   taskType?: string
   firstFrame?: string
   lastFrame?: string
   firstClip?: string
   drivingAudio?: string
+  /** 文件生视频（f2v）/ 网页生视频（l2v）各自唯一的那条素材。 */
+  fileUrl?: string
+  linkUrl?: string
   negativePrompt?: string
   promptExtend?: boolean
   seed?: number
+  audio?: boolean
   resolution?: string
   duration?: number
   ratio?: string

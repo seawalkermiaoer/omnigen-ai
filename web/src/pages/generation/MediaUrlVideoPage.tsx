@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, App, Button, Card, Col, Flex, Row, Typography } from 'antd'
-import { PlayCircleOutlined } from '@ant-design/icons'
+import { useEffect, useMemo, useState } from 'react'
+import { Alert, App, Button, Card, Col, Flex, Input, Row, Typography } from 'antd'
+import { VideoCameraOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { useLocation } from 'react-router-dom'
 
@@ -14,56 +14,92 @@ import {
   modelHasCapability,
   modelSupportsParam,
   type CatalogModel,
+  type Capability,
   type GenerateVideoRequest,
   type ParamPanelValues,
   type ReuseLocationState,
+  type TaskMode,
 } from '@/types/generation'
 import ConfigIncompleteAlert from './ConfigIncompleteAlert'
 import VideoParamsFields from './VideoParamsFields'
 import { useVideoParamsState } from './useVideoParamsState'
 import { useVideoTaskPolling } from './useVideoTaskPolling'
 
-const { Title, Paragraph } = Typography
-const CAPABILITY = 't2v'
+const { Title, Paragraph, Text } = Typography
+
+export interface MediaUrlVideoPageProps {
+  /** 'f2v' | 'l2v'——同时用作目录筛选的 capability 与请求体里的 mode。 */
+  mode: Extract<Capability & TaskMode, 'f2v' | 'l2v'>
+  /** 请求体里承载这条素材 URL 的字段名。 */
+  urlField: 'fileUrl' | 'linkUrl'
+  titleKey: string
+  subtitleKey: string
+  urlLabelKey: string
+  urlPlaceholderKey: string
+  urlRequiredKey: string
+  /** data-testid 前缀，取值为 'f2v' / 'l2v'。 */
+  testId: string
+}
+
+function defaultParamValues(model: CatalogModel | undefined): ParamPanelValues {
+  if (model && modelSupportsParam(model, ParamName.PromptExtend)) {
+    return { promptExtend: true }
+  }
+  return {}
+}
 
 /**
- * 文生视频：五个视频页面里最简单的一个——只有 prompt，没有任何素材上传。
- * 模型下拉框完全按 capability 从目录派生，不写死任何 id——wan3.0 的两个
- * 型号加进来时这个文件唯一需要的改动就是提交时带上 mode（因为它们同时
- * 具备五种视频能力，后端推断不出来）。
+ * 文件生视频（f2v）与网页生视频（l2v）共用的页面实现。
+ *
+ * 这两个页面写成一个参数化组件而不是两份几乎相同的文件，是因为它们的
+ * 差别只有三处纯数据：目录筛选用的 capability、请求体里承载 URL 的字段名
+ * （fileUrl / linkUrl）、以及几条文案。表单结构、素材数量（恰好一条）、
+ * 校验规则、参数面板、提交与轮询流程完全一致——上游对它们的处理也是
+ * 一样的，都是 input.media 里的单条记录，只是 type 不同。
+ *
+ * 与其它视频页面不同的是这里没有上传控件：素材是一份文档（docx/pdf/pptx…，
+ * 上限 100MB / 50 页）或一个网页地址，而本系统的 POST /api/upload 只接受
+ * 图片（见 service/upload.go 的 uploadMimeExt 白名单）。所以和参考视频、
+ * 续接片段一样走"贴 URL"，而不是先扩上传链路再说——上游只要一个可访问的
+ * 地址，这条路是完整可用的。
+ *
+ * prompt 是可选的：上游要求 prompt 与 media 至少有一个，这里 media 必填，
+ * 所以 prompt 可以为空（此时由模型自己决定怎么把文档/网页讲成视频）。
  */
-export default function T2VPage() {
+export default function MediaUrlVideoPage({
+  mode,
+  urlField,
+  titleKey,
+  subtitleKey,
+  urlLabelKey,
+  urlPlaceholderKey,
+  urlRequiredKey,
+  testId,
+}: MediaUrlVideoPageProps) {
   const { t } = useTranslation()
   const { message } = App.useApp()
   const { notify } = useApiError()
   const isAdmin = useAuthStore((s) => s.isAdmin)
   const location = useLocation()
   const reuse = (location.state as ReuseLocationState | null)?.reuse
-  // 同 I2V/R2V：标记"这次 modelId 变化是复用引起的"，让下面按模型重置
-  // 参数默认值的 effect 跳过一次，别把刚填好的 paramValues 冲掉。
-  const reuseAppliedModelRef = useRef<string | null>(null)
 
   const [models, setModels] = useState<CatalogModel[]>([])
   const [loadingCatalog, setLoadingCatalog] = useState(true)
   const [modelId, setModelId] = useState<string>()
+  const [mediaUrl, setMediaUrl] = useState('')
   const [prompt, setPrompt] = useState('')
   const [paramValues, setParamValues] = useState<ParamPanelValues>({})
   const [submitting, setSubmitting] = useState(false)
   const [notConfigured, setNotConfigured] = useState(false)
 
   const model = useMemo(() => models.find((m) => m.ID === modelId), [models, modelId])
-  const { resolution, duration, ratio, setResolution, setDuration, setRatio } = useVideoParamsState(
-    model,
-    CAPABILITY,
-  )
+  const { resolution, duration, ratio, setResolution, setDuration, setRatio } = useVideoParamsState(model, mode)
 
   const { task, polling, start } = useVideoTaskPolling()
 
-  // 目录加载完成后要么应用"复用"数据（历史记录页跳转过来时），要么按旧行为
-  // 默认选中第一个可用模型——这个 effect 只在挂载时跑一次（deps 只有
-  // notify），此刻读到的 reuse 就是这次挂载唯一会用到的那份，不需要额外
-  // 用 ref 防重放；本页面没有像 I2V/R2V 那样"modelId 变化时清空表单"的
-  // 第二个 effect，所以这里直接设 modelId 不会被谁再覆盖掉。
+  // 与 T2VPage 同构：挂载时拉目录，要么应用复用数据，要么默认选中第一个
+  // 可用模型。本页面没有"切模型清空表单"的第二个 effect（素材只有一条
+  // URL，换模型不会让它变得不合法），所以不需要 reuseAppliedModelRef。
   useEffect(() => {
     let cancelled = false
     setLoadingCatalog(true)
@@ -72,8 +108,7 @@ export default function T2VPage() {
       .then((res) => {
         if (cancelled) return
         setModels(res.models)
-        if (reuse && reuse.mode === CAPABILITY && res.models.some((m) => m.ID === reuse.model)) {
-          reuseAppliedModelRef.current = reuse.model
+        if (reuse && reuse.mode === mode && res.models.some((m) => m.ID === reuse.model)) {
           setModelId(reuse.model)
           setPrompt(reuse.prompt)
           if (typeof reuse.params.resolution === 'string') setResolution(reuse.params.resolution)
@@ -85,10 +120,13 @@ export default function T2VPage() {
             promptExtend: typeof reuse.params.promptExtend === 'boolean' ? reuse.params.promptExtend : undefined,
             audio: typeof reuse.params.audio === 'boolean' ? reuse.params.audio : undefined,
           })
-          void message.info(reuse.hadInput ? t('generation.reuseImageNote') : t('generation.reuseApplied'))
+          void message.info(t('generation.reuseImageNote'))
         } else {
-          const first = res.models.find((m) => modelHasCapability(m, CAPABILITY))
-          if (first) setModelId(first.ID)
+          const first = res.models.find((m) => modelHasCapability(m, mode))
+          if (first) {
+            setModelId(first.ID)
+            setParamValues(defaultParamValues(first))
+          }
         }
       })
       .catch((err) => {
@@ -103,35 +141,19 @@ export default function T2VPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notify])
 
-  // 切模型时把可选参数重置成新模型的默认值。这个 effect 原先不存在——
-  // 那时 t2v 只有 happyhorse-1.1-t2v 一个模型，且它不支持 prompt_extend，
-  // 没有任何"默认值"可言。wan3.0 支持 prompt_extend（旧 UI 里这个复选框
-  // 默认就是勾上的），若不重置，开关显示为关、实际却因为不发这个字段而
-  // 走上游的默认值 true——界面和行为对不上。
-  useEffect(() => {
-    if (reuseAppliedModelRef.current !== null && reuseAppliedModelRef.current === modelId) {
-      reuseAppliedModelRef.current = null
-      return
-    }
-    setParamValues(model && modelSupportsParam(model, ParamName.PromptExtend) ? { promptExtend: true } : {})
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modelId])
-
   const isRestrictedRegion = (model?.Regions?.length ?? 0) > 0
 
   const handleSubmit = async () => {
     if (!model) return
-    if (!prompt.trim()) {
-      void message.error(t('generation.promptRequiredHint'))
+    if (!mediaUrl.trim()) {
+      void message.error(t(urlRequiredKey))
       return
     }
 
     const req: GenerateVideoRequest = {
       model: model.ID,
-      // mode 显式带上：wan3.0 一个 model id 同时具备五种视频能力，
-      // 后端无法从 model 推断，不带会被拒。
-      mode: CAPABILITY,
-      prompt: prompt.trim(),
+      mode,
+      [urlField]: mediaUrl.trim(),
       resolution,
       duration,
       ratio,
@@ -140,6 +162,7 @@ export default function T2VPage() {
       promptExtend: paramValues.promptExtend,
       audio: paramValues.audio,
     }
+    if (prompt.trim()) req.prompt = prompt.trim()
 
     setSubmitting(true)
     setNotConfigured(false)
@@ -161,10 +184,10 @@ export default function T2VPage() {
     <Flex vertical gap={24}>
       <div>
         <Title level={3} style={{ marginBottom: 4 }}>
-          {t('nav.t2v')}
+          {t(titleKey)}
         </Title>
         <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          {t('generation.t2vSubtitle')}
+          {t(subtitleKey)}
         </Paragraph>
       </div>
 
@@ -174,7 +197,7 @@ export default function T2VPage() {
             <Flex vertical gap={20}>
               <ModelSelect
                 models={models}
-                capability={CAPABILITY}
+                capability={mode}
                 value={modelId}
                 onChange={setModelId}
                 loading={loadingCatalog}
@@ -189,17 +212,27 @@ export default function T2VPage() {
                 />
               )}
 
+              <Flex vertical gap={4} data-testid={`${testId}-url`}>
+                <Text type="secondary">{t(urlLabelKey)}</Text>
+                <Input
+                  value={mediaUrl}
+                  onChange={(e) => setMediaUrl(e.target.value)}
+                  placeholder={t(urlPlaceholderKey)}
+                  disabled={submitting}
+                />
+              </Flex>
+
               <PromptInput
                 value={prompt}
                 onChange={setPrompt}
                 mode="t2v"
-                placeholder={t('generation.promptPlaceholder')}
+                placeholder={t('generation.mediaUrlPromptPlaceholder')}
                 disabled={submitting}
               />
 
               <VideoParamsFields
                 model={model}
-                mode={CAPABILITY}
+                mode={mode}
                 resolution={resolution}
                 duration={duration}
                 ratio={ratio}
@@ -214,11 +247,11 @@ export default function T2VPage() {
               <Button
                 type="primary"
                 size="large"
-                icon={<PlayCircleOutlined aria-hidden />}
+                icon={<VideoCameraOutlined aria-hidden />}
                 loading={submitting}
                 disabled={!model}
                 autoInsertSpace={false}
-                data-testid="submit-t2v"
+                data-testid={`submit-${testId}`}
                 onClick={() => void handleSubmit()}
               >
                 {submitting ? t('generation.submitting') : t('generation.submit')}
@@ -228,7 +261,7 @@ export default function T2VPage() {
         </Col>
 
         <Col xs={24} xl={10}>
-          <Card title={t('generation.resultTitle')} data-testid="t2v-result-card">
+          <Card title={t('generation.resultTitle')} data-testid={`${testId}-result-card`}>
             {notConfigured ? <ConfigIncompleteAlert admin={isAdmin()} /> : <ResultPanel task={task} polling={polling} />}
           </Card>
         </Col>

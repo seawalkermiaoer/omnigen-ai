@@ -56,6 +56,10 @@ describe('AppShell 导航', () => {
   // 回归测试：导航顺序必须与旧系统 public/index.html + zh-CN.json 的侧栏
   // 顺序完全一致（r2v → i2v → t2v → imggen → imgedit → history → users →
   // settings），这是用户的肌肉记忆——断言的是顺序本身，不是"这些项都在"。
+  //
+  // wan3.0 带来的 f2v/l2v 插在 t2v 之后、imggen 之前：旧系统里没有这两项，
+  // 谈不上肌肉记忆，而放在这里能让"视频五项"连续、不打断后面图片两项与
+  // 历史记录的相对顺序。
   it('导航顺序与旧系统完全一致', () => {
     useAuthStore.setState({ token: 'tok', user: admin, initializing: false })
     renderShell()
@@ -64,6 +68,8 @@ describe('AppShell 导航', () => {
       i18n.t('nav.r2v'),
       i18n.t('nav.i2v'),
       i18n.t('nav.t2v'),
+      i18n.t('nav.f2v'),
+      i18n.t('nav.l2v'),
       i18n.t('nav.imggen'),
       i18n.t('nav.imgedit'),
       i18n.t('nav.history'),

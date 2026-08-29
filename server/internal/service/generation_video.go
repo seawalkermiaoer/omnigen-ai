@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/chenhao/omnigen-ai/server/internal/model/catalog"
 	generationmodel "github.com/chenhao/omnigen-ai/server/internal/model/generation"
@@ -61,6 +62,10 @@ const (
 // combination instead of silently dropping it) and behind a plain
 // `v.voiceUrl` truthiness check for videos (r2v.js:168; videos only exist at
 // all on the wan branch to begin with, r2v.js:165).
+//
+// wan3.0 dropped reference_voice entirely (its media entries carry only
+// type and url) — a wan3.0 request that sets ReferenceVoice is rejected,
+// same rule and same reasoning as the happyhorse case.
 type R2VMediaImage struct {
 	URL            string
 	ReferenceVoice string
@@ -69,6 +74,14 @@ type R2VMediaImage struct {
 type R2VMediaVideo struct {
 	URL            string
 	ReferenceVoice string
+}
+
+// R2VMediaAudio is one reference audio entry (type=reference_audio) — a
+// wan3.0-only media kind with no wan2.7/happyhorse equivalent, which is why
+// it has no ReferenceVoice field: the concept it would duplicate (a voice
+// track attached to a reference) *is* what this media type already is.
+type R2VMediaAudio struct {
+	URL string
 }
 
 // VideoParams is the full set of parameters task.js's collectParams(kind)
@@ -96,6 +109,14 @@ type VideoParams struct {
 	NegativePrompt string
 	PromptExtend   *bool
 	Seed           *int64
+	// Audio is wan3.0's "does the generated video have sound" switch. It
+	// follows the genuinely-optional convention (nil = caller didn't
+	// provide it, so the field is omitted and upstream's own default of
+	// true applies) rather than Watermark's mandatory-with-a-default one,
+	// because unlike watermark there is no old UI checkbox whose value is
+	// always present — see validateOptionalVideoParams, which rejects it
+	// outright on models whose catalog entry doesn't list ParamAudio.
+	Audio *bool
 
 	Resolution string
 	Duration   int
@@ -105,23 +126,43 @@ type VideoParams struct {
 
 // CreateVideoTaskRequest is the service-level input for
 // VideoGenerationService.CreateVideoTask. Only the fields relevant to the
-// resolved mode (r2v: Images/Videos; i2v: TaskType/FirstFrame/LastFrame/
-// FirstClip/DrivingAudio; t2v: none of the above) are consulted — which
-// fields matter is decided by the model's catalog capability, not by a
-// caller-supplied mode flag, so there is no separate "mode" field here to
-// drift out of sync with the model id.
+// resolved mode (r2v: Images/Videos/Audios; i2v: TaskType/FirstFrame/
+// LastFrame/FirstClip/DrivingAudio; f2v: FileURL; l2v: LinkURL; t2v: none
+// of the above) are consulted, and any field belonging to a *different*
+// mode is rejected rather than ignored — see buildVideoMedia.
+//
+// Mode used not to exist: before wan3.0 every video model in the catalog
+// had exactly one video capability, so the mode could be derived from the
+// model id and a separate field would only have been something to drift out
+// of sync. wan3.0-video has five (t2v/i2v/r2v/f2v/l2v) behind a single id,
+// so the mode has to come from the caller. It stays optional for
+// single-capability models — resolveVideoMode infers it there, keeping
+// every existing caller working unchanged — and is required as soon as the
+// chosen model is ambiguous.
 type CreateVideoTaskRequest struct {
 	Model  string
 	Prompt string
 
+	// Mode is optional for models with exactly one video capability and
+	// required for multi-capability ones (wan3.0). When set it must be one
+	// of the model's own capabilities.
+	Mode generationmodel.TaskMode
+
 	Images []R2VMediaImage
 	Videos []R2VMediaVideo
+	Audios []R2VMediaAudio
 
 	TaskType     I2VTaskType
 	FirstFrame   string
 	LastFrame    string
 	FirstClip    string
 	DrivingAudio string
+
+	// FileURL / LinkURL are the single media entry for f2v (a document to
+	// turn into a video) and l2v (a web page to turn into a video). Both
+	// are wan3.0-only.
+	FileURL string
+	LinkURL string
 
 	Params VideoParams
 }
@@ -186,12 +227,17 @@ func (s *VideoGenerationService) CreateVideoTask(
 		return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 未知的模型 %q", req.Model))
 	}
 
-	mode, media, err := buildVideoMedia(model, req)
+	mode, err := resolveVideoMode(model, req.Mode)
 	if err != nil {
 		return nil, err
 	}
 
-	params, err := normalizeVideoParams(mode, req.Params)
+	media, err := buildVideoMedia(model, mode, req)
+	if err != nil {
+		return nil, err
+	}
+
+	params, err := normalizeVideoParams(model, mode, req.Params)
 	if err != nil {
 		return nil, err
 	}
@@ -342,60 +388,244 @@ func (s *VideoGenerationService) DeleteAllTasks(ctx context.Context, userID int6
 	return s.tasks.DeleteAllForUser(ctx, userID)
 }
 
-// buildVideoMedia dispatches on the model's catalog capability (each video
-// model in the catalog has exactly one of t2v/i2v/r2v — there is no overlap
-// to disambiguate, unlike image models which can be both t2i and edit) and
-// returns the resolved TaskMode plus the ordered media array for the
-// upstream payload. It validates required-field presence for the resolved
-// mode/task-type combination but does not touch VideoParams — that's
-// validateVideoParams's job, kept separate because it applies uniformly
-// across all three modes.
-func buildVideoMedia(model catalog.Model, req CreateVideoTaskRequest) (generationmodel.TaskMode, []map[string]any, error) {
-	switch {
-	case model.HasCapability(catalog.CapabilityR2V):
-		return buildR2VRequest(model, req)
-	case model.HasCapability(catalog.CapabilityI2V):
-		return buildI2VRequest(model, req)
-	case model.HasCapability(catalog.CapabilityT2V):
-		if req.Prompt == "" {
-			return "", nil, apperr.ErrValidation.Wrap(errors.New("generation_video: t2v 需要 prompt"))
+// resolveVideoMode decides which of t2v/i2v/r2v/f2v/l2v this request is,
+// from the model's catalog capabilities plus the caller's optional Mode.
+//
+// Two rules, and the asymmetry between them is the point:
+//
+//   - Model has exactly one video capability (every pre-wan3.0 video model):
+//     Mode may be omitted and is inferred. This is what keeps every existing
+//     caller — and every existing test — working untouched.
+//   - Model has more than one (wan3.0): Mode is required. Guessing from
+//     which request fields happen to be populated would make "I forgot to
+//     attach the first frame" silently turn an i2v request into a t2v one
+//     and bill the user for a video they didn't ask for.
+//
+// A Mode the model doesn't have is always an error, never silently
+// downgraded — including for single-capability models, where sending
+// mode=r2v to a t2v-only model is a caller bug worth surfacing.
+func resolveVideoMode(model catalog.Model, requested generationmodel.TaskMode) (generationmodel.TaskMode, error) {
+	caps := model.VideoCapabilities()
+	if len(caps) == 0 {
+		return "", apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 模型 %q 不具备任何视频生成能力", model.ID))
+	}
+
+	if requested == "" {
+		if len(caps) == 1 {
+			return generationmodel.TaskMode(caps[0]), nil
 		}
-		return generationmodel.TaskModeT2V, nil, nil
+		return "", apperr.ErrValidation.Wrap(fmt.Errorf(
+			"generation_video: 模型 %q 同时支持 %s，必须显式指定 mode", model.ID, joinCapabilities(caps)))
+	}
+
+	// Capability 与 TaskMode 在这五个取值上是同一套字符串（"t2v"/"i2v"/
+	// "r2v"/"f2v"/"l2v"），所以可以直接转换比较——两个类型分别定义是为了
+	// 表达"模型能做什么"与"这条记录是什么"的语义差别，不是取值差别。
+	if !model.HasCapability(catalog.Capability(requested)) {
+		return "", apperr.ErrValidation.Wrap(fmt.Errorf(
+			"generation_video: 模型 %q 不支持 mode=%q，可用的是 %s", model.ID, requested, joinCapabilities(caps)))
+	}
+	return requested, nil
+}
+
+func joinCapabilities(caps []catalog.Capability) string {
+	names := make([]string, 0, len(caps))
+	for _, c := range caps {
+		names = append(names, string(c))
+	}
+	return strings.Join(names, "/")
+}
+
+// buildVideoMedia returns the ordered media array for the upstream payload
+// given an already-resolved mode. It validates required-field presence (and
+// rejects fields belonging to other modes) but does not touch VideoParams —
+// that's normalizeVideoParams' job, kept separate because it applies
+// uniformly across every mode.
+//
+// The second dispatch axis is the model's VideoProfile: the same mode means
+// a different media array on happyhorse, wan2.7 and wan3.0. Everything
+// wan3.0-specific lives in the buildWan30* functions below rather than as
+// `if` branches inside the wan2.7 ones, because the two generations share
+// almost no rules — wan3.0 has no reference_voice, no first_clip, and
+// counts each media type against its own limit instead of a combined one.
+func buildVideoMedia(model catalog.Model, mode generationmodel.TaskMode, req CreateVideoTaskRequest) ([]map[string]any, error) {
+	isWan30 := model.VideoProfile == catalog.VideoProfileWan30
+
+	switch mode {
+	case generationmodel.TaskModeT2V:
+		if req.Prompt == "" {
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: t2v 需要 prompt"))
+		}
+		return nil, nil
+	case generationmodel.TaskModeR2V:
+		if isWan30 {
+			return buildWan30R2VMedia(model, req)
+		}
+		return buildR2VRequest(model, req)
+	case generationmodel.TaskModeI2V:
+		if isWan30 {
+			return buildWan30I2VMedia(req)
+		}
+		return buildI2VRequest(model, req)
+	case generationmodel.TaskModeF2V:
+		if req.FileURL == "" {
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: f2v 需要一个文件 URL"))
+		}
+		return []map[string]any{{"type": "file", "url": req.FileURL}}, nil
+	case generationmodel.TaskModeL2V:
+		if req.LinkURL == "" {
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: l2v 需要一个网页链接"))
+		}
+		return []map[string]any{{"type": "link", "url": req.LinkURL}}, nil
 	default:
-		return "", nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 模型 %q 不具备任何视频生成能力", model.ID))
+		return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 未知的视频模式 %q", mode))
 	}
 }
 
-// buildR2VRequest ports r2v.js:138-186. isWan mirrors r2v.js's
-// `isWanR2v()` (a literal model-id compare); in the catalog the wan r2v
-// model is exactly the one with a non-empty Regions whitelist, so that's
-// the signal used here instead of hardcoding the id a second time.
-func buildR2VRequest(model catalog.Model, req CreateVideoTaskRequest) (generationmodel.TaskMode, []map[string]any, error) {
-	if req.Prompt == "" {
-		return "", nil, apperr.ErrValidation.Wrap(errors.New("generation_video: r2v 需要 prompt"))
+// buildWan30I2VMedia ports the 首帧生视频 / 首尾帧生视频 request shapes from
+// 万相3.0视频生成API参考. TaskType stays the caller-facing switch (same three
+// constants as wan2.7 so the UI's task-type tabs work identically), but
+// wan3.0 only has two of them:
+//
+//   - first_frame: [first_frame]
+//   - first_last:  [first_frame, last_frame]
+//   - continue:    rejected — wan3.0 has no first_clip media type at all.
+//     Extending an existing video is an r2v request there (a reference_video
+//     plus a prompt describing the continuation), so this returns an error
+//     naming that route instead of a bare "unsupported": a caller hitting
+//     this has a real use case, it just moved.
+//
+// driving_audio is likewise gone; a wan3.0 request carrying one is rejected
+// rather than dropped, so nobody ships a "why is my audio ignored" bug.
+func buildWan30I2VMedia(req CreateVideoTaskRequest) ([]map[string]any, error) {
+	if req.FirstClip != "" || req.TaskType == I2VTaskContinue {
+		return nil, apperr.ErrValidation.Wrap(errors.New(
+			"generation_video: wan3.0 没有续接片段任务，视频延长请改用参考生视频（参考视频 + 描述延长内容的 prompt）"))
+	}
+	if req.DrivingAudio != "" {
+		return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: wan3.0 不支持 driving_audio"))
+	}
+	if req.FirstFrame == "" {
+		return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: i2v 需要首帧图片"))
 	}
 
-	isWan := len(model.Regions) > 0
+	// TaskType 为空按 first_frame 处理——wan3.0 的 last_frame 在上游本就是
+	// 可选的，调用方不指定任务类型时用"有没有传尾帧"来决定即可；显式
+	// 指定 first_last 却不传尾帧则是矛盾请求，必须报错而不是降级。
+	switch req.TaskType {
+	case "", I2VTaskFirstFrame:
+		if req.LastFrame != "" && req.TaskType == I2VTaskFirstFrame {
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: first_frame 任务不接受尾帧"))
+		}
+	case I2VTaskFirstLast:
+		if req.LastFrame == "" {
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: first_last 任务需要尾帧图片"))
+		}
+	default:
+		return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 未知的 i2v 任务类型 %q", req.TaskType))
+	}
+
+	media := []map[string]any{{"type": "first_frame", "url": req.FirstFrame}}
+	if req.LastFrame != "" {
+		media = append(media, map[string]any{"type": "last_frame", "url": req.LastFrame})
+	}
+	return media, nil
+}
+
+// buildWan30R2VMedia ports 参考生视频 (and, with a reference_video plus an
+// editing/extension prompt, 视频编辑 / 视频延长 — the same request shape,
+// distinguished only by what the prompt asks for, per the API reference).
+//
+// Unlike wan2.7's single combined cap (images + videos <= 5), wan3.0 limits
+// each media type separately (10 / 5 / 5), which is what catalog.MediaLimits
+// records. reference_voice does not exist here and is rejected rather than
+// dropped.
+//
+// Media order follows the caller's order within each type, images then
+// videos then audios. The API reference's own example interleaves images and
+// videos, so order across types is not significant to the model; keeping it
+// grouped and deterministic is what makes InputURLs (and therefore the
+// history page) reproducible.
+func buildWan30R2VMedia(model catalog.Model, req CreateVideoTaskRequest) ([]map[string]any, error) {
+	for _, img := range req.Images {
+		if img.ReferenceVoice != "" {
+			return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 模型 %q 不支持 reference_voice", model.ID))
+		}
+	}
+	for _, v := range req.Videos {
+		if v.ReferenceVoice != "" {
+			return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 模型 %q 不支持 reference_voice", model.ID))
+		}
+	}
+
+	if len(req.Images)+len(req.Videos)+len(req.Audios) == 0 {
+		return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: r2v 需要至少一个参考图/参考视频/参考音频"))
+	}
+
+	limits := model.MediaLimits
+	for _, chk := range []struct {
+		n     int
+		max   int
+		label string
+	}{
+		{len(req.Images), limits.ReferenceImages, "参考图"},
+		{len(req.Videos), limits.ReferenceVideos, "参考视频"},
+		{len(req.Audios), limits.ReferenceAudios, "参考音频"},
+	} {
+		if chk.max > 0 && chk.n > chk.max {
+			return nil, apperr.ErrValidation.Wrap(fmt.Errorf(
+				"generation_video: %s数量 %d 超过模型 %q 的上限 %d", chk.label, chk.n, model.ID, chk.max))
+		}
+	}
+
+	media := make([]map[string]any, 0, len(req.Images)+len(req.Videos)+len(req.Audios))
+	for _, img := range req.Images {
+		media = append(media, map[string]any{"type": "reference_image", "url": img.URL})
+	}
+	for _, v := range req.Videos {
+		media = append(media, map[string]any{"type": "reference_video", "url": v.URL})
+	}
+	for _, a := range req.Audios {
+		media = append(media, map[string]any{"type": "reference_audio", "url": a.URL})
+	}
+	return media, nil
+}
+
+// buildR2VRequest ports r2v.js:138-186 for the pre-wan3.0 models. isWan
+// mirrors r2v.js's `isWanR2v()` (a literal model-id compare); it now reads
+// the catalog's explicit VideoProfile rather than the old
+// `len(model.Regions) > 0` proxy — see catalog.VideoProfile's doc for why
+// that proxy stopped working.
+func buildR2VRequest(model catalog.Model, req CreateVideoTaskRequest) ([]map[string]any, error) {
+	if req.Prompt == "" {
+		return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: r2v 需要 prompt"))
+	}
+	// reference_audio 是 wan3.0 才有的媒体类型，这条分支上的模型都不认识它。
+	if len(req.Audios) > 0 {
+		return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 模型 %q 不支持参考音频", model.ID))
+	}
+
+	isWan := model.VideoProfile == catalog.VideoProfileWan27
 	if !isWan {
 		if len(req.Videos) > 0 {
-			return "", nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 模型 %q 不支持参考视频", model.ID))
+			return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 模型 %q 不支持参考视频", model.ID))
 		}
 		for _, img := range req.Images {
 			if img.ReferenceVoice != "" {
-				return "", nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 模型 %q 不支持 reference_voice", model.ID))
+				return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 模型 %q 不支持 reference_voice", model.ID))
 			}
 		}
 	}
 
 	total := len(req.Images) + len(req.Videos)
 	if total == 0 {
-		return "", nil, apperr.ErrValidation.Wrap(errors.New("generation_video: r2v 需要至少一张参考图或一个参考视频"))
+		return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: r2v 需要至少一张参考图或一个参考视频"))
 	}
 	if model.MaxImages > 0 && total > model.MaxImages {
-		return "", nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 参考媒体数量 %d 超过模型 %q 的上限 %d", total, model.ID, model.MaxImages))
+		return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 参考媒体数量 %d 超过模型 %q 的上限 %d", total, model.ID, model.MaxImages))
 	}
 
-	return generationmodel.TaskModeR2V, buildR2VMedia(req.Images, req.Videos), nil
+	return buildR2VMedia(req.Images, req.Videos), nil
 }
 
 // buildI2VRequest ports i2v.js:212-263. Non-wan (happyhorse-1.1-i2v) always
@@ -403,51 +633,51 @@ func buildR2VRequest(model catalog.Model, req CreateVideoTaskRequest) (generatio
 // old UI never even exposes task-type tabs for that model (i2v.js only
 // switches media assembly logic on `wan`, not on `task`, for the non-wan
 // branch; see i2v.js:253-263).
-func buildI2VRequest(model catalog.Model, req CreateVideoTaskRequest) (generationmodel.TaskMode, []map[string]any, error) {
-	isWan := len(model.Regions) > 0
+func buildI2VRequest(model catalog.Model, req CreateVideoTaskRequest) ([]map[string]any, error) {
+	isWan := model.VideoProfile == catalog.VideoProfileWan27
 
 	if !isWan {
 		if req.FirstFrame == "" {
-			return "", nil, apperr.ErrValidation.Wrap(errors.New("generation_video: i2v 需要首帧图片"))
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: i2v 需要首帧图片"))
 		}
 		if req.LastFrame != "" || req.FirstClip != "" || req.DrivingAudio != "" {
-			return "", nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 模型 %q 只支持首帧图片", model.ID))
+			return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 模型 %q 只支持首帧图片", model.ID))
 		}
-		return generationmodel.TaskModeI2V, buildI2VMedia(I2VTaskFirstFrame, req.FirstFrame, "", "", ""), nil
+		return buildI2VMedia(I2VTaskFirstFrame, req.FirstFrame, "", "", ""), nil
 	}
 
 	switch req.TaskType {
 	case I2VTaskFirstFrame:
 		if req.FirstFrame == "" {
-			return "", nil, apperr.ErrValidation.Wrap(errors.New("generation_video: first_frame 任务需要首帧图片"))
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: first_frame 任务需要首帧图片"))
 		}
 		if req.LastFrame != "" || req.FirstClip != "" {
-			return "", nil, apperr.ErrValidation.Wrap(errors.New("generation_video: first_frame 任务不接受尾帧/续接片段"))
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: first_frame 任务不接受尾帧/续接片段"))
 		}
 	case I2VTaskFirstLast:
 		if req.FirstFrame == "" || req.LastFrame == "" {
-			return "", nil, apperr.ErrValidation.Wrap(errors.New("generation_video: first_last 任务需要首帧与尾帧图片"))
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: first_last 任务需要首帧与尾帧图片"))
 		}
 		if req.FirstClip != "" {
-			return "", nil, apperr.ErrValidation.Wrap(errors.New("generation_video: first_last 任务不接受续接片段"))
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: first_last 任务不接受续接片段"))
 		}
 	case I2VTaskContinue:
 		if req.FirstClip == "" {
-			return "", nil, apperr.ErrValidation.Wrap(errors.New("generation_video: continue 任务需要续接片段"))
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: continue 任务需要续接片段"))
 		}
 		if req.FirstFrame != "" {
-			return "", nil, apperr.ErrValidation.Wrap(errors.New("generation_video: continue 任务不接受首帧图片"))
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: continue 任务不接受首帧图片"))
 		}
 		if req.DrivingAudio != "" {
 			// i2v.js:236 只在 first_frame/first_last 任务上附加
 			// driving_audio；continue 任务的 UI 从不展示这个输入框。
-			return "", nil, apperr.ErrValidation.Wrap(errors.New("generation_video: continue 任务不接受 driving_audio"))
+			return nil, apperr.ErrValidation.Wrap(errors.New("generation_video: continue 任务不接受 driving_audio"))
 		}
 	default:
-		return "", nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 未知的 i2v 任务类型 %q", req.TaskType))
+		return nil, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 未知的 i2v 任务类型 %q", req.TaskType))
 	}
 
-	return generationmodel.TaskModeI2V, buildI2VMedia(req.TaskType, req.FirstFrame, req.LastFrame, req.FirstClip, req.DrivingAudio), nil
+	return buildI2VMedia(req.TaskType, req.FirstFrame, req.LastFrame, req.FirstClip, req.DrivingAudio), nil
 }
 
 // buildR2VMedia ports r2v.js:159-171 exactly: all reference images first
@@ -505,52 +735,27 @@ func buildI2VMedia(taskType I2VTaskType, firstFrame, lastFrame, firstClip, drivi
 	return media
 }
 
-// videoResolutions / videoDefaultResolution, videoDurationMin/Max /
-// videoDefaultDuration, and videoRatios / videoDefaultRatio are the allowed
-// values for resolution/duration/ratio, ported from the <select>/<input>
-// controls in public/index.html (resolution-r2v/i2v/t2v, duration-*,
-// ratio-r2v/t2v — see index.html:91-110,240-247,329-348).
-//
-// These live here as package-level constants, not as fields on
-// catalog.Model, because they are not model-specific: every video model in
-// the catalog (happyhorse and wan alike) takes the same resolution set, the
-// same duration range, and — for the modes that accept a ratio at all — the
-// same ratio set. r2v.js and t2v.js's <select id="ratio-*"> list the same
-// seven values in a different on-screen order, but the allowed *set* is
-// identical, so one shared slice covers both. Bolting mode-invariant
-// constants onto every catalog.Model entry would just be denormalization;
-// catalog.go stays untouched, matching Task 12's file list.
-var videoResolutions = []string{"720P", "1080P"}
-
-const videoDefaultResolution = "720P"
-
-const (
-	videoDurationMin     = 3
-	videoDurationMax     = 15
-	videoDefaultDuration = 5
-)
-
-// videoRatios is the shared allowed set for r2v/t2v's ratio dropdown
-// (index.html:98-106 for r2v, :336-344 for t2v — same seven values, listed
-// in a different order in the HTML, which is why this is a set, not
-// something that needs to preserve either page's on-screen ordering).
-var videoRatios = []string{"16:9", "9:16", "3:4", "4:3", "4:5", "5:4", "1:1"}
-
-const videoDefaultRatio = "16:9"
-
 // normalizeVideoParams applies task.js:304-315's defaulting rules and
 // rejects anything outside the allowed value sets. It must run before
 // validateOptionalVideoParams/buildVideoPayload — both downstream consumers
 // assume Resolution/Duration are already valid and defaulted, and that
-// Ratio is empty if and only if mode is i2v.
+// Ratio is empty exactly when it must not be sent.
+//
+// The allowed sets come from the model's catalog entry, not from constants
+// in this file. They used to be package-level constants here (and a
+// duplicate copy in the frontend's videoParams.ts) on the grounds that
+// every video model shared the same values — true right up until wan3.0,
+// which allows 480P, runs 2–30s instead of 3–15s, and has a different
+// ratio set including "adaptive". Rather than add a per-generation branch
+// in two places, the sets moved into catalog.Model next to Sizes/MaxN,
+// where the rest of the "what does this model accept" data already lives.
 //
 // resolution/duration/watermark are mandatory-with-a-default: the old UI's
 // controls always have a value, so a caller that omits them gets the same
-// default the old UI would have produced (720P / 5s), not an error.
-// Watermark has no validation branch at all — every bool value is valid,
-// so "not set" (false) and "explicitly false" are indistinguishable and
-// that's fine, matching collectWatermarkParams' unconditional
-// `{watermark: enabled}`.
+// default the old UI would have produced, not an error. Watermark has no
+// validation branch at all — every bool value is valid, so "not set"
+// (false) and "explicitly false" are indistinguishable and that's fine,
+// matching collectWatermarkParams' unconditional `{watermark: enabled}`.
 //
 // ratio is where old and new behavior are the same on purpose but for
 // different reasons. In task.js, ratio is only collected `if (ratioEl)`
@@ -561,31 +766,36 @@ const videoDefaultRatio = "16:9"
 // index.html:251). So the old system's ratio omission for i2v was an
 // accident of DOM lookup, not a deliberate design decision documented
 // anywhere. The resulting behavior — i2v derives its aspect ratio from the
-// first frame and never gets a ratio parameter — is nonetheless correct,
-// so this function makes it deliberate: i2v requests that set Ratio at all
-// are rejected outright (silently dropping a caller-supplied parameter is
-// how you get a bug report when someone "fixes" the missing UI field six
-// months from now), and r2v/t2v default an empty Ratio to "16:9" instead of
-// leaving it unset — mirroring the <select> always having a selected
-// option, which is the actual reason r2v/t2v always send one.
-func normalizeVideoParams(mode generationmodel.TaskMode, p VideoParams) (VideoParams, error) {
+// first frame and never gets a ratio parameter — is nonetheless correct for
+// those models, so this function makes it deliberate: when the model's
+// catalog entry sets I2VAutoRatio, an i2v request that carries a Ratio at
+// all is rejected outright (silently dropping a caller-supplied parameter
+// is how you get a bug report when someone "fixes" the missing UI field six
+// months from now). wan3.0 does not set that flag: its ratio applies in
+// every mode, and its default "adaptive" *is* the "follow the input"
+// behavior, so there is nothing to suppress.
+func normalizeVideoParams(model catalog.Model, mode generationmodel.TaskMode, p VideoParams) (VideoParams, error) {
 	out := p
 
 	switch {
 	case out.Resolution == "":
-		out.Resolution = videoDefaultResolution
-	case !containsString(videoResolutions, out.Resolution):
-		return VideoParams{}, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 不支持的 resolution %q", out.Resolution))
+		out.Resolution = model.DefaultResolution
+	case !model.AllowsResolution(out.Resolution):
+		return VideoParams{}, apperr.ErrValidation.Wrap(fmt.Errorf(
+			"generation_video: 模型 %q 不支持的 resolution %q（可用：%s）",
+			model.ID, out.Resolution, strings.Join(model.Resolutions, "、")))
 	}
 
 	switch {
 	case out.Duration == 0:
-		out.Duration = videoDefaultDuration
-	case out.Duration < videoDurationMin || out.Duration > videoDurationMax:
-		return VideoParams{}, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: duration=%d 超出允许范围 [%d,%d]", out.Duration, videoDurationMin, videoDurationMax))
+		out.Duration = model.DefaultDuration
+	case !model.AllowsDuration(out.Duration):
+		return VideoParams{}, apperr.ErrValidation.Wrap(fmt.Errorf(
+			"generation_video: 模型 %q 的 duration=%d 超出允许范围 [%d,%d]",
+			model.ID, out.Duration, model.DurationMin, model.DurationMax))
 	}
 
-	if mode == generationmodel.TaskModeI2V {
+	if mode == generationmodel.TaskModeI2V && model.I2VAutoRatio {
 		if out.Ratio != "" {
 			return VideoParams{}, apperr.ErrValidation.Wrap(errors.New("generation_video: i2v 不接受 ratio，宽高比由首帧决定"))
 		}
@@ -594,9 +804,11 @@ func normalizeVideoParams(mode generationmodel.TaskMode, p VideoParams) (VideoPa
 
 	switch {
 	case out.Ratio == "":
-		out.Ratio = videoDefaultRatio
-	case !containsString(videoRatios, out.Ratio):
-		return VideoParams{}, apperr.ErrValidation.Wrap(fmt.Errorf("generation_video: 不支持的 ratio %q", out.Ratio))
+		out.Ratio = model.DefaultRatio
+	case !model.AllowsRatio(out.Ratio):
+		return VideoParams{}, apperr.ErrValidation.Wrap(fmt.Errorf(
+			"generation_video: 模型 %q 不支持的 ratio %q（可用：%s）",
+			model.ID, out.Ratio, strings.Join(model.Ratios, "、")))
 	}
 	return out, nil
 }
@@ -615,6 +827,7 @@ func validateOptionalVideoParams(model catalog.Model, p VideoParams) error {
 		{p.NegativePrompt != "", catalog.ParamNegativePrompt},
 		{p.PromptExtend != nil, catalog.ParamPromptExtend},
 		{p.Seed != nil, catalog.ParamSeed},
+		{p.Audio != nil, catalog.ParamAudio},
 	}
 	for _, chk := range checks {
 		if chk.set && !model.SupportsParam(chk.param) {
@@ -674,6 +887,9 @@ func buildVideoPayload(model catalog.Model, mode generationmodel.TaskMode, req C
 	if params.Seed != nil {
 		parameters["seed"] = *params.Seed
 	}
+	if params.Audio != nil {
+		parameters["audio"] = *params.Audio
+	}
 
 	return map[string]any{
 		"model":      model.ID,
@@ -717,6 +933,9 @@ func videoParamsToStorageMap(p VideoParams) map[string]any {
 	}
 	if p.Seed != nil {
 		m["seed"] = *p.Seed
+	}
+	if p.Audio != nil {
+		m["audio"] = *p.Audio
 	}
 	return m
 }

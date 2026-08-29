@@ -25,17 +25,32 @@ type videoMediaVideoBody struct {
 	ReferenceVoice string `json:"referenceVoice"`
 }
 
+// videoMediaAudioBody is one reference_audio entry (wan3.0 only) — no
+// referenceVoice sibling, see service.R2VMediaAudio's doc.
+type videoMediaAudioBody struct {
+	URL string `json:"url" binding:"required"`
+}
+
 // createVideoTaskRequestBody is the POST /api/generate/video JSON body.
-// Which fields matter depends on the model's catalog capability (r2v vs
-// i2v vs t2v) — same "fields are only consulted for the resolved mode"
-// contract as service.CreateVideoTaskRequest; the handler does no mode
-// branching of its own, it just forwards everything to the service.
+// Which fields matter depends on the resolved mode (t2v/i2v/r2v/f2v/l2v) —
+// same "fields are only consulted for the resolved mode" contract as
+// service.CreateVideoTaskRequest; the handler does no mode branching of its
+// own, it just forwards everything to the service.
+//
+// `mode` is optional on the wire and stays that way: for every model with a
+// single video capability the service infers it, so requests written
+// against the pre-wan3.0 API keep working verbatim. It is only required
+// when the chosen model is multi-capability (wan3.0), and the service — not
+// this handler — is what enforces that, so the rule lives in exactly one
+// place.
 type createVideoTaskRequestBody struct {
 	Model  string `json:"model" binding:"required"`
 	Prompt string `json:"prompt"`
+	Mode   string `json:"mode"`
 
 	Images []videoMediaImageBody `json:"images"`
 	Videos []videoMediaVideoBody `json:"videos"`
+	Audios []videoMediaAudioBody `json:"audios"`
 
 	TaskType     string `json:"taskType"`
 	FirstFrame   string `json:"firstFrame"`
@@ -43,9 +58,13 @@ type createVideoTaskRequestBody struct {
 	FirstClip    string `json:"firstClip"`
 	DrivingAudio string `json:"drivingAudio"`
 
+	FileURL string `json:"fileUrl"`
+	LinkURL string `json:"linkUrl"`
+
 	NegativePrompt string `json:"negativePrompt"`
 	PromptExtend   *bool  `json:"promptExtend"`
 	Seed           *int64 `json:"seed"`
+	Audio          *bool  `json:"audio"`
 
 	// Resolution/Duration/Watermark are never optional on the wire either —
 	// an omitted field decodes to its Go zero value ("", 0, false), and
@@ -69,13 +88,19 @@ func (b createVideoTaskRequestBody) toServiceRequest() service.CreateVideoTaskRe
 	for _, v := range b.Videos {
 		videos = append(videos, service.R2VMediaVideo{URL: v.URL, ReferenceVoice: v.ReferenceVoice})
 	}
+	audios := make([]service.R2VMediaAudio, 0, len(b.Audios))
+	for _, a := range b.Audios {
+		audios = append(audios, service.R2VMediaAudio{URL: a.URL})
+	}
 
 	return service.CreateVideoTaskRequest{
 		Model:  b.Model,
 		Prompt: b.Prompt,
+		Mode:   generationmodel.TaskMode(b.Mode),
 
 		Images: images,
 		Videos: videos,
+		Audios: audios,
 
 		TaskType:     service.I2VTaskType(b.TaskType),
 		FirstFrame:   b.FirstFrame,
@@ -83,10 +108,14 @@ func (b createVideoTaskRequestBody) toServiceRequest() service.CreateVideoTaskRe
 		FirstClip:    b.FirstClip,
 		DrivingAudio: b.DrivingAudio,
 
+		FileURL: b.FileURL,
+		LinkURL: b.LinkURL,
+
 		Params: service.VideoParams{
 			NegativePrompt: b.NegativePrompt,
 			PromptExtend:   b.PromptExtend,
 			Seed:           b.Seed,
+			Audio:          b.Audio,
 			Resolution:     b.Resolution,
 			Duration:       b.Duration,
 			Ratio:          b.Ratio,

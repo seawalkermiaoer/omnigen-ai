@@ -12,6 +12,7 @@ import { catalogApi, generationApi } from '@/api/generation'
 import { ApiError } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import type { CatalogModel, GenerationTask } from '@/types/generation'
+import { legacyVideoFields } from '@/components/generation/__fixtures__/catalog'
 
 vi.mock('@/api/generation', () => ({
   catalogApi: { list: vi.fn() },
@@ -43,6 +44,7 @@ const happyhorseT2V: CatalogModel = {
   MinImageEdge: 0,
   RatioMin: 0,
   RatioMax: 0,
+  ...legacyVideoFields,
 }
 
 const pendingTask: GenerationTask = {

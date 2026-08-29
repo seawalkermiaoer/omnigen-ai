@@ -1,34 +1,50 @@
-import { Flex, InputNumber, Select, Typography } from 'antd'
+import { Checkbox, Flex, InputNumber, Select, Typography } from 'antd'
 import { useTranslation } from 'react-i18next'
 
-import { DEFAULT_DURATION, VIDEO_DURATION_MAX, VIDEO_DURATION_MIN, VIDEO_RATIOS, VIDEO_RESOLUTIONS } from './videoParams'
+import type { CatalogModel, TaskMode } from '@/types/generation'
+import {
+  SMART_DURATION,
+  acceptsRatio,
+  defaultDuration,
+  durationMax,
+  durationMin,
+  supportsSmartDuration,
+  videoRatios,
+  videoResolutions,
+} from './videoParams'
 
 const { Text } = Typography
 
 export interface VideoParamsFieldsProps {
+  /** 当前选中的模型；三个控件的取值范围全部从它派生。 */
+  model?: CatalogModel
+  /** 当前页面的模式——只用来判断 i2v 下要不要渲染 ratio 选择器。 */
+  mode: TaskMode
   resolution: string
   duration: number
   onResolutionChange: (value: string) => void
   onDurationChange: (value: number) => void
-  /**
-   * i2v 的宽高比由首帧决定，从不接受这个参数——调用页面此时传 `undefined`
-   * （不是空字符串），本组件据此渲染一段静态说明而不是选择器，与旧
-   * i2v.js 里禁用态的 #autoRatio-i2v 输入框（"自动跟随首帧"）行为一致。
-   * t2v/r2v 传真实字符串值 + onRatioChange 时渲染可选的下拉框。
-   */
-  ratio?: string
-  onRatioChange?: (value: string) => void
+  ratio: string
+  onRatioChange: (value: string) => void
   disabled?: boolean
 }
 
 /**
- * 三个视频页面共用的 resolution/duration/ratio 控件组——这三个参数不由
- * 目录（CatalogModel.Supports）驱动，因为它们对全部视频模型取值范围相同，
- * 与 ParamPanel 的"按目录渲染"职责是互补而非重叠的关系：ParamPanel 负责
- * thinking_mode/negative_prompt/seed/watermark/prompt_extend 这些真正因
- * 模型而异的参数，本组件负责剩下的、模式而非模型驱动的三个。
+ * 五个视频页面共用的 resolution/duration/ratio 控件组。
+ *
+ * 与 ParamPanel 的分工没变（那边管 Supports 驱动的可选参数，这边管这三个
+ * 每次都要发的参数），但取值来源变了：过去是本地写死的常量，现在同样
+ * 由目录驱动——见 videoParams.ts 顶部关于 wan3.0 打破"所有视频模型取值
+ * 相同"这一前提的说明。
+ *
+ * ratio 不再由调用方传 `undefined` 来表达"这个模式没有宽高比"，而是本
+ * 组件自己按 acceptsRatio(model, mode) 判断：是否有宽高比取决于模型 ×
+ * 模式两个因素（wan2.7-i2v 没有、wan3.0-i2v 有），调用页面不该重复这份
+ * 知识。不接受时渲染的仍是"自动跟随首帧"那段静态说明。
  */
 export default function VideoParamsFields({
+  model,
+  mode,
   resolution,
   duration,
   onResolutionChange,
@@ -39,6 +55,12 @@ export default function VideoParamsFields({
 }: VideoParamsFieldsProps) {
   const { t } = useTranslation()
 
+  const showRatio = acceptsRatio(model, mode)
+  const smartAvailable = supportsSmartDuration(model)
+  const smartOn = duration === SMART_DURATION
+  const min = durationMin(model)
+  const max = durationMax(model)
+
   return (
     <Flex wrap gap={16} data-testid="video-params-fields">
       <Flex vertical gap={4} style={{ minWidth: 140 }} data-testid="video-resolution">
@@ -46,38 +68,61 @@ export default function VideoParamsFields({
         <Select
           disabled={disabled}
           style={{ width: '100%' }}
-          value={resolution}
+          value={resolution || undefined}
           onChange={onResolutionChange}
-          options={VIDEO_RESOLUTIONS.map((r) => ({ value: r, label: r }))}
+          options={videoResolutions(model).map((r) => ({ value: r, label: r }))}
         />
       </Flex>
 
-      <Flex vertical gap={4} style={{ minWidth: 160 }} data-testid="video-duration">
-        <Text type="secondary">{t('generation.videoDuration')}</Text>
-        <InputNumber
-          disabled={disabled}
-          style={{ width: '100%' }}
-          min={VIDEO_DURATION_MIN}
-          max={VIDEO_DURATION_MAX}
-          value={duration}
-          onChange={(value) => onDurationChange(value ?? DEFAULT_DURATION)}
-        />
+      <Flex vertical gap={4} style={{ minWidth: 200 }} data-testid="video-duration">
+        <Text type="secondary">
+          {t('generation.videoDuration')}
+          {model ? ` (${min}–${max}s)` : ''}
+        </Text>
+        <Flex gap={8} align="center">
+          <InputNumber
+            disabled={disabled || smartOn}
+            style={{ flex: 1 }}
+            min={min}
+            max={max}
+            // 智能时长期间 InputNumber 被禁用，但值仍是 -1（越界），直接
+            // 显示会渲染成一个不合法的输入；此时展示模型默认时长作为占位，
+            // 真正发出去的仍然是 -1。
+            value={smartOn ? defaultDuration(model) : duration}
+            onChange={(value) => onDurationChange(value ?? defaultDuration(model))}
+          />
+          {smartAvailable && (
+            <Checkbox
+              disabled={disabled}
+              checked={smartOn}
+              onChange={(e) => onDurationChange(e.target.checked ? SMART_DURATION : defaultDuration(model))}
+              data-testid="video-duration-smart"
+            >
+              {t('generation.videoDurationSmart')}
+            </Checkbox>
+          )}
+        </Flex>
       </Flex>
 
       <Flex vertical gap={4} style={{ minWidth: 160 }} data-testid="video-ratio">
         <Text type="secondary">{t('generation.videoRatio')}</Text>
-        {ratio === undefined ? (
-          <Text type="secondary" data-testid="video-ratio-auto">
-            {t('generation.videoRatioAuto')}
-          </Text>
-        ) : (
+        {showRatio ? (
           <Select
             disabled={disabled}
             style={{ width: '100%' }}
-            value={ratio}
+            value={ratio || undefined}
             onChange={onRatioChange}
-            options={VIDEO_RATIOS.map((r) => ({ value: r, label: r }))}
+            options={videoRatios(model).map((r) => ({
+              value: r,
+              // adaptive 是个语义值而不是一个比例，直接显示英文原词对
+              // 中文用户没有信息量，翻译成"自适应（跟随输入素材）"。
+              label: r === 'adaptive' ? t('generation.videoRatioAdaptive') : r,
+            }))}
           />
+        ) : (
+          <Text type="secondary" data-testid="video-ratio-auto">
+            {t('generation.videoRatioAuto')}
+          </Text>
         )}
       </Flex>
     </Flex>

@@ -12,7 +12,7 @@ import type { GenerationTask, ReuseGenerationState, TaskMode } from '@/types/gen
  * imgedit 与 imggen 共用同一张结果表（图片），必须一起分到图片家族。
  */
 export const IMAGE_MODES: ReadonlySet<TaskMode> = new Set(['imggen', 'imgedit'])
-export const VIDEO_MODES: ReadonlySet<TaskMode> = new Set(['t2v', 'i2v', 'r2v'])
+export const VIDEO_MODES: ReadonlySet<TaskMode> = new Set(['t2v', 'i2v', 'r2v', 'f2v', 'l2v'])
 
 export function isImageMode(mode: TaskMode): boolean {
   return IMAGE_MODES.has(mode)
@@ -25,6 +25,8 @@ export const MODE_PATH: Record<TaskMode, string> = {
   t2v: '/t2v',
   i2v: '/i2v',
   r2v: '/r2v',
+  f2v: '/f2v',
+  l2v: '/l2v',
 }
 
 const MINUTE = 60_000
@@ -75,7 +77,11 @@ export function paramSummary(task: GenerationTask, t: TFunction): string {
   } else {
     if (typeof p.resolution === 'string' && p.resolution) parts.push(p.resolution)
     if (typeof p.ratio === 'string' && p.ratio) parts.push(p.ratio)
-    if (typeof p.duration === 'number') parts.push(`${p.duration}s`)
+    // duration=-1 是 wan3.0 的"智能时长"哨兵值，不是负数秒——直接
+    // 模板成 `-1s` 会在历史列表里显示成一个看不懂的负时长。
+    if (typeof p.duration === 'number') {
+      parts.push(p.duration === -1 ? t('generation.videoDurationSmart') : `${p.duration}s`)
+    }
   }
 
   const elapsed = elapsedSeconds(task)

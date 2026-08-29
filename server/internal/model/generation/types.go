@@ -23,6 +23,13 @@ const (
 	TaskModeT2V     TaskMode = "t2v"
 	TaskModeI2V     TaskMode = "i2v"
 	TaskModeR2V     TaskMode = "r2v"
+	// TaskModeF2V / TaskModeL2V 是 wan3.0 带来的两种新入口：文件生视频
+	// （input.media 里 type=file）与网页生视频（type=link）。它们只是
+	// 多了两个取值，没有新增数据库字段——generation_tasks.mode 是
+	// VARCHAR(16) 且没有 CHECK 约束（migrations/000004），"f2v"/"l2v"
+	// 直接可存，不需要迁移。
+	TaskModeF2V TaskMode = "f2v"
+	TaskModeL2V TaskMode = "l2v"
 )
 
 // Status 是任务状态机。PENDING/RUNNING 是「在飞」状态——ClaimPending 只取
