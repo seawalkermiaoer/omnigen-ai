@@ -11,6 +11,7 @@ import R2VPage from './R2VPage'
 import { catalogApi, generationApi, uploadApi } from '@/api/generation'
 import { useAuthStore } from '@/stores/auth'
 import type { CatalogModel, GenerationTask } from '@/types/generation'
+import { legacyVideoFields } from '@/components/generation/__fixtures__/catalog'
 
 vi.mock('@/api/generation', () => ({
   catalogApi: { list: vi.fn() },
@@ -64,6 +65,7 @@ const happyhorseR2V: CatalogModel = {
   MinImageEdge: 0,
   RatioMin: 0,
   RatioMax: 0,
+  ...legacyVideoFields,
 }
 
 const wanR2V: CatalogModel = {
@@ -79,6 +81,8 @@ const wanR2V: CatalogModel = {
   MinImageEdge: 0,
   RatioMin: 0,
   RatioMax: 0,
+  ...legacyVideoFields,
+  VideoProfile: 'wan2.7',
 }
 
 const pendingTask: GenerationTask = {

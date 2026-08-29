@@ -6,6 +6,71 @@ import type { CatalogModel } from '@/types/generation'
  * 跟着改（发现方式是 ParamPanel.test.tsx 断言失败，而不是静默过时）。
  */
 
+/**
+ * 视频专属字段的三组预设。
+ *
+ * catalog.Model 从 wan3.0 起多了 11 个视频专属字段（VideoProfile /
+ * Resolutions / Durations / Ratios / MediaLimits …）。Go 结构体没有
+ * omitempty，所以它们在每个模型的 JSON 里都存在，包括图片模型——夹具要
+ * 忠实反映线上形状就得全部写出来。逐个字面量抄 11 遍会立刻腐坏，所以
+ * 按"代际"抽成三组预设，各个夹具展开对应的一组即可。
+ *
+ * 取值逐字对应 server/internal/model/catalog/catalog.go，改了那边这里也要改。
+ */
+
+/** 非视频模型：11 个字段全是零值。 */
+export const nonVideoFields = {
+  VideoProfile: '' as const,
+  Resolutions: null,
+  DefaultResolution: '',
+  DurationMin: 0,
+  DurationMax: 0,
+  DefaultDuration: 0,
+  SmartDuration: false,
+  Ratios: null,
+  DefaultRatio: '',
+  I2VAutoRatio: false,
+  MediaLimits: { ReferenceImages: 0, ReferenceVideos: 0, ReferenceAudios: 0 },
+}
+
+const legacyResolutions = ['720P', '1080P']
+const legacyRatios = ['16:9', '9:16', '3:4', '4:3', '4:5', '5:4', '1:1']
+
+/** happyhorse / wan2.7 的 t2v 与 r2v：720P·1080P，3~15 秒，七种宽高比。 */
+export const legacyVideoFields = {
+  ...nonVideoFields,
+  Resolutions: legacyResolutions,
+  DefaultResolution: '720P',
+  DurationMin: 3,
+  DurationMax: 15,
+  DefaultDuration: 5,
+  Ratios: legacyRatios,
+  DefaultRatio: '16:9',
+}
+
+/** happyhorse / wan2.7 的 i2v：没有 ratio（宽高比由首帧决定）。 */
+export const legacyI2VFields = {
+  ...legacyVideoFields,
+  Ratios: null,
+  DefaultRatio: '',
+  I2VAutoRatio: true,
+}
+
+/** wan3.0：多 480P、2~30 秒、智能时长，ratio 集合不同且 i2v 下同样有效。 */
+export const wan30VideoFields = {
+  ...nonVideoFields,
+  VideoProfile: 'wan3.0' as const,
+  Resolutions: ['480P', '720P', '1080P'],
+  DefaultResolution: '720P',
+  DurationMin: 2,
+  DurationMax: 30,
+  DefaultDuration: 5,
+  SmartDuration: true,
+  Ratios: ['adaptive', '16:9', '4:3', '1:1', '3:4', '9:16'],
+  DefaultRatio: 'adaptive',
+  MediaLimits: { ReferenceImages: 10, ReferenceVideos: 5, ReferenceAudios: 5 },
+}
+
 export const qwenImage: CatalogModel = {
   ID: 'qwen-image',
   Capabilities: ['t2i'],
@@ -19,6 +84,7 @@ export const qwenImage: CatalogModel = {
   MinImageEdge: 0,
   RatioMin: 0,
   RatioMax: 0,
+  ...nonVideoFields,
 }
 
 export const qwenImageEdit: CatalogModel = {
@@ -34,6 +100,7 @@ export const qwenImageEdit: CatalogModel = {
   MinImageEdge: 0,
   RatioMin: 0,
   RatioMax: 0,
+  ...nonVideoFields,
 }
 
 export const wanImage: CatalogModel = {
@@ -49,6 +116,7 @@ export const wanImage: CatalogModel = {
   MinImageEdge: 0,
   RatioMin: 0,
   RatioMax: 0,
+  ...nonVideoFields,
 }
 
 export const gptImage2: CatalogModel = {
@@ -64,6 +132,7 @@ export const gptImage2: CatalogModel = {
   MinImageEdge: 0,
   RatioMin: 0,
   RatioMax: 0,
+  ...nonVideoFields,
 }
 
 export const happyhorseI2V: CatalogModel = {
@@ -79,6 +148,7 @@ export const happyhorseI2V: CatalogModel = {
   MinImageEdge: 300,
   RatioMin: 0.4,
   RatioMax: 2.5,
+  ...legacyI2VFields,
 }
 
 export const wanI2V: CatalogModel = {
@@ -94,6 +164,8 @@ export const wanI2V: CatalogModel = {
   MinImageEdge: 240,
   RatioMin: 0.125,
   RatioMax: 8,
+  ...legacyI2VFields,
+  VideoProfile: 'wan2.7',
 }
 
 export const allModels: CatalogModel[] = [

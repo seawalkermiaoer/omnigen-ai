@@ -25,12 +25,13 @@ import {
   type OptimizeMode,
   type ParamPanelValues,
   type ReuseLocationState,
+  type VideoMediaAudio,
   type VideoMediaImage,
   type VideoMediaVideo,
 } from '@/types/generation'
 import ConfigIncompleteAlert from './ConfigIncompleteAlert'
 import VideoParamsFields from './VideoParamsFields'
-import { DEFAULT_DURATION, DEFAULT_RATIO, DEFAULT_RESOLUTION } from './videoParams'
+import { useVideoParamsState } from './useVideoParamsState'
 import { useVideoTaskPolling } from './useVideoTaskPolling'
 
 const { Title, Paragraph, Text } = Typography
@@ -45,6 +46,12 @@ interface ReferenceVideoRow {
   key: string
   url: string
   referenceVoice: string
+}
+
+/** 参考音频行（wan3.0 独有）——没有 referenceVoice，它本身就是一段音频。 */
+interface ReferenceAudioRow {
+  key: string
+  url: string
 }
 
 function defaultParamValues(model: CatalogModel | undefined): ParamPanelValues {
@@ -83,14 +90,18 @@ export default function R2VPage() {
 
   const [images, setImages] = useState<ReferenceImage[]>([])
   const [videos, setVideos] = useState<ReferenceVideoRow[]>([])
+  const [audios, setAudios] = useState<ReferenceAudioRow[]>([])
 
   const [prompt, setPrompt] = useState('')
-  const [resolution, setResolution] = useState(DEFAULT_RESOLUTION)
-  const [duration, setDuration] = useState(DEFAULT_DURATION)
-  const [ratio, setRatio] = useState(DEFAULT_RATIO)
   const [paramValues, setParamValues] = useState<ParamPanelValues>({})
   const [submitting, setSubmitting] = useState(false)
   const [notConfigured, setNotConfigured] = useState(false)
+
+  const model = useMemo(() => models.find((m) => m.ID === modelId), [models, modelId])
+  const { resolution, duration, ratio, setResolution, setDuration, setRatio } = useVideoParamsState(
+    model,
+    CAPABILITY,
+  )
 
   const { task, polling, start } = useVideoTaskPolling()
 
@@ -116,6 +127,7 @@ export default function R2VPage() {
             seed: typeof reuse.params.seed === 'number' ? reuse.params.seed : undefined,
             negativePrompt: typeof reuse.params.negativePrompt === 'string' ? reuse.params.negativePrompt : undefined,
             promptExtend: typeof reuse.params.promptExtend === 'boolean' ? reuse.params.promptExtend : undefined,
+            audio: typeof reuse.params.audio === 'boolean' ? reuse.params.audio : undefined,
           })
           void message.info(reuse.hadInput ? t('generation.reuseImageNote') : t('generation.reuseApplied'))
         } else {
@@ -135,9 +147,25 @@ export default function R2VPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notify])
 
-  const model = useMemo(() => models.find((m) => m.ID === modelId), [models, modelId])
-  const isWan = (model?.Regions?.length ?? 0) > 0
-  const mediaCap = model?.MaxImages || (isWan ? 5 : 9)
+  // 三代模型在这个页面上的差异：
+  //   happyhorse — 只有参考图，没有参考视频/参考音频/reference_voice
+  //   wan2.7     — 参考图 + 参考视频，两者都可带 reference_voice，且图 +
+  //                视频"合计"不超过 MaxImages（5）
+  //   wan3.0     — 参考图 + 参考视频 + 参考音频，没有 reference_voice，
+  //                三类各自计数（MediaLimits，10/5/5）
+  // 判据是目录里的 VideoProfile，不是"有没有地域白名单"——wan3.0 全地域
+  // 可用，用地域反推代际会把它当成 happyhorse，参考视频输入框整个消失。
+  const isWan27 = model?.VideoProfile === 'wan2.7'
+  const isWan30 = model?.VideoProfile === 'wan3.0'
+  const supportsVideos = isWan27 || isWan30
+  const supportsVoice = isWan27
+  const supportsAudios = isWan30
+  const isRestrictedRegion = (model?.Regions?.length ?? 0) > 0
+
+  // 合计上限（wan2.7/happyhorse 语义）。wan3.0 不走这条，它按类型分别限。
+  const mediaCap = model?.MaxImages || (isWan27 ? 5 : 9)
+  const audioCap = model?.MediaLimits?.ReferenceAudios ?? 0
+  const videoCap = isWan30 ? (model?.MediaLimits?.ReferenceVideos ?? 0) : mediaCap
 
   // 切模型时，非 wan 模型完全不支持参考视频——残留的视频行会让 maxCount
   // 计算（下面的 imageMaxCount）变得对不上，直接清空更安全。
@@ -149,11 +177,18 @@ export default function R2VPage() {
       return
     }
     setVideos([])
+    setAudios([])
     setParamValues(defaultParamValues(model))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelId])
 
-  const imageMaxCount = isWan ? Math.max(0, mediaCap - videos.length) : mediaCap
+  // wan3.0 的图片上限是它自己那一类的上限，与视频数无关；wan2.7 的是
+  // "合计减去已有视频数"（旧 r2v.js:11 maxImagesForR2v 的动态上限）。
+  const imageMaxCount = isWan30
+    ? (model?.MediaLimits?.ReferenceImages ?? 0)
+    : isWan27
+      ? Math.max(0, mediaCap - videos.length)
+      : mediaCap
 
   const handleImagesChange = (next: MediaUploaderItem[]) => {
     setImages(
@@ -169,8 +204,12 @@ export default function R2VPage() {
   }
 
   const addVideoRow = () => {
-    if (images.length + videos.length >= mediaCap) {
-      void message.error(t('generation.r2vMaxMedia', { max: mediaCap }))
+    if (isWan30 ? videos.length >= videoCap : images.length + videos.length >= mediaCap) {
+      void message.error(
+        isWan30
+          ? t('generation.r2vMaxVideos', { max: videoCap })
+          : t('generation.r2vMaxMedia', { max: mediaCap }),
+      )
       return
     }
     setVideos((prev) => [...prev, { key: `${Date.now()}-${prev.length}`, url: '', referenceVoice: '' }])
@@ -184,12 +223,37 @@ export default function R2VPage() {
     setVideos((prev) => prev.filter((v) => v.key !== key))
   }
 
-  const optimizeMode: OptimizeMode = isWan ? 'r2v_wan' : 'r2v'
+  const addAudioRow = () => {
+    if (audios.length >= audioCap) {
+      void message.error(t('generation.r2vMaxAudios', { max: audioCap }))
+      return
+    }
+    setAudios((prev) => [...prev, { key: `a-${Date.now()}-${prev.length}`, url: '' }])
+  }
+
+  const updateAudioRow = (key: string, url: string) => {
+    setAudios((prev) => prev.map((a) => (a.key === key ? { ...a, url } : a)))
+  }
+
+  const removeAudioRow = (key: string) => {
+    setAudios((prev) => prev.filter((a) => a.key !== key))
+  }
+
+  const optimizeMode: OptimizeMode = supportsVideos ? 'r2v_wan' : 'r2v'
   const validVideos = videos.filter((v) => v.url.trim())
+  const validAudios = audios.filter((a) => a.url.trim())
 
   const validate = (): string | null => {
     if (!prompt.trim()) return t('generation.promptRequiredHint')
-    if (isWan) {
+    if (isWan30) {
+      if (images.length === 0 && validVideos.length === 0 && validAudios.length === 0) {
+        return t('generation.r2vNeedMediaWan30')
+      }
+      // 三类分别判上限——与后端 buildWan30R2VMedia 的逐类校验一一对应。
+      if (images.length > imageMaxCount) return t('generation.r2vMaxImages', { max: imageMaxCount })
+      if (validVideos.length > videoCap) return t('generation.r2vMaxVideos', { max: videoCap })
+      if (validAudios.length > audioCap) return t('generation.r2vMaxAudios', { max: audioCap })
+    } else if (isWan27) {
       if (images.length === 0 && validVideos.length === 0) return t('generation.r2vNeedMedia')
       if (images.length + validVideos.length > mediaCap) return t('generation.r2vMaxMedia', { max: mediaCap })
       if ((paramValues.negativePrompt?.length ?? 0) > NEGATIVE_PROMPT_MAX) {
@@ -211,11 +275,12 @@ export default function R2VPage() {
 
     const reqImages: VideoMediaImage[] = images.map((img) => ({
       url: img.url,
-      ...(isWan && img.referenceVoice ? { referenceVoice: img.referenceVoice } : {}),
+      ...(supportsVoice && img.referenceVoice ? { referenceVoice: img.referenceVoice } : {}),
     }))
 
     const req: GenerateVideoRequest = {
       model: model.ID,
+      mode: CAPABILITY,
       prompt: prompt.trim(),
       images: reqImages,
       resolution,
@@ -225,17 +290,25 @@ export default function R2VPage() {
       seed: paramValues.seed,
     }
 
-    if (isWan) {
+    if (supportsVideos) {
       if (validVideos.length > 0) {
         const reqVideos: VideoMediaVideo[] = validVideos.map((v) => ({
           url: v.url.trim(),
-          ...(v.referenceVoice.trim() ? { referenceVoice: v.referenceVoice.trim() } : {}),
+          // wan3.0 的 media 条目只有 type/url，带 referenceVoice 会被后端
+          // 拒绝——所以只在 wan2.7 上附加，而不是"有值就带"。
+          ...(supportsVoice && v.referenceVoice.trim() ? { referenceVoice: v.referenceVoice.trim() } : {}),
         }))
         req.videos = reqVideos
       }
       req.promptExtend = !!paramValues.promptExtend
-      if (paramValues.negativePrompt) req.negativePrompt = paramValues.negativePrompt
     }
+    if (supportsAudios && validAudios.length > 0) {
+      const reqAudios: VideoMediaAudio[] = validAudios.map((a) => ({ url: a.url.trim() }))
+      req.audios = reqAudios
+    }
+    if (isWan30) req.audio = paramValues.audio
+    // negative_prompt 只有 wan2.7 有——wan3.0 的 input 里没有这个字段。
+    if (isWan27 && paramValues.negativePrompt) req.negativePrompt = paramValues.negativePrompt
 
     setSubmitting(true)
     setNotConfigured(false)
@@ -276,7 +349,7 @@ export default function R2VPage() {
                 loading={loadingCatalog}
               />
 
-              {isWan && (
+              {isRestrictedRegion && (
                 <Alert
                   type="warning"
                   showIcon
@@ -293,7 +366,7 @@ export default function R2VPage() {
                   maxCount={imageMaxCount}
                   disabled={submitting}
                 />
-                {isWan && images.length > 0 && (
+                {supportsVoice && images.length > 0 && (
                   <Flex vertical gap={6} style={{ marginTop: 4 }} data-testid="r2v-image-voices">
                     {images.map((img, index) => (
                       <Flex key={img.uid} align="center" gap={8}>
@@ -312,7 +385,7 @@ export default function R2VPage() {
                 )}
               </Flex>
 
-              {isWan && (
+              {supportsVideos && (
                 <Flex vertical gap={8} data-testid="r2v-videos">
                   <Flex align="center" justify="space-between">
                     <Text type="secondary">{t('generation.r2vVideosLabel')}</Text>
@@ -320,7 +393,10 @@ export default function R2VPage() {
                       size="small"
                       icon={<PlusOutlined aria-hidden />}
                       autoInsertSpace={false}
-                      disabled={submitting || images.length + videos.length >= mediaCap}
+                      disabled={
+                        submitting ||
+                        (isWan30 ? videos.length >= videoCap : images.length + videos.length >= mediaCap)
+                      }
                       data-testid="r2v-add-video"
                       onClick={addVideoRow}
                     >
@@ -335,12 +411,14 @@ export default function R2VPage() {
                         placeholder={t('generation.r2vVideoUrlPlaceholder')}
                         disabled={submitting}
                       />
-                      <Input
-                        value={v.referenceVoice}
-                        onChange={(e) => updateVideoRow(v.key, { referenceVoice: e.target.value })}
-                        placeholder={t('generation.r2vVoiceUrlPlaceholder')}
-                        disabled={submitting}
-                      />
+                      {supportsVoice && (
+                        <Input
+                          value={v.referenceVoice}
+                          onChange={(e) => updateVideoRow(v.key, { referenceVoice: e.target.value })}
+                          placeholder={t('generation.r2vVoiceUrlPlaceholder')}
+                          disabled={submitting}
+                        />
+                      )}
                       <Button
                         danger
                         type="text"
@@ -348,6 +426,42 @@ export default function R2VPage() {
                         aria-label={t('generation.r2vRemoveVideo')}
                         disabled={submitting}
                         onClick={() => removeVideoRow(v.key)}
+                      />
+                    </Flex>
+                  ))}
+                </Flex>
+              )}
+
+              {supportsAudios && (
+                <Flex vertical gap={8} data-testid="r2v-audios">
+                  <Flex align="center" justify="space-between">
+                    <Text type="secondary">{t('generation.r2vAudiosLabel')}</Text>
+                    <Button
+                      size="small"
+                      icon={<PlusOutlined aria-hidden />}
+                      autoInsertSpace={false}
+                      disabled={submitting || audios.length >= audioCap}
+                      data-testid="r2v-add-audio"
+                      onClick={addAudioRow}
+                    >
+                      {t('generation.r2vAddAudio')}
+                    </Button>
+                  </Flex>
+                  {audios.map((a, index) => (
+                    <Flex key={a.key} align="center" gap={8} data-testid={`r2v-audio-row-${index}`}>
+                      <Input
+                        value={a.url}
+                        onChange={(e) => updateAudioRow(a.key, e.target.value)}
+                        placeholder={t('generation.r2vAudioUrlPlaceholder')}
+                        disabled={submitting}
+                      />
+                      <Button
+                        danger
+                        type="text"
+                        icon={<DeleteOutlined aria-hidden />}
+                        aria-label={t('generation.r2vRemoveAudio')}
+                        disabled={submitting}
+                        onClick={() => removeAudioRow(a.key)}
                       />
                     </Flex>
                   ))}
@@ -365,6 +479,8 @@ export default function R2VPage() {
               />
 
               <VideoParamsFields
+                model={model}
+                mode={CAPABILITY}
                 resolution={resolution}
                 duration={duration}
                 ratio={ratio}

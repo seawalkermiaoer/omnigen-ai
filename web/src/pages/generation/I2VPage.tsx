@@ -28,7 +28,7 @@ import {
 } from '@/types/generation'
 import ConfigIncompleteAlert from './ConfigIncompleteAlert'
 import VideoParamsFields from './VideoParamsFields'
-import { DEFAULT_DURATION, DEFAULT_RESOLUTION } from './videoParams'
+import { useVideoParamsState } from './useVideoParamsState'
 import { useVideoTaskPolling } from './useVideoTaskPolling'
 
 const { Title, Paragraph, Text } = Typography
@@ -46,6 +46,15 @@ const TASK_TYPES: { value: I2VTaskType; labelKey: string }[] = [
   { value: 'first_last', labelKey: 'generation.i2vTaskFirstLast' },
   { value: 'continue', labelKey: 'generation.i2vTaskContinue' },
 ]
+
+/**
+ * wan3.0 只有前两种：它没有 first_clip 这种媒体类型，"续接"在 wan3.0 里
+ * 是参考生视频的一种用法（参考视频 + 描述延长内容的 prompt），不属于本
+ * 页面。切到 wan3.0 时 taskType 会被"换模型清空表单"的 effect 重置回
+ * first_frame，所以不存在残留的 continue 值配上一个没有 continue 选项的
+ * Segmented。
+ */
+const WAN30_TASK_TYPES = TASK_TYPES.filter((tt) => tt.value !== 'continue')
 
 function defaultParamValues(model: CatalogModel | undefined): ParamPanelValues {
   // 旧 UI 的 prompt-extend 复选框默认是勾选的（index.html:270 `checked`），
@@ -94,11 +103,15 @@ export default function I2VPage() {
   const [drivingAudioUrl, setDrivingAudioUrl] = useState('')
 
   const [prompt, setPrompt] = useState('')
-  const [resolution, setResolution] = useState(DEFAULT_RESOLUTION)
-  const [duration, setDuration] = useState(DEFAULT_DURATION)
   const [paramValues, setParamValues] = useState<ParamPanelValues>({})
   const [submitting, setSubmitting] = useState(false)
   const [notConfigured, setNotConfigured] = useState(false)
+
+  const model = useMemo(() => models.find((m) => m.ID === modelId), [models, modelId])
+  const { resolution, duration, ratio, setResolution, setDuration, setRatio } = useVideoParamsState(
+    model,
+    CAPABILITY,
+  )
 
   const { task, polling, start } = useVideoTaskPolling()
 
@@ -119,11 +132,13 @@ export default function I2VPage() {
           setPrompt(reuse.prompt)
           if (typeof reuse.params.resolution === 'string') setResolution(reuse.params.resolution)
           if (typeof reuse.params.duration === 'number') setDuration(reuse.params.duration)
+          if (typeof reuse.params.ratio === 'string') setRatio(reuse.params.ratio)
           setParamValues({
             watermark: typeof reuse.params.watermark === 'boolean' ? reuse.params.watermark : undefined,
             seed: typeof reuse.params.seed === 'number' ? reuse.params.seed : undefined,
             negativePrompt: typeof reuse.params.negativePrompt === 'string' ? reuse.params.negativePrompt : undefined,
             promptExtend: typeof reuse.params.promptExtend === 'boolean' ? reuse.params.promptExtend : undefined,
+            audio: typeof reuse.params.audio === 'boolean' ? reuse.params.audio : undefined,
           })
           void message.info(t('generation.reuseImageNote'))
         } else {
@@ -143,8 +158,7 @@ export default function I2VPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notify])
 
-  const model = useMemo(() => models.find((m) => m.ID === modelId), [models, modelId])
-  const isWan = (model?.Regions?.length ?? 0) > 0
+  const isRestrictedRegion = (model?.Regions?.length ?? 0) > 0
 
   // 切换模型时素材槽位的可见性、必填规则都可能整体改变（比如从 continue
   // 任务切到 happyhorse），残留的旧素材容易造出一个用户没看见、却仍会被
@@ -166,17 +180,29 @@ export default function I2VPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelId])
 
-  const effectiveTaskType: I2VTaskType = isWan ? taskType : 'first_frame'
-  const showFirstFrame = !isWan || effectiveTaskType === 'first_frame' || effectiveTaskType === 'first_last'
-  const showLastFrame = isWan && (effectiveTaskType === 'first_last' || effectiveTaskType === 'continue')
-  const showFirstClip = isWan && effectiveTaskType === 'continue'
-  const showDrivingAudio = isWan && (effectiveTaskType === 'first_frame' || effectiveTaskType === 'first_last')
+  // 三代模型的任务类型矩阵：
+  //   happyhorse — 只有首帧，没有任务类型标签页
+  //   wan2.7     — 首帧 / 首尾帧 / 续接片段，前两种可带 driving_audio
+  //   wan3.0     — 首帧 / 首尾帧；没有 first_clip 也没有 driving_audio
+  //                （续接改为在"参考生视频"里用参考视频 + 延长意图 prompt，
+  //                 后端 buildWan30I2VMedia 的报错文案也是这么指路的）
+  // 判据同 R2VPage：目录里的 VideoProfile，不是地域白名单。
+  const isWan27 = model?.VideoProfile === 'wan2.7'
+  const isWan30 = model?.VideoProfile === 'wan3.0'
+  const hasTaskTypes = isWan27 || isWan30
+  const availableTaskTypes = isWan30 ? WAN30_TASK_TYPES : TASK_TYPES
 
-  const optimizeMode: OptimizeMode = isWan ? 'i2v_wan' : 'i2v'
+  const effectiveTaskType: I2VTaskType = hasTaskTypes ? taskType : 'first_frame'
+  const showFirstFrame = !hasTaskTypes || effectiveTaskType === 'first_frame' || effectiveTaskType === 'first_last'
+  const showLastFrame = hasTaskTypes && (effectiveTaskType === 'first_last' || (isWan27 && effectiveTaskType === 'continue'))
+  const showFirstClip = isWan27 && effectiveTaskType === 'continue'
+  const showDrivingAudio = isWan27 && (effectiveTaskType === 'first_frame' || effectiveTaskType === 'first_last')
+
+  const optimizeMode: OptimizeMode = hasTaskTypes ? 'i2v_wan' : 'i2v'
   const optimizeImages = firstFrame[0] ? [firstFrame[0].url] : undefined
 
   const validate = (): string | null => {
-    if (!isWan) {
+    if (!hasTaskTypes) {
       if (!firstFrame[0]) return t('generation.i2vNeedFirstFrame')
       return null
     }
@@ -201,14 +227,18 @@ export default function I2VPage() {
 
     const req: GenerateVideoRequest = {
       model: model.ID,
+      mode: CAPABILITY,
       resolution,
       duration,
       watermark: !!paramValues.watermark,
       seed: paramValues.seed,
     }
     if (prompt.trim()) req.prompt = prompt.trim()
+    // ratio 只有在模型接受时才有值——wan2.7/happyhorse 的 i2v 由首帧决定
+    // 宽高比，useVideoParamsState 会把它收敛成空串，这里也就不会带上。
+    if (ratio) req.ratio = ratio
 
-    if (isWan) {
+    if (hasTaskTypes) {
       req.taskType = effectiveTaskType
       if (effectiveTaskType === 'first_frame' || effectiveTaskType === 'first_last') {
         req.firstFrame = firstFrame[0].url
@@ -223,13 +253,13 @@ export default function I2VPage() {
       if (showDrivingAudio && drivingAudioUrl.trim()) {
         req.drivingAudio = drivingAudioUrl.trim()
       }
-      if (paramValues.negativePrompt) req.negativePrompt = paramValues.negativePrompt
+      // negative_prompt 只有 wan2.7 有；wan3.0 的 input 里没有这个字段。
+      if (isWan27 && paramValues.negativePrompt) req.negativePrompt = paramValues.negativePrompt
       req.promptExtend = !!paramValues.promptExtend
+      if (isWan30) req.audio = paramValues.audio
     } else {
       req.firstFrame = firstFrame[0].url
     }
-    // ratio 永远不出现在这个请求体里——i2v 的宽高比由首帧决定，见本文件
-    // 顶部注释与 generation_video.go 的 normalizeVideoParams。
 
     setSubmitting(true)
     setNotConfigured(false)
@@ -270,7 +300,7 @@ export default function I2VPage() {
                 loading={loadingCatalog}
               />
 
-              {isWan && (
+              {isRestrictedRegion && (
                 <Alert
                   type="warning"
                   showIcon
@@ -279,14 +309,14 @@ export default function I2VPage() {
                 />
               )}
 
-              {isWan && (
+              {hasTaskTypes && (
                 <Flex vertical gap={4} data-testid="i2v-task-type">
                   <Text type="secondary">{t('generation.i2vTaskType')}</Text>
                   <Segmented
                     disabled={submitting}
                     value={taskType}
                     onChange={(value) => setTaskType(value as I2VTaskType)}
-                    options={TASK_TYPES.map((tt) => ({ value: tt.value, label: t(tt.labelKey) }))}
+                    options={availableTaskTypes.map((tt) => ({ value: tt.value, label: t(tt.labelKey) }))}
                   />
                 </Flex>
               )}
@@ -355,10 +385,14 @@ export default function I2VPage() {
               />
 
               <VideoParamsFields
+                model={model}
+                mode={CAPABILITY}
                 resolution={resolution}
                 duration={duration}
+                ratio={ratio}
                 onResolutionChange={setResolution}
                 onDurationChange={setDuration}
+                onRatioChange={setRatio}
                 disabled={submitting}
               />
 

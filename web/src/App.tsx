@@ -13,6 +13,8 @@ import ImageEditPage from '@/pages/generation/ImageEditPage'
 import T2VPage from '@/pages/generation/T2VPage'
 import I2VPage from '@/pages/generation/I2VPage'
 import R2VPage from '@/pages/generation/R2VPage'
+import F2VPage from '@/pages/generation/F2VPage'
+import L2VPage from '@/pages/generation/L2VPage'
 import { useAuthStore } from '@/stores/auth'
 
 export default function App() {
@@ -35,6 +37,8 @@ export default function App() {
           <Route path="/t2v" element={<T2VPage />} />
           <Route path="/i2v" element={<I2VPage />} />
           <Route path="/r2v" element={<R2VPage />} />
+          <Route path="/f2v" element={<F2VPage />} />
+          <Route path="/l2v" element={<L2VPage />} />
           <Route path="/history" element={<HistoryPage />} />
 
           <Route element={<AdminRoute />}>

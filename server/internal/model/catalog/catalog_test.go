@@ -25,6 +25,8 @@ func TestAll_ExactModelSet(t *testing.T) {
 		"happyhorse-1.1-r2v", "wan2.7-r2v",
 		"happyhorse-1.1-i2v", "wan2.7-i2v-2026-04-25",
 		"happyhorse-1.1-t2v",
+		// wan3.0：单个 model id 覆盖 t2v/i2v/r2v/f2v/l2v 五种能力
+		"wan3.0-video", "wan3.0-video-prime",
 		// prompt-optimize models (+ fallbacks), from server.js MODELS block
 		"qwen3.7-plus", "qwen-plus",
 		"qwen-vl-max-latest", "qwen-vl-plus",
@@ -158,9 +160,11 @@ func TestByCapability(t *testing.T) {
 	}{
 		{catalogmodel.CapabilityT2I, []string{"qwen-image-plus", "qwen-image", "wan2.7-image-pro", "wan2.7-image", "gpt-image-2"}},
 		{catalogmodel.CapabilityEdit, []string{"qwen-image-edit-plus", "qwen-image-edit", "wan2.7-image-pro", "wan2.7-image", "gpt-image-2"}},
-		{catalogmodel.CapabilityT2V, []string{"happyhorse-1.1-t2v"}},
-		{catalogmodel.CapabilityI2V, []string{"happyhorse-1.1-i2v", "wan2.7-i2v-2026-04-25"}},
-		{catalogmodel.CapabilityR2V, []string{"happyhorse-1.1-r2v", "wan2.7-r2v"}},
+		{catalogmodel.CapabilityT2V, []string{"happyhorse-1.1-t2v", "wan3.0-video", "wan3.0-video-prime"}},
+		{catalogmodel.CapabilityI2V, []string{"happyhorse-1.1-i2v", "wan2.7-i2v-2026-04-25", "wan3.0-video", "wan3.0-video-prime"}},
+		{catalogmodel.CapabilityR2V, []string{"happyhorse-1.1-r2v", "wan2.7-r2v", "wan3.0-video", "wan3.0-video-prime"}},
+		{catalogmodel.CapabilityF2V, []string{"wan3.0-video", "wan3.0-video-prime"}},
+		{catalogmodel.CapabilityL2V, []string{"wan3.0-video", "wan3.0-video-prime"}},
 		{catalogmodel.CapabilityOptimizeText, []string{"qwen3.7-plus", "qwen-plus"}},
 		{catalogmodel.CapabilityOptimizeVision, []string{"qwen-vl-max-latest", "qwen-vl-plus"}},
 	}
@@ -247,6 +251,9 @@ func TestI2V_DimensionRatioLimits(t *testing.T) {
 	}{
 		{"happyhorse-1.1-i2v", 300, 0.4, 2.5},
 		{"wan2.7-i2v-2026-04-25", 240, 0.125, 8},
+		// wan3.0 的图片规格与 wan2.7 相同：单边 [240, 8000]、长宽比 ≤8:1。
+		{"wan3.0-video", 240, 0.125, 8},
+		{"wan3.0-video-prime", 240, 0.125, 8},
 	}
 	for _, c := range cases {
 		m, ok := catalogmodel.ByID(c.id)
@@ -256,9 +263,12 @@ func TestI2V_DimensionRatioLimits(t *testing.T) {
 		assert.InDeltaf(t, c.ratioMax, m.RatioMax, 1e-9, "RatioMax for %s", c.id)
 	}
 
-	// non-i2v models have no such limits
+	// 反向断言按能力而不是按 id 列表写：这几个字段的存在理由就是"该模型
+	// 接受首帧图片"，所以凡是不具备 i2v 能力的模型都必须为零值。用能力
+	// 判断而不是"排除上面列出的几个 id"，新增 i2v 模型时不会因为忘了往
+	// 排除名单里补一行而误报。
 	for _, m := range catalogmodel.All() {
-		if m.ID == "happyhorse-1.1-i2v" || m.ID == "wan2.7-i2v-2026-04-25" {
+		if m.HasCapability(catalogmodel.CapabilityI2V) {
 			continue
 		}
 		assert.Zerof(t, m.MinImageEdge, "MinImageEdge for %s should be zero", m.ID)
